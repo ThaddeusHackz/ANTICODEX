@@ -3,7 +3,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('anticodexDesktop', {
-  version: '0.1.1',
+  version: '0.1.2',
   api: (action, payload) => ipcRenderer.invoke('acx:api', action, payload),
   computer: (cmd, args) => ipcRenderer.invoke('acx:computer', cmd, args),
   state: (patch) => ipcRenderer.invoke('acx:state', patch),

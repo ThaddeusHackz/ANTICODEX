@@ -5,20 +5,70 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer, screen, globalShortcut } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 // Works both from the repo (../web/dist) and packaged (extra-resource dist).
+const RES_ROOT = process.resourcesPath || path.join(__dirname, '..');
 const WEB_DIST_CANDIDATES = [
   path.join(__dirname, '..', 'web', 'dist'),
   path.join(__dirname, '..', 'dist'),
-  path.join(process.resourcesPath || '', 'dist')
+  path.join(RES_ROOT, 'dist')
 ];
 const WEB_DIST = WEB_DIST_CANDIDATES.find((p) => fs.existsSync(path.join(p, 'index.html'))) || WEB_DIST_CANDIDATES[0];
+const BRIDGE_CANDIDATES = [
+  path.join(__dirname, '..', 'api', 'bridge.js'),
+  path.join(RES_ROOT, 'api', 'bridge.js')
+];
 const STATE_FILE = path.join(app.getPath('userData'), 'anticodex-state.json');
+
+// Runtime data (config.json / db.json) lives in userData so the packaged app is
+// writable everywhere.
+process.env.ANTICODEX_DATA = process.env.ANTICODEX_DATA || path.join(app.getPath('userData'), 'data');
+
+// --- in-process API + static server (the .exe is self-sufficient) -----------
+
+let apiBase = '';
+async function startLocalServer() {
+  const bridgePath = BRIDGE_CANDIDATES.find((p) => fs.existsSync(p));
+  const http = await import('node:http');
+  let bridge = null;
+  if (bridgePath) {
+    try { bridge = (await import(pathToFileURL(bridgePath))).default; } catch (e) {
+      console.error('bridge import failed', e);
+    }
+  }
+  const MIME = {
+    '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.map': 'application/json'
+  };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname.startsWith('/api/')) {
+      if (bridge) return bridge(req, res);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'bridge unavailable' }));
+    }
+    let filePath = path.join(WEB_DIST, decodeURIComponent(url.pathname));
+    if (!filePath.startsWith(WEB_DIST) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(WEB_DIST, 'index.html');
+    }
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end('<!doctype html><html><body style="font-family:system-ui;background:#0b0d14;color:#e8ebf6;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h1>ANTICODEX</h1><p>Web bundle missing — reinstall the app.</p></div></body></html>');
+    }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
+    fs.createReadStream(filePath).pipe(res);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  apiBase = `http://127.0.0.1:${port}`;
+  return apiBase;
+}
 
 let win = null;
 const computer = createComputerUse();
@@ -51,6 +101,7 @@ function createWindow() {
 
   const startUrl = loadState().startUrl;
   if (startUrl) win.loadURL(startUrl);
+  else if (apiBase) win.loadURL(`${apiBase}/`);
   else if (fs.existsSync(path.join(WEB_DIST, 'index.html'))) win.loadFile(path.join(WEB_DIST, 'index.html'));
   else win.loadURL('https://github.com/ThaddeusHackz/ANTICODEX');
 
@@ -74,7 +125,7 @@ ipcMain.handle('acx:getKeys', () => loadState().providerKeys || {});
 ipcMain.handle('acx:api', async (_e, action, payload) => {
   // Provider calls run in the main process — no CORS, keys stay local.
   const state = loadState();
-  const base = state.apiBase || 'http://127.0.0.1:8787';
+  const base = state.apiBase || apiBase || 'http://127.0.0.1:8787';
   const res = await fetch(`${base}/api/bridge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -149,8 +200,9 @@ else {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     try { app.setAsDefaultProtocolClient('anticodex'); } catch { /* non-fatal */ }
+    await startLocalServer();
     createWindow();
     // Offer updates once per session after a delay (user must accept).
     setTimeout(async () => {

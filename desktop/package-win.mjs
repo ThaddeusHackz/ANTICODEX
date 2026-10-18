@@ -38,10 +38,13 @@ const args = [
   `--out=${out}`,
   '--overwrite',
   '--asar',
-  '--app-version=0.1.1',
+  '--app-version=0.1.2',
   '--ignore=node_modules/electron($|/)',
   '--ignore=node_modules/electron-packager($|/)',
-  '--extra-resource=' + path.join(root, 'web', 'dist')
+  '--extra-resource=' + path.join(root, 'web', 'dist'),
+  // Self-contained runtime: the local API bridge + provider catalog ship with the .exe
+  '--extra-resource=' + path.join(root, 'api'),
+  '--extra-resource=' + path.join(root, 'lib')
 ];
 
 const res = spawnSync(process.execPath, args, { stdio: 'inherit', cwd: __dirname });
@@ -55,7 +58,7 @@ console.log(`\n✓ Windows app: ${appDir}`);
 console.log(`  Run with:    ${path.join(appDir, 'ANTICODEX.exe')}`);
 
 // Zip it as the portable release asset (tar: available and long-path-safe on win/mac/linux).
-const zipPath = path.join(out, 'ANTICODEX-0.1.1-win32-x64.zip');
+const zipPath = path.join(out, 'ANTICODEX-0.1.2-win32-x64.zip');
 if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 const zip = spawnSync('tar', ['-a', '-c', '-f', zipPath, 'ANTICODEX-win32-x64'], { cwd: out, stdio: 'inherit', shell: process.platform === 'win32' });
 if (zip.status === 0) console.log(`✓ Portable zip: ${zipPath}`);

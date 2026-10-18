@@ -1,8 +1,9 @@
 // ANTICODEX API integration tests — spins the real server and exercises every
 // critical flow: health, models, chat, auth, reset codes, MCP, admin, media.
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import assert from 'node:assert';
+const ROOT = new URL('..', import.meta.url).pathname;
 
 const PORT = 8791;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -172,6 +173,39 @@ async function main() {
   ok('cohere wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
   r = await api('sync_models', { provider: 'deepseek' });
   ok('sync_models returns keyed error gracefully', r.status === 200 && r.data.ok === false);
+
+  console.log('— full provider catalog (26 providers / 471 OpenRouter ids) —');
+  const { PROVIDER_DIRECTORY, OPENROUTER_EXTRA_MODELS } = await import('../lib/catalog.js');
+  ok('26 directory providers', PROVIDER_DIRECTORY.length === 26);
+  ok('471 OpenRouter ids in fallback', OPENROUTER_EXTRA_MODELS.length === 471 && new Set(OPENROUTER_EXTRA_MODELS).size === 471);
+  const spot = [
+    'deepseek/deepseek-v4.1-flash-1017', '~openai/gpt-sol-latest', 'sakana/fugu-ultra-v2',
+    '~anthropic/claude-sonnet-latest', '~deepseek/deepseek-v4-flash-latest', '~z-ai/glm-latest',
+    'qwen/qwen3.5-27b', 'google/gemma-4-31b-it', 'nvidia/nemotron-3-ultra-550b-a55b',
+    'x-ai/grok-4.20-multi-agent', 'moonshotai/kimi-k2.5', 'xiaomi/mimo-v2.5-pro',
+    'amazon/nova-2-lite-v1', 'openrouter/auto', 'microsoft/phi-4'
+  ];
+  ok('appendix spot ids present', spot.every((id) => OPENROUTER_EXTRA_MODELS.includes(id)));
+  const find = (pid) => PROVIDER_DIRECTORY.find((p) => p.id === pid).models.map((m) => m.id);
+  ok('deepseek-flash + 1017 in directory', ['deepseek-flash', 'deepseek-v4.1-flash-1017'].every((id) => find('deepseek').includes(id)));
+  ok('directory stragglers present',
+    ['gpt-3.5-turbo', 'gpt-4', 'o1-pro'].every((id) => find('openai').includes(id)) &&
+    ['claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101'].every((id) => find('anthropic').includes(id)) &&
+    ['gemini-3-flash-preview', 'gemini-2.5-flash-image'].every((id) => find('google').includes(id)) &&
+    ['glm-4.5-air', 'glm-4.5v', 'glm-4.6v'].every((id) => find('zai').includes(id)) &&
+    ['mistral-embed', 'mistral-large-2512', 'mistral-medium-2604'].every((id) => find('mistral').includes(id)) &&
+    ['hy-mt2-7b', 'hy-mt2-30b-a3b', 'hy-mt2-1.8b'].every((id) => find('hunyuan').includes(id)) &&
+    ['muse-spark-1.3-contributor', 'muse-spark-1.2-contributor'].every((id) => find('meta').includes(id)) &&
+    ['command-r-08-2024', 'command-r7b-12-2024'].every((id) => find('cohere').includes(id)) &&
+    find('bedrock').includes('amazon.nova-2-lite-v1:0') &&
+    ['deepseek-v4-flash-0731', 'deepseek-r1'].every((id) => find('deepseek').includes(id)));
+  ok('desktop main + packager syntax', (() => {
+    try {
+      execFileSync(process.execPath, ['--check', 'desktop/main.mjs'], { cwd: ROOT });
+      execFileSync(process.execPath, ['--check', 'desktop/package-win.mjs'], { cwd: ROOT });
+      return true;
+    } catch { return false; }
+  })());
 
   server.kill('SIGTERM');
   console.log(`\n${passed} passed, ${failed} failed`);
