@@ -48,12 +48,17 @@ cd desktop && npm install && npm run package:win
 
 ## API keys
 
-Set keys in **Admin → Keys** (global) or **Settings** (per-device). Resolution order:
-env vars → admin runtime config (`data/config.json`) → hardcoded slots in `lib/keys.js`.
+Set keys in **Settings → Providers** (per-device / desktop keychain) or **Admin → Keys** (global).
+The **provider directory** covers 26 endpoints — OpenAI, Anthropic, Google Gemini, xAI, Mistral,
+DeepSeek (`deepseek-flash` = V4.1-Flash-1017), Moonshot, Z.ai, Qwen, Doubao, MiniMax, Hunyuan, Meta,
+NVIDIA NIM (Nemotron 3/3.5), Cohere, Perplexity, Thinking Machines, Atria ASI, OpenRouter, Groq,
+Together, Fireworks, Cerebras, Azure OpenAI, Vertex AI, Bedrock — plus custom OpenAI-/Anthropic-compatible
+gateways. Resolution order: desktop keychain → env vars → admin runtime config → hardcoded slots in `lib/keys.js`.
 
 | Provider | Used for | Where |
 |---|---|---|
-| `NVIDIA_API_KEY` | Primary AI engine (all NVIDIA NIM models, vision included) | Settings → Providers |
+| `NVIDIA_API_KEY` | Primary AI engine (Nemotron 3.5 + 100 hosted models, vision included) | Settings → Providers |
+| `DEEPSEEK_API_KEY` + 24 more | All directory providers (`lib/catalog.js`) | Settings → Providers |
 | `TAVILY_API_KEY` / `EXA_API_KEY` | Web search (owner-approved to hardcode in `lib/keys.js`) | Admin → Keys |
 | `CF_ACCOUNT_ID` + `CF_API_TOKEN` | Flux image generation (Workers AI) | Settings → Media |
 | `MINIMAX_API_KEY` | Hailuo H3 video | Settings → Media |
