@@ -9,8 +9,8 @@ function ModelPicker({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const [providers, setProviders] = useState([]);
   useEffect(() => { modelsApi().then((r) => setProviders(r.providers || [])).catch(() => {}); }, []);
-  const flat = useMemo(() => (providers || []).flatMap((p) => (p.models || []).map((m) => ({ ...m, providerName: p.name, providerId: p.id }))), [providers]);
-  const current = flat.find((m) => m.id === value) || { label: value };
+  const flat = useMemo(() => (providers || []).flatMap((p) => (p.models || []).map((m) => ({ ...m, value: `${p.id}::${m.id}`, providerName: p.name, providerId: p.id }))), [providers]);
+  const current = flat.find((m) => m.value === value) || { label: value };
 
   return (
     <div style={{ position: 'relative' }}>
@@ -24,13 +24,16 @@ function ModelPicker({ value, onChange }) {
               <div className="tiny" style={{ padding: '8px 10px 2px', fontWeight: 800, letterSpacing: 1 }}>
                 {p.name} {!p.configured && p.id !== 'demo' && <span className="pill warn" style={{ marginLeft: 6 }}>needs key</span>}
               </div>
-              {(p.models || []).map((m) => (
-                <button key={m.id} className={`thread-item ${m.id === value ? 'active' : ''}`}
-                  onClick={() => { onChange(m.id); setOpen(false); }}>
+              {(p.models || []).slice(0, 30).map((m) => (
+                <button key={`${p.id}:${m.id}`} className={`thread-item ${`${p.id}::${m.id}` === value ? 'active' : ''}`}
+                  onClick={() => { onChange(`${p.id}::${m.id}`); setOpen(false); }}>
                   <span>{m.label}</span>
                   {m.vision && <span className="pill" style={{ marginLeft: 'auto' }}>vision</span>}
                 </button>
               ))}
+              {(p.models || []).length > 30 && (
+                <div className="tiny" style={{ padding: '4px 10px 8px' }}>+{(p.models || []).length - 30} more — full catalog in Settings → Providers</div>
+              )}
             </div>
           ))}
         </div>

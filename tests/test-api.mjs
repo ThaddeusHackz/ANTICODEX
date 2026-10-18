@@ -48,8 +48,29 @@ async function main() {
   r = await api('models');
   ok('models lists nvidia + demo', r.status === 200 && r.data.providers.some((p) => p.id === 'nvidia') && r.data.providers.some((p) => p.id === 'demo'));
 
+  console.log('— provider directory (2026-10-18 catalog) —');
+  r = await api('models');
+  const dir = r.data.directory || [];
+  ok('directory has 25+ providers', dir.length >= 25, `got ${dir.length}`);
+  ok('deepseek provider present', dir.some((p) => p.id === 'deepseek'));
+  const ds = dir.find((p) => p.id === 'deepseek');
+  ok('DeepSeek V4.1 Flash 1017 in catalog', ds && ds.models.some((m) => m.id === 'deepseek-flash') && ds.models.some((m) => m.id === 'deepseek-v4.1-flash-1017'));
+  ok('DeepSeek endpoint', ds && ds.endpoint === 'https://api.deepseek.com/v1');
+  const nv = dir.find((p) => p.id === 'nvidia');
+  ok('NVIDIA Nemotron 3.5 Lightning in catalog', nv && nv.models.some((m) => m.id === 'nvidia/nemotron-3.5-lightning-30b-a3b'));
+  ok('NVIDIA Nemotron 3 Ultra + Switchyard', nv && nv.models.some((m) => m.id === 'nvidia/nemotron-3-ultra-550b-a55b') && nv.models.some((m) => m.id === 'nvidia/switchyard'));
+  ok('openai/anthropic/google/xai/mistral/moonshot/zai/qwen providers', ['openai', 'anthropic', 'google', 'xai', 'mistral', 'moonshot', 'zai', 'qwen'].every((id) => dir.some((p) => p.id === id)));
+  ok('openrouter aggregator present', dir.some((p) => p.id === 'openrouter' && p.models_dynamic));
+  ok('atria provider present', dir.some((p) => p.id === 'atria'));
+  r = await api('chat', { messages: [{ role: 'user', content: 'what is deepseek v4.1 flash' }], model: 'anticodex/demo-core' });
+  ok('demo knows deepseek 1017', r.status === 200 && r.data.text.includes('V4.1'));
+
   r = await api('chat', { messages: [{ role: 'user', content: 'hello' }], model: 'anticodex/demo-core' });
   ok('chat demo responds', r.status === 200 && typeof r.data.text === 'string' && r.data.text.length > 10);
+
+  // provider::model routing with desktop-style key override
+  r = await api('chat', { messages: [{ role: 'user', content: 'hi' }], model: 'anticodex/demo-core', provider: 'nvidia', provider_keys: {} });
+  ok('provider routing falls back to demo without key', r.status === 200 && r.data.provider === 'demo');
 
   console.log('— search & media (demo fallbacks) —');
   r = await api('search', { query: 'what is ANTICODEX' });
@@ -145,6 +166,12 @@ async function main() {
   console.log('— test_endpoint —');
   r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai' });
   ok('endpoint test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
+  r = await api('test_endpoint', { provider: 'anthropic', api_key: 'bad' });
+  ok('anthropic wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
+  r = await api('test_endpoint', { provider: 'cohere', api_key: 'bad' });
+  ok('cohere wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
+  r = await api('sync_models', { provider: 'deepseek' });
+  ok('sync_models returns keyed error gracefully', r.status === 200 && r.data.ok === false);
 
   server.kill('SIGTERM');
   console.log(`\n${passed} passed, ${failed} failed`);

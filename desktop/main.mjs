@@ -10,7 +10,7 @@ import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 // Works both from the repo (../web/dist) and packaged (extra-resource dist).
 const WEB_DIST_CANDIDATES = [
   path.join(__dirname, '..', 'web', 'dist'),
@@ -39,6 +39,7 @@ function createWindow() {
     width: 1360, height: 900, minWidth: 960, minHeight: 640,
     backgroundColor: '#0b0d14',
     title: 'ANTICODEX',
+    icon: fs.existsSync(path.join(__dirname, 'icons', 'icon.png')) ? path.join(__dirname, 'icons', 'icon.png') : undefined,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -61,6 +62,15 @@ function createWindow() {
 
 // --- IPC: bridge visible to the renderer as window.anticodexDesktop ----------
 
+ipcMain.handle('acx:saveKeys', (_e, keys) => {
+  const state = loadState();
+  const merged = { ...(state.providerKeys || {}), ...(keys || {}) };
+  saveState({ providerKeys: merged });
+  return { ok: true, saved: Object.keys(keys || {}) };
+});
+
+ipcMain.handle('acx:getKeys', () => loadState().providerKeys || {});
+
 ipcMain.handle('acx:api', async (_e, action, payload) => {
   // Provider calls run in the main process — no CORS, keys stay local.
   const state = loadState();
@@ -68,7 +78,7 @@ ipcMain.handle('acx:api', async (_e, action, payload) => {
   const res = await fetch(`${base}/api/bridge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...payload, _desktop: true })
+    body: JSON.stringify({ action, ...payload, provider_keys: state.providerKeys || {}, _desktop: true })
   });
   return res.json();
 });

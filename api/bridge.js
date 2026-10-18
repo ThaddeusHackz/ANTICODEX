@@ -1,9 +1,10 @@
 import { json, readBody } from '../lib/util.js';
-import { listProviders, chat, testEndpoint } from '../lib/providers.js';
+import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
+import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, audit } from '../lib/store.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
@@ -20,7 +21,14 @@ export default async function handler(req, res) {
     switch (action) {
       case 'health': return json(res, 200, { ok: true, version: VERSION, name: 'ANTICODEX', time: new Date().toISOString() });
       case 'config': return json(res, 200, publicConfig());
-      case 'models': return json(res, 200, { providers: listProviders(), catalog: CATALOG });
+      case 'models': return json(res, 200, { providers: listProviders(body.keys), directory: directoryWithStatus(body.keys), catalog: CATALOG });
+      case 'sync_models': return json(res, 200, await syncModels(body));
+      case 'save_provider_key': {
+        if (!body.key_env || !['string'].includes(typeof body.key_env)) return json(res, 400, { error: 'key_env required' });
+        const patch = {}; patch[body.key_env] = body.value || '';
+        saveRuntime(patch);
+        return json(res, 200, { ok: true, key_env: body.key_env });
+      }
       case 'test_endpoint': return json(res, 200, await testEndpoint(body));
       case 'chat': return await handleChat(body, res);
       case 'search': return json(res, 200, await webSearch(body));
@@ -58,6 +66,7 @@ function publicConfig() {
       email_reset: true
     },
     providers: listProviders().map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind })),
+    provider_count: PROVIDER_DIRECTORY.length,
     search_configured: Boolean(getKey('TAVILY_API_KEY') || getKey('EXA_API_KEY')),
     flux_configured: Boolean(getKey('CF_API_TOKEN') && getKey('CF_ACCOUNT_ID')),
     minimax_configured: Boolean(getKey('MINIMAX_API_KEY')),
@@ -69,9 +78,9 @@ function publicConfig() {
 // --- chat -------------------------------------------------------------------
 
 async function handleChat(body, res) {
-  const { messages, model, system, temperature, max_tokens, images } = body;
+  const { messages, model, system, temperature, max_tokens, images, provider, provider_keys } = body;
   const msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
-  const out = await chat({ messages: msgs, model, system, temperature, max_tokens });
+  const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys: provider_keys });
   return json(res, 200, out);
 }
 
@@ -317,7 +326,7 @@ async function handleAdmin(body, res) {
   }
   if (op === 'users') return json(res, 200, { users: (await find('users', () => true, 10000)).map(sanitize) });
   if (op === 'set_keys') {
-    const allowed = ['TAVILY_API_KEY', 'EXA_API_KEY', 'NVIDIA_API_KEY', 'CF_ACCOUNT_ID', 'CF_API_TOKEN', 'MINIMAX_API_KEY', 'MINIMAX_GROUP_ID', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'AUTH_REDIRECT'];
+    const allowed = allKeyEnvs();
     const patch = {};
     for (const k of allowed) if (body[k] !== undefined) patch[k] = body[k];
     saveRuntime(patch);
@@ -326,7 +335,7 @@ async function handleAdmin(body, res) {
   }
   if (op === 'get_keys') {
     const keys = {};
-    for (const k of ['TAVILY_API_KEY', 'EXA_API_KEY', 'NVIDIA_API_KEY', 'CF_ACCOUNT_ID', 'CF_API_TOKEN', 'MINIMAX_API_KEY', 'MINIMAX_GROUP_ID']) {
+    for (const k of allKeyEnvs()) {
       const v = getKey(k);
       keys[k] = v ? `${v.slice(0, 4)}…${v.slice(-3)} (${v.length} chars)` : '(not set)';
     }

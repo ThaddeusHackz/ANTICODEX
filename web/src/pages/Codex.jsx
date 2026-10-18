@@ -197,10 +197,11 @@ function ModelSelectInline() {
   return (
     <select value={model} onChange={(e) => setModel(e.target.value)} style={{ width: 190, padding: '6px 8px', fontSize: 12 }}>
       <option value="anticodex/demo-core">Demo Core</option>
-      <option value="deepseek-ai/deepseek-r1">DeepSeek R1 (NVIDIA)</option>
-      <option value="qwen/qwen3-235b-a22b">Qwen3 235B (NVIDIA)</option>
-      <option value="meta/llama-3.3-70b-instruct">Llama 3.3 70B (NVIDIA)</option>
-      <option value="moonshotai/kimi-k2-instruct">Kimi K2 (NVIDIA)</option>
+      <option value="nvidia::nvidia/nemotron-3.5-lightning-30b-a3b">Nemotron 3.5 Lightning</option>
+      <option value="nvidia::nvidia/nemotron-3-ultra-550b-a55b">Nemotron 3 Ultra</option>
+      <option value="deepseek::deepseek-flash">DeepSeek V4.1 Flash 1017</option>
+      <option value="openai::gpt-5.1-codex">GPT-5.1 Codex</option>
+      <option value="anthropic::claude-sonnet-5.5">Claude Sonnet 5.5</option>
     </select>
   );
 }
