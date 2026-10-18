@@ -1,0 +1,14 @@
+ANTICODEX
+Copyright 2026 ANTICODEX
+
+This product's architecture was informed by study of the open-source
+openai/codex workspace (Apache License 2.0, Copyright OpenAI):
+    https://github.com/openai/codex
+
+No source code from openai/codex is redistributed in this repository.
+Concepts referenced: app-server control plane, apply-patch diffs, sandboxed
+command execution, code-mode structured tool calls.
+
+REA (Reverse Engineer Anything) skill pack © morluto/rea and leanrea
+© aicodeking/leanrea are vendored as documentation/skill files under
+skills/ with their original licenses intact.
