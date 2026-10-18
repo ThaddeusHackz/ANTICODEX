@@ -1,8 +1,10 @@
 # ANTICODEX
 
+<img src="web/public/anticodex-logo.png" alt="ANTICODEX logo" width="88" align="right" />
+
 **The universal AI workspace.** Chat-class interface, Codex-class code agents, Claude-class agent studio,
 MCP connectors, Flux image + Hailuo video generation, computer-use — powered by *your* model keys
-(NVIDIA NIM first, any OpenAI-/Anthropic-compatible endpoint second).
+(**26 provider endpoints**: NVIDIA NIM first, DeepSeek/OpenAI/Anthropic/Gemini/Grok/Kimi/Qwen… + any OpenAI-/Anthropic-compatible gateway).
 
 ```
 ┌──────────┐   ┌──────────────────────────────────────────────┐
