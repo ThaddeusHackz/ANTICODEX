@@ -47,12 +47,12 @@ cd desktop && npm install && npm run package:win
 ## API keys
 
 Set keys in **Admin → Keys** (global) or **Settings** (per-device). Resolution order:
-env vars → admin runtime config (`data/config.json`) → hardcoded slots in `api/_lib/keys.js`.
+env vars → admin runtime config (`data/config.json`) → hardcoded slots in `lib/keys.js`.
 
 | Provider | Used for | Where |
 |---|---|---|
 | `NVIDIA_API_KEY` | Primary AI engine (all NVIDIA NIM models, vision included) | Settings → Providers |
-| `TAVILY_API_KEY` / `EXA_API_KEY` | Web search (owner-approved to hardcode in `api/_lib/keys.js`) | Admin → Keys |
+| `TAVILY_API_KEY` / `EXA_API_KEY` | Web search (owner-approved to hardcode in `lib/keys.js`) | Admin → Keys |
 | `CF_ACCOUNT_ID` + `CF_API_TOKEN` | Flux image generation (Workers AI) | Settings → Media |
 | `MINIMAX_API_KEY` | Hailuo H3 video | Settings → Media |
 | `GITHUB_CLIENT_ID/SECRET` | GitHub login | Admin → Keys |

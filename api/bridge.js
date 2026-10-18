@@ -1,11 +1,11 @@
-import { json, readBody } from './_lib/util.js';
-import { listProviders, chat, testEndpoint } from './_lib/providers.js';
-import { webSearch } from './_lib/search.js';
-import { generateImage } from './_lib/flux.js';
-import { startVideo, queryVideo } from './_lib/minimax.js';
-import { VERSION, getKey, saveRuntime, CATALOG } from './_lib/keys.js';
-import { insert, findOne, find, update, audit } from './_lib/store.js';
-import { sha256, timingSafeEqual, otp6, uid, clientIp } from './_lib/util.js';
+import { json, readBody } from '../lib/util.js';
+import { listProviders, chat, testEndpoint } from '../lib/providers.js';
+import { webSearch } from '../lib/search.js';
+import { generateImage } from '../lib/flux.js';
+import { startVideo, queryVideo } from '../lib/minimax.js';
+import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
+import { insert, findOne, find, update, audit } from '../lib/store.js';
+import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
 // Everything routes through /api/bridge with {action:...} so the same handlers
@@ -145,7 +145,7 @@ async function handleForgot(body, res) {
 async function deliverResetCode(email, code) {
   // Production email goes through the configured SMTP/Resend/Supabase hook.
   // The code is also written to the local mail outbox so the flow is verifiable.
-  const { insert: ins } = await import('./_lib/store.js');
+  const { insert: ins } = await import('../lib/store.js');
   await ins('outbox', {
     id: uid('mail'), to: email, subject: 'ANTICODEX password reset code',
     body: `Your ANTICODEX verification code is: ${code}. It expires in 15 minutes.`,
@@ -200,7 +200,7 @@ async function handleThreads(req, body, res) {
     return json(res, 200, { ok: true, thread: row });
   }
   if (op === 'delete') {
-    const { remove } = await import('./_lib/store.js');
+    const { remove } = await import('../lib/store.js');
     await remove('threads', (t) => t.id === body.id && t.user_id === auth);
     return json(res, 200, { ok: true });
   }
@@ -245,7 +245,7 @@ async function handleMcp(body, res) {
     return json(res, 200, { ok: true, connection: c });
   }
   if (op === 'delete') {
-    const { remove } = await import('./_lib/store.js');
+    const { remove } = await import('../lib/store.js');
     await remove('mcp_connections', (x) => x.id === body.id);
     return json(res, 200, { ok: true });
   }

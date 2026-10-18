@@ -22,7 +22,7 @@ for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer U
   ok(`bundle contains "${needle}"`, js.includes(needle) || css.includes(needle));
 }
 // Admin credentials live only on the server, never in the web bundle.
-const keysSrc = fs.readFileSync(path.join(root, 'api', '_lib', 'keys.js'), 'utf8');
+const keysSrc = fs.readFileSync(path.join(root, 'lib', 'keys.js'), 'utf8');
 ok('admin creds defined server-side', keysSrc.includes('Thaddeusadmin') && keysSrc.includes('Thaddeusk12'));
 ok('admin creds NOT in web bundle', !js.includes('Thaddeusk12'));
 ok('markdown sanitizer present', js.includes('blocked:'));
