@@ -24,11 +24,11 @@ jobs:
       - name: Zip the app
         run: |
           cd release
-          Compress-Archive -Path ANTICODEX-win32-x64 -DestinationPath ANTICODEX-0.1.0-win32-x64.zip -Force
+          tar -a -c -f ANTICODEX-0.1.0-win32-x64.zip ANTICODEX-win32-x64
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v0.1.0
           files: release/ANTICODEX-0.1.0-win32-x64.zip
           generate_release_notes: true
       - name: Upload build artifact

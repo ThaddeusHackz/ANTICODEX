@@ -18,13 +18,13 @@ fs.mkdirSync(out, { recursive: true });
 // Ensure the web bundle exists (the desktop app loads it offline).
 if (!fs.existsSync(path.join(root, 'web', 'dist', 'index.html'))) {
   console.log('→ building web bundle first…');
-  const r = spawnSync('npm', ['run', 'build'], { cwd: path.join(root, 'web'), stdio: 'inherit' });
+  const r = spawnSync('npm', ['run', 'build'], { cwd: path.join(root, 'web'), stdio: 'inherit', shell: process.platform === 'win32' });
   if (r.status !== 0) process.exit(r.status);
 }
 
 if (!fs.existsSync(path.join(__dirname, 'node_modules', 'electron-packager'))) {
   console.log('→ installing desktop packaging deps…');
-  const r = spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: __dirname, stdio: 'inherit' });
+  const r = spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: __dirname, stdio: 'inherit', shell: process.platform === 'win32' });
   if (r.status !== 0) process.exit(r.status);
 }
 
@@ -54,9 +54,9 @@ const appDir = path.join(out, 'ANTICODEX-win32-x64');
 console.log(`\n✓ Windows app: ${appDir}`);
 console.log(`  Run with:    ${path.join(appDir, 'ANTICODEX.exe')}`);
 
-// Zip it as the portable release asset.
+// Zip it as the portable release asset (tar: available and long-path-safe on win/mac/linux).
 const zipPath = path.join(out, 'ANTICODEX-0.1.0-win32-x64.zip');
 if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-const zip = spawnSync('zip', ['-qr', zipPath, 'ANTICODEX-win32-x64'], { cwd: out, stdio: 'inherit' });
+const zip = spawnSync('tar', ['-a', '-c', '-f', zipPath, 'ANTICODEX-win32-x64'], { cwd: out, stdio: 'inherit', shell: process.platform === 'win32' });
 if (zip.status === 0) console.log(`✓ Portable zip: ${zipPath}`);
-else console.log('(zip utility not available — the unzipped folder is ready to use)');
+else console.log('(zip step skipped — the unzipped folder is ready to use)');
