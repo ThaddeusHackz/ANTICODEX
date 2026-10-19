@@ -10,12 +10,12 @@
     "build": "npm run build --prefix web",
     "build:web": "npm run build --prefix web",
     "start": "node server.mjs",
-    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs",
+    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs",
     "test:api": "node tests/test-api.mjs",
     "package:win": "node desktop/package-win.mjs",
     "release:win": "node desktop/package-win.mjs --release",
     "test:auth": "node tests/test-auth.mjs",
-    "test:web": "node tests/test-web.mjs",
+    "test:web": "node tests/test-web.mjs && node tests/test-web-mount.mjs",
     "seed:owner": "node scripts/seed-owner.mjs"
   },
   "engines": {

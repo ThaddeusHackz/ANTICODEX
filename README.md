@@ -87,6 +87,36 @@ or the link either way. When no mailer exists (desktop, offline, preview), the
 code is printed on screen instead; `EXPOSE_RESET_CODES=false` forces that off in
 production.
 
+### The Codex workspace (and why it used to go blank after sign-in)
+
+The signed-in shell had a latent crash: the sidebar called `loadThreads().then(...)`
+on a **synchronous** helper, so the effect threw `loadThreads(...).then is not a
+function` and React tore down the entire signed-in tree — a blank page that looked
+like "the workspace is broken". `web/src/lib/state.jsx` now keeps those helpers
+sync (documented, so the next caller does not "fix" it by adding `.then`), the rail
+loads threads from the **account** (`/api/threads`) with the local copy painted
+first and merged by id, and `Chat.jsx` writes locally *and* notifies the rail
+(`acx:threads`) so a new chat appears immediately — offline included.
+
+The workspace page itself (`/codex`) also had no layout: `.workspace` was
+`height: 100%` inside a flex column (100vh, so the bottom of every pane was clipped
+by the topbar), and `.file-tree`, `.file-item`, `.editor-pane textarea`,
+`.messages`, `.msg-body`, `.prompt`, `.nav-section`, the admin `.auth-card` and
+`ui.jsx`'s `.switch` had **no rules at all** — unstyled buttons in a collapsed
+column. They are styled now, panes flex to fit, and below 1000px (the desktop
+window's minimum width) they stack.
+
+Chats and workspace files are stored **per account** (`acx_threads:<userId>`,
+`acx_fs:<userId>`, with a one-time move of the old unkeyed data), because
+localStorage belongs to the machine and one desktop install can be paired to
+several sign-ins.
+
+`tests/test-web-mount.mjs` mounts the real app in jsdom against the real bridge and
+asserts the signed-in shell and the workspace stay on screen — it fails loudly on
+exactly the class of bug above. `desktop/package-win.mjs` now always rebuilds
+`web/dist` (a stale bundle was how a UI fix could never reach the .exe);
+pass `--skip-build` to reuse it deliberately.
+
 ### Owner account
 
 `OWNER_EMAIL` / `OWNER_PASSWORD` / `OWNER_NAME` (defaults

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { chat as chatApi } from '../lib/api.js';
-import { useApp } from '../lib/state.jsx';
+import { useApp, userKey } from '../lib/state.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { CopyBtn, Pill } from '../ui.jsx';
 
@@ -19,10 +19,14 @@ const MODES = [
 ];
 
 export default function CodexPage() {
-  const { model, notify } = useApp();
-  const [fs, setFs] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('acx_fs') || 'null') || SEED_FS; } catch { return SEED_FS; }
-  });
+  const { model, notify, user } = useApp();
+  // Workspace files belong to the account, not the machine — the desktop app can
+  // be paired to several sign-ins and must not show one user's files to another.
+  const fsKey = userKey('acx_fs', user?.id);
+  const readFs = (k) => {
+    try { return JSON.parse(localStorage.getItem(k) || 'null') || SEED_FS; } catch { return SEED_FS; }
+  };
+  const [fs, setFs] = useState(() => readFs(fsKey));
   const [active, setActive] = useState('src/index.js');
   const [mode, setMode] = useState('suggest');
   const [messages, setMessages] = useState([]);
@@ -34,7 +38,8 @@ export default function CodexPage() {
   const [termInput, setTermInput] = useState('');
   const bottomRef = useRef(null);
 
-  useEffect(() => { localStorage.setItem('acx_fs', JSON.stringify(fs)); }, [fs]);
+  useEffect(() => { setFs(readFs(fsKey)); }, [fsKey]);
+  useEffect(() => { try { localStorage.setItem(fsKey, JSON.stringify(fs)); } catch { /* quota */ } }, [fs, fsKey]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, term]);
 
   function runTerm(cmd) {

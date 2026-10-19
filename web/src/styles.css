@@ -81,7 +81,7 @@ button { font-family: inherit; }
 }
 
 /* ---------- main column ---------- */
-.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar {
   height: 52px; display: flex; align-items: center; gap: 8px;
   padding: 0 12px; flex: none;
@@ -271,7 +271,14 @@ h3 { font-size: 16px; }
 .settings-rail button.active, .settings-rail button:hover { background: var(--hover); color: var(--text); }
 
 /* auth — ChatGPT-style light canvas */
-.auth-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f9f9f9; color: #0d0d0d; }
+.auth-shell {
+  display: flex; align-items: center; justify-content: center; min-height: 100vh;
+  padding: 16px 16px 32px; box-sizing: border-box; overflow-y: auto;
+  background: #f9f9f9; color: #0d0d0d;
+}
+/* Inside the app shell (Admin console sign-in) 100vh is taller than the space
+   left by the topbar, so the bottom of the card was cut off by the viewport. */
+.main > .auth-shell { min-height: 0; height: 100%; }
 .auth-col { width: min(400px, 92vw); padding: 24px 8px; }
 .auth-title { font-size: 26px; font-weight: 700; text-align: center; margin: 6px 0 6px; color: #0d0d0d; }
 .auth-sub { text-align: center; color: #5d5d5d; margin: 0 0 22px; font-size: 14.5px; }
@@ -322,16 +329,60 @@ h3 { font-size: 16px; }
 .perm-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; font-size: 13px; border-bottom: 1px dashed var(--border); }
 .source-chip { display: inline-flex; gap: 6px; background: #ffffff12; border-radius: 8px; padding: 2px 9px; font-size: 11.5px; color: var(--text-2); }
 
-/* codex / workspace */
-.workspace { display: flex; height: 100%; min-height: 0; }
-.editor-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
-.agent-pane { width: 380px; flex: none; display: flex; flex-direction: column; background: var(--bg-sidebar); }
-.file-tree { font-family: var(--mono); font-size: 12.5px; }
-.file-tree .file-row { padding: 4px 10px; border-radius: 8px; cursor: pointer; color: var(--text-2); }
-.file-tree .file-row:hover, .file-tree .file-row.active { background: var(--hover); color: var(--text); }
+/* codex / workspace ------------------------------------------------------
+   Three panes that must fit exactly in the space left under the topbar.
+   This used to be `height: 100%` inside a flex column, which is 100vh — so the
+   whole page hung 52px below the viewport and the terminal prompt, the Run
+   button and the bottom of the editor were cut off by `.app { overflow:hidden }`.
+   `flex: 1; min-height: 0` sizes it to what is actually left over. */
+.workspace { display: flex; flex: 1 1 auto; min-height: 0; height: auto; overflow: hidden; }
+.file-tree {
+  width: 236px; flex: none; display: flex; flex-direction: column; overflow-y: auto;
+  background: var(--bg-sidebar); border-right: 1px solid var(--border); padding: 10px 8px;
+  font-family: var(--mono); font-size: 12.5px;
+}
+/* the rows are plain <button>s — without these they rendered as browser
+   default buttons: unreadable, and the active file was indistinguishable */
+.file-tree .file-item, .file-tree .file-row {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  padding: 6px 9px; margin: 1px 0; border: 0; border-radius: 8px; cursor: pointer;
+  background: transparent; color: var(--text-2); font: inherit;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.file-tree .file-item:hover, .file-tree .file-row:hover { background: var(--hover); color: var(--text); }
+.file-tree .file-item.active, .file-tree .file-row.active { background: var(--hover); color: var(--text); box-shadow: inset 2px 0 0 var(--violet); }
+.nav-section {
+  font-size: 10.5px; letter-spacing: 1.1px; text-transform: uppercase;
+  color: var(--text-3, var(--text-2)); padding: 12px 9px 5px; font-weight: 700;
+}
+.editor-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+.editor-pane textarea {
+  flex: 1 1 auto; min-height: 0; width: 100%; resize: none; border: 0; outline: none;
+  background: transparent; color: var(--text); padding: 12px 14px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.65; tab-size: 2;
+}
+.agent-pane { width: 392px; flex: none; display: flex; flex-direction: column; min-width: 0; background: var(--bg-sidebar); border-left: 1px solid var(--border); }
+.messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 12px; }
+/* avatar + bubble side by side (Chat.jsx stacks them vertically, so scope it) */
+.agent-pane .msg-row, .pane .msg-row { flex-direction: row; gap: 9px; align-items: flex-start; padding: 6px 0; }
+.msg-body { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+.msg-body .msg-text pre { max-width: 100%; overflow-x: auto; }
 .term {
   background: #0b0b0b; color: #d7ffd7; font-family: var(--mono); font-size: 12.5px;
-  border-radius: 12px; padding: 12px; min-height: 140px; overflow: auto; border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px; overflow: auto; border: 1px solid var(--border);
+}
+.workspace .term { flex: none; min-height: 132px; max-height: 40%; margin: 0 12px 12px; }
+.workspace .term .prompt { color: #6ee7a8; margin-right: 6px; }
+.term .prompt { color: #6ee7a8; margin-right: 6px; }
+.term input { flex: 1; min-width: 0; }
+/* narrow windows (and the desktop app at its minimum size) stack instead of
+   squeezing three panes into nothing */
+@media (max-width: 1000px) {
+  .workspace { flex-direction: column; overflow: auto; }
+  .file-tree { width: auto; border-right: 0; border-bottom: 1px solid var(--border); max-height: 190px; }
+  .agent-pane { width: auto; border-left: 0; border-top: 1px solid var(--border); min-height: 320px; }
+  .editor-pane { min-height: 300px; }
+  .workspace .term { max-height: none; }
 }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .media-frame { border-radius: 14px; overflow: hidden; border: 1px solid var(--border); background: #111; }
@@ -359,3 +410,27 @@ h3 { font-size: 16px; }
   .sidebar.closed { margin-left: -260px; }
   .grid-2, .grid-3, .suggest-grid { grid-template-columns: 1fr; }
 }
+
+/* --- components referenced by the pages but missing from this file --------- */
+/* Admin sign-in card (`.auth-card`) and the toggle in ui.jsx (`.switch`) had no
+   rule at all, so the admin login rendered as bare inputs on the page
+   background and the switch was an invisible 0-height button. */
+.auth-card {
+  max-width: 400px; margin: min(9vh, 64px) auto 0; padding: 26px 26px 22px;
+  background: var(--bg-elev, #ffffff0a); border: 1px solid var(--border);
+  border-radius: 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.auth-card h1 { font-size: 21px; margin: 0; }
+.auth-card .sub { color: var(--text-2); font-size: 13.5px; margin: 0 0 4px; }
+.spark { box-shadow: 0 24px 70px -30px #000c, 0 0 0 1px #ffffff08 inset; }
+.switch {
+  width: 40px; height: 23px; flex: none; border-radius: 999px; cursor: pointer; position: relative;
+  border: 1px solid var(--border); background: #ffffff1a; transition: background .15s ease, border-color .15s ease;
+}
+.switch::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
+  border-radius: 50%; background: var(--text-2, #cbd5e1); transition: transform .15s ease, background .15s ease;
+}
+.switch.on { background: var(--violet); border-color: transparent; }
+.switch.on::after { transform: translateX(17px); background: #fff; }
+.switch:disabled { opacity: .45; cursor: default; }
