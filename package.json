@@ -2,7 +2,7 @@
   "name": "anticodex",
   "version": "0.1.0",
   "private": true,
-  "description": "ANTICODEX — universal AI workspace: chat, code agents, MCP connectors, image/video generation, computer-use. Chat-class UI with Claude-class agents.",
+  "description": "ANTICODEX \u2014 universal AI workspace: chat, code agents, MCP connectors, image/video generation, computer-use. Chat-class UI with Claude-class agents.",
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
@@ -10,10 +10,13 @@
     "build": "npm run build --prefix web",
     "build:web": "npm run build --prefix web",
     "start": "node server.mjs",
-    "test": "node tests/test-api.mjs && node tests/test-web.mjs",
+    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs",
     "test:api": "node tests/test-api.mjs",
     "package:win": "node desktop/package-win.mjs",
-    "release:win": "node desktop/package-win.mjs --release"
+    "release:win": "node desktop/package-win.mjs --release",
+    "test:auth": "node tests/test-auth.mjs",
+    "test:web": "node tests/test-web.mjs && node tests/test-web-mount.mjs",
+    "seed:owner": "node scripts/seed-owner.mjs"
   },
   "engines": {
     "node": ">=20"

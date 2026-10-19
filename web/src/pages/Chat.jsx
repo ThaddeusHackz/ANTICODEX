@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useApp } from '../lib/state.jsx';
+import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
 import * as api from '../lib/api.js';
 import { renderMarkdown } from '../lib/markdown.js';
 
@@ -67,32 +67,40 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true });
-  const [threads, setThreads] = useState([]);
   const [threadId, setThreadId] = useState(() => new URLSearchParams(window.location.search).get('thread') || `th_${Date.now()}`);
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
+  // Opening a chat from the rail (?thread=…) must work offline too: read the
+  // local copy immediately, then let the server copy win if it is newer.
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get('thread');
-    if (t) {
-      api.threads.list().then((r) => {
-        const th = (r.threads || []).find((x) => x.id === t);
-        if (th?.messages?.length) { setMessages(th.messages); setThreadId(th.id); }
-      }).catch(() => {});
-    }
-  }, [window.location.search]);
+    if (!t) return;
+    const local = loadThreads().find((x) => x && x.id === t);
+    if (local?.messages?.length) { setMessages(local.messages); setThreadId(local.id); }
+    api.threads.list().then((r) => {
+      const th = (r.threads || []).find((x) => x.id === t);
+      if (th?.messages?.length) { setMessages(th.messages); setThreadId(th.id); saveThreadLocal(th); threadsChanged(); }
+    }).catch(() => {});
+  }, [window.location.search, user?.id]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, busy]);
 
   const persist = async (next) => {
+    const thread = {
+      id: threadId,
+      title: (next.find((m) => m.role === 'user')?.content || 'New chat').slice(0, 60),
+      messages: next, model
+    };
+    // Local first: the rail and an offline desktop app must show the chat even
+    // if the network call below never lands. Then tell the rail to re-read.
+    saveThreadLocal(thread);
+    threadsChanged();
     try {
-      await api.threads.save({
-        id: threadId,
-        title: (next.find((m) => m.role === 'user')?.content || 'New chat').slice(0, 60),
-        messages: next, model
-      });
+      await api.threads.save(thread);
+      threadsChanged();
     } catch { /* offline ok */ }
   };
 

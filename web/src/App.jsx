@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { useApp, loadThreads } from './lib/state.jsx';
+import { useApp, loadThreads, mergeThreads } from './lib/state.jsx';
+import * as api from './lib/api.js';
 import { Brand, Toast } from './ui.jsx';
 import ChatPage from './pages/Chat.jsx';
 import CodexPage from './pages/Codex.jsx';
@@ -44,11 +45,23 @@ function Sidebar() {
   const { user, signOut, sidebarOpen, setSidebarOpen, cfg, notify } = useApp();
   const nav = useNavigate();
   const loc = useLocation();
-  const [threads, setThreads] = useState([]);
+  // `loadThreads()` is synchronous; the old `loadThreads().then(...)` call threw
+  // a TypeError inside this effect and took the whole signed-in shell (every
+  // page, workspace included) down to a blank screen. Threads now come from the
+  // account on the server, with the local copy painted first and merged by id.
+  const [threads, setThreads] = useState(() => loadThreads());
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
-    if (user) loadThreads().then((t) => setThreads(Array.isArray(t) ? t : [])).catch(() => {});
+    if (!user) { setThreads([]); return; }
+    let alive = true;
+    const pull = () => api.threads.list()
+      .then((r) => { if (alive) setThreads(mergeThreads(loadThreads(), (r && r.threads) || [])); })
+      .catch(() => {});
+    setThreads(loadThreads());
+    pull();
+    window.addEventListener('acx:threads', pull);
+    return () => { alive = false; window.removeEventListener('acx:threads', pull); };
   }, [user, loc.pathname]);
 
   const groups = useMemo(() => groupThreads(threads), [threads]);

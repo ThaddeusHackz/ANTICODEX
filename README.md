@@ -42,8 +42,8 @@ cd desktop && npm install && npm run package:win
 | **Video** | **MiniMax Hailuo (H3)** text-to-video, unlimited on your key |
 | **MCP Connectors** | 18-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Postgres, Playwright, Supabase, Figma, Cloudflare…), OAuth-style authorize page, permission editor, tool playground, custom stdio/HTTP servers |
 | **Computer Use** | Desktop pairing codes, screen capture → vision model, mouse/keyboard control, app launch/install (confirm-gated), AI command console |
-| **Auth** | Email + password, **GitHub OAuth**, forgot-password with **6-digit email codes** (single-use, 15-min expiry) |
-| **Admin** | `Thaddeusadmin` console: users, global API keys, system status, activity |
+| **Auth** | Email + password (signs straight in, no mailer required), **GitHub OAuth**, forgot-password with **6-digit email codes** (single-use, 15-min expiry, stored with their expiry), session tokens, optional email-verification gate |
+| **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 
 ## Service keychain (integrated 2026-10-19)
@@ -57,22 +57,74 @@ voice input) · **ElevenLabs** read-aloud · **Cloudflare Flux** image gen ·
 **OpenSky** live flights · **YouTube** search. Paired desktops receive the
 same keychain automatically after sign-in.
 
-## Email verification (works out of the box)
+## Sign-in (a plain email address just works)
 
-Sign-up and password-reset emails send a **Confirm / Reset link** (Supabase
-mailer) that lands back on the app, verifies the address, and signs the user
-in — or opens the "choose a new password" screen. Verification is **required**
-before login.
+Sign-up writes the account to the ANTICODEX ledger (`public.users`, or
+`data/db.json` on the desktop/offline), salts+hashes the password with scrypt,
+and returns a live session — so a normal `@gmail.com` address gets in even when
+the project has no SMTP, is rate limited, or Supabase is unreachable.
+Supabase Auth is mirrored **best-effort** through its *public* endpoints
+(`POST /signup`, `POST /recover`, `POST /verify`), which need only the anon key;
+`/admin/*` calls (used to sync a changed password) are authenticated with
+`Authorization: Bearer <service key>` — putting the key only in `apikey` is what
+used to fail sign-up with *“This endpoint requires a Bearer token”*.
 
-To also show a **numeric code** inside those emails (optional), edit the
-templates in Supabase Dashboard → Authentication → Email Templates and add:
+Verification codes are always stored **with an expiry** (`reset_codes.expires_at`)
+so a code can never be silently dropped, and provider error bodies are
+translated before they reach the browser.
+
+Want verification to be mandatory? Set `REQUIRE_EMAIL_VERIFICATION=true`; the
+sign-up screen then asks for the emailed 6-digit code (or the emailed link)
+before the account opens. To also show a **numeric code** inside the emails,
+edit Supabase Dashboard → Authentication → Email Templates and add
 
 ```html
 <p>Your code: <strong>{{ .Token }}</strong></p>
 ```
 
-to both *Confirm signup* and *Reset password* — the app already accepts either
-the code or the link.
+to both *Confirm signup* and *Reset password* — the app accepts either the code
+or the link either way. When no mailer exists (desktop, offline, preview), the
+code is printed on screen instead; `EXPOSE_RESET_CODES=false` forces that off in
+production.
+
+### The Codex workspace (and why it used to go blank after sign-in)
+
+The signed-in shell had a latent crash: the sidebar called `loadThreads().then(...)`
+on a **synchronous** helper, so the effect threw `loadThreads(...).then is not a
+function` and React tore down the entire signed-in tree — a blank page that looked
+like "the workspace is broken". `web/src/lib/state.jsx` now keeps those helpers
+sync (documented, so the next caller does not "fix" it by adding `.then`), the rail
+loads threads from the **account** (`/api/threads`) with the local copy painted
+first and merged by id, and `Chat.jsx` writes locally *and* notifies the rail
+(`acx:threads`) so a new chat appears immediately — offline included.
+
+The workspace page itself (`/codex`) also had no layout: `.workspace` was
+`height: 100%` inside a flex column (100vh, so the bottom of every pane was clipped
+by the topbar), and `.file-tree`, `.file-item`, `.editor-pane textarea`,
+`.messages`, `.msg-body`, `.prompt`, `.nav-section`, the admin `.auth-card` and
+`ui.jsx`'s `.switch` had **no rules at all** — unstyled buttons in a collapsed
+column. They are styled now, panes flex to fit, and below 1000px (the desktop
+window's minimum width) they stack.
+
+Chats and workspace files are stored **per account** (`acx_threads:<userId>`,
+`acx_fs:<userId>`, with a one-time move of the old unkeyed data), because
+localStorage belongs to the machine and one desktop install can be paired to
+several sign-ins.
+
+`tests/test-web-mount.mjs` mounts the real app in jsdom against the real bridge and
+asserts the signed-in shell and the workspace stay on screen — it fails loudly on
+exactly the class of bug above. `desktop/package-win.mjs` now always rebuilds
+`web/dist` (a stale bundle was how a UI fix could never reach the .exe);
+pass `--skip-build` to reuse it deliberately.
+
+### Owner account
+
+`OWNER_EMAIL` / `OWNER_PASSWORD` / `OWNER_NAME` (defaults
+`tthaddeus75@gmail.com` / `Thaddeusk12` / `Thaddeus`) are the *second* admin:
+they sign in to the website and the desktop app like anyone else, but the row
+carries `role: admin`. They are materialised on demand, so a wiped database
+never locks the owner out. The **admin console** (`/admin`) keeps its own
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` pair — unchanged.
 
 ## GitHub sign-in (2-minute setup)
 
@@ -119,7 +171,13 @@ gateways. Resolution order: desktop keychain → env vars → admin runtime conf
 Project `anticodex` (`xmbkmdqaczlxkdarayyy`). Schema: [`supabase/schema.sql`](supabase/schema.sql)
 (users, threads, reset_codes, mcp_connections, generations, sessions, audit, outbox, api_keys + RLS).
 Set `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` in the server env to use Postgres persistence
-(JSON file store in `data/` is the automatic fallback).
+(JSON file store in `data/` is the automatic fallback, and an in-memory store is
+used when the disk is read-only — Vercel, packaged `.exe`). PostgREST auth handles
+both legacy JWT keys (`apikey` + `Authorization: Bearer`) and the new
+`sb_publishable_…` / `sb_secret_…` keys (`apikey` only).
+
+Migrations live in `supabase/schema.sql` and are applied to the project; the
+account tables must exist for sign-in to survive across serverless invocations.
 
 ## Desktop auto-update
 

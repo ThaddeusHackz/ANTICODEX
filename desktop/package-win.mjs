@@ -15,11 +15,17 @@ const out = path.join(root, 'release');
 
 fs.mkdirSync(out, { recursive: true });
 
-// Ensure the web bundle exists (the desktop app loads it offline).
-if (!fs.existsSync(path.join(root, 'web', 'dist', 'index.html'))) {
-  console.log('→ building web bundle first…');
+// Always rebuild the web bundle: the desktop app serves web/dist verbatim, so a
+// stale dist directory in the repo would ship old UI (that is how a CSS fix can
+// silently never reach the .exe). Pass --skip-build to reuse it deliberately.
+const skipBuild = process.argv.includes('--skip-build');
+if (!skipBuild) {
+  console.log('→ building web bundle…');
   const r = spawnSync('npm', ['run', 'build'], { cwd: path.join(root, 'web'), stdio: 'inherit', shell: process.platform === 'win32' });
   if (r.status !== 0) process.exit(r.status);
+} else if (!fs.existsSync(path.join(root, 'web', 'dist', 'index.html'))) {
+  console.error('✗ --skip-build but web/dist is missing — run `npm run build --prefix web` first.');
+  process.exit(1);
 }
 
 if (!fs.existsSync(path.join(__dirname, 'node_modules', 'electron-packager'))) {

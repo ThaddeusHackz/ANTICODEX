@@ -32,6 +32,7 @@ create index if not exists user_keys_email_idx on public.user_keys(email);
 create table if not exists public.threads (
   id text primary key,
   user_id text references public.users(id) on delete cascade,
+  user_email text,
   title text,
   model text,
   messages jsonb default '[]'::jsonb,
@@ -43,9 +44,12 @@ create table if not exists public.reset_codes (
   id text primary key,
   email text not null,
   code_hash text not null,
-  expires_at timestamptz not null,
+  -- a default matters: a code insert that omitted expires_at used to be
+  -- rejected by this NOT NULL column, and the lost code meant the verify
+  -- screen could never be completed on a stateless deploy.
+  expires_at timestamptz not null default (now() + interval '15 minutes'),
   used boolean default false,
-  purpose text default 'recovery',
+  purpose text default 'signup',
   created_at timestamptz default now()
 );
 
@@ -147,3 +151,16 @@ create policy "service role full access" on public.sessions for all using (true)
 create policy "service role full access" on public.audit for all using (true) with check (true);
 create policy "service role full access" on public.outbox for all using (true) with check (true);
 create policy "service role full access" on public.api_keys for all using (true) with check (true);
+
+-- ---------------------------------------------------------------------------
+-- 2026-10-19 sign-in fixes (idempotent; safe to re-run on an existing project)
+-- ---------------------------------------------------------------------------
+alter table public.reset_codes alter column expires_at set default (now() + interval '15 minutes');
+alter table public.reset_codes alter column purpose set default 'signup';
+create index if not exists idx_reset_purpose_email on public.reset_codes(email, purpose);
+alter table public.threads add column if not exists user_email text;
+create index if not exists idx_threads_user_email on public.threads(user_email);
+-- account columns the auth ledger needs (also used for the owner/admin flag)
+alter table public.users add column if not exists avatar_url text;
+alter table public.users add column if not exists updated_at timestamptz default now();
+analyze public.reset_codes; analyze public.threads; analyze public.users;
