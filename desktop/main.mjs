@@ -2,15 +2,23 @@
 // Features: bundled web UI, computer-use bridge, auto-update with accept flow,
 // desktop↔website account pairing, deep links (anticodex://).
 
-import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer, screen, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer, screen, globalShortcut, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
+import { createKeychain } from './keychain.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.7';
+// One source of truth for the version: the packager stamps this same string into
+// the .exe and the zip name, and the updater compares it with the latest GitHub
+// Release tag — so getting fixes onto installed desktops is this number.
+function readAppVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0'; } catch { return '0.0.0'; }
+}
+const VERSION = readAppVersion();
 // Works both from the repo (../web/dist) and packaged (extra-resource dist).
 const RES_ROOT = process.resourcesPath || path.join(__dirname, '..');
 const WEB_DIST_CANDIDATES = [
@@ -32,6 +40,13 @@ process.env.ANTICODEX_DATA = process.env.ANTICODEX_DATA || path.join(app.getPath
 // --- in-process API + static server (the .exe is self-sufficient) -----------
 
 let apiBase = '';
+// A per-install secret that lets *this* app's own UI (bundled, possibly offline,
+// possibly signed out) through the gates a public deployment has to keep: testing
+// an endpoint, syncing a model list, or pointing a chat at a gateway on the LAN.
+// Memory-only, never written to disk, and the bridge honours it only from a
+// loopback peer — see isDesktopLocal() in api/bridge.js.
+process.env.ANTICODEX_LOCAL_TOKEN = crypto.randomBytes(24).toString('hex');
+
 async function startLocalServer() {
   const bridgePath = BRIDGE_CANDIDATES.find((p) => fs.existsSync(p));
   const http = await import('node:http');
@@ -95,7 +110,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // The renderer may not read package.json or app paths, so what it needs in
+      // order to be honest (app version, whether keys are encrypted at rest) is
+      // passed as launch arguments instead of through an extra IPC round-trip.
+      additionalArguments: [
+        `--anticodex-version=${VERSION}`,
+        `--anticodex-keychain=${getKeychain().status().backend}`
+      ]
     }
   });
 
@@ -113,14 +135,48 @@ function createWindow() {
 
 // --- IPC: bridge visible to the renderer as window.anticodexDesktop ----------
 
+// --- provider keys on this machine -----------------------------------------
+// These used to sit in anticodex-state.json as readable JSON. They now go through
+// Electron's safeStorage when the OS offers it (DPAPI / Keychain / libsecret), and
+// when it does not, the renderer is told so in as many words rather than being
+// shown a lock icon.
+let keychain = null;
+function getKeychain() {
+  if (!keychain) {
+    keychain = createKeychain({
+      safeStorage,
+      readState: () => loadState(),
+      writeState: (patch) => saveState(patch),
+      log: (m) => console.warn('[keychain]', m)
+    });
+  }
+  return keychain;
+}
+
 ipcMain.handle('acx:saveKeys', (_e, keys) => {
-  const state = loadState();
-  const merged = { ...(state.providerKeys || {}), ...(keys || {}) };
-  saveState({ providerKeys: merged });
-  return { ok: true, saved: Object.keys(keys || {}) };
+  const kc = getKeychain();
+  const out = kc.save({ ...kc.load().keys, ...(keys || {}) });
+  return { ...out, backend: kc.status().backend };
 });
 
-ipcMain.handle('acx:getKeys', () => loadState().providerKeys || {});
+ipcMain.handle('acx:getKeys', () => getKeychain().load().keys);
+
+ipcMain.handle('acx:keychainStatus', () => getKeychain().status());
+
+// Custom gateways (Ollama, LM Studio, a LAN vLLM box) belong to this machine, so
+// the main process keeps the list and attaches it to every request it makes. The
+// website has no reason to know they exist, and a public server must not be made
+// to dial them — the bridge only honours private addresses for a local instance.
+ipcMain.handle('acx:saveCustoms', (_e, list) => {
+  const next = Array.isArray(list) ? list.slice(0, 40) : [];
+  saveState({ customProviders: next });
+  return { ok: true, count: next.length };
+});
+
+ipcMain.handle('acx:getCustoms', () => {
+  const list = loadState().customProviders;
+  return Array.isArray(list) ? list : [];
+});
 
 ipcMain.handle('acx:api', async (_e, action, payload) => {
   // Provider calls run in the main process — no CORS, keys stay local.
@@ -130,15 +186,19 @@ ipcMain.handle('acx:api', async (_e, action, payload) => {
   // Carry the signed-in session through the proxy hop so /me, threads and
   // per-user keys authenticate exactly like they do in the browser.
   if (state.desktopToken) headers.Authorization = `Bearer ${state.desktopToken}`;
-  const res = await fetch(`${base}/api/bridge`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      action, ...payload, token: payload?.token || state.desktopToken || undefined,
-      provider_keys: state.providerKeys || {}, _desktop: true
-    })
-  });
-  return res.json();
+  // The in-process server is the only peer that gets the local token.
+  if (apiBase && base === apiBase) headers['x-anticodex-local'] = process.env.ANTICODEX_LOCAL_TOKEN || '';
+  const body = {
+    action,
+    ...payload,
+    token: payload?.token || state.desktopToken || undefined,
+    provider_keys: getKeychain().load().keys,
+    _desktop: true
+  };
+  if (Array.isArray(state.customProviders) && state.customProviders.length) body.provider_defs = state.customProviders;
+  const res = await fetch(`${base}/api/bridge`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { ok: false, error: `bridge answered HTTP ${res.status}: ${text.slice(0, 200)}` }; }
 });
 
 ipcMain.handle('acx:computer', async (_e, cmd, args) => {
@@ -167,8 +227,11 @@ ipcMain.handle('acx:computer', async (_e, cmd, args) => {
 });
 
 ipcMain.handle('acx:state', (_e, patch) => {
-  if (patch) return saveState(patch);
-  return loadState();
+  const next = (patch ? saveState(patch) : loadState()) || {};
+  // Key material never travels on the generic state channel: the renderer reads it
+  // through acx:getKeys, which is where encryption is actually applied.
+  const { providerKeys, providerKeysEnc, ...rest } = next;
+  return { ...rest, keychain: getKeychain().status() };
 });
 
 // --- GitHub sign-in / account linking --------------------------------------
@@ -258,11 +321,11 @@ ipcMain.handle('acx:pairWait', async (_e, code) => {
         // server-global config (an admin-level write that a paired user must not
         // need, and that silently 401s now that global keys are admin-only).
         const mirrored = s.service_keys ? Object.keys(s.service_keys) : [];
-        if (mirrored.length) {
-          const state = loadState();
-          saveState({ providerKeys: { ...(state.providerKeys || {}), ...s.service_keys } });
-        }
-        return { ok: true, token: s.token, user: s.user, synced_keys: mirrored.length };
+        if (mirrored.length) getKeychain().save({ ...getKeychain().load().keys, ...s.service_keys });
+        return {
+          ok: true, token: s.token, user: s.user, synced_keys: mirrored.length,
+          keys_encrypted: getKeychain().status().encrypted, keychain: getKeychain().status().backend
+        };
       }
     } catch { /* network hiccup — keep polling */ }
     await new Promise((r) => setTimeout(r, 3000));

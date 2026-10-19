@@ -170,9 +170,10 @@ list, and **Any model id** takes whatever you type, so a model released after th
 | Action | What it does |
 |---|---|
 | `models` → `picker` | `{providers:[{id,name,configured,key_env,models:[{id,label,vision,reasoning,tools}]}]}` resolved with *your* keys |
-| `sync_models` | Live `/models` from the provider (10-min cache per provider+key), merged with curated labels |
+| `sync_models` | Live `/models` from the provider (10-min cache per provider+key), merged with curated labels. A key is not required for a gateway on the calling machine — Ollama and LM Studio have none |
 | `save_provider_key` | Global slot write — **admin only**, allowlisted env names, `persisted:false` when the disk is read-only |
-| `test_endpoint` | Reachability + wire-format probe — requires a signed-in session (it is an SSR-shaped relay) |
+| `test_endpoint` | Reachability + wire-format probe — requires a signed-in session **or** this machine's own desktop instance (it is an SSR-shaped relay), and will not open a connection to a private/LAN address for a browser |
+| `provider_defs` | Gateways a *device* knows about (Ollama, LM Studio, a LAN vLLM box), sent with the request: endpoint + wire type + `key_env` only. A key inside the payload is ignored; the value resolves from the account or the local keychain |
 | `chat` | `provider` + `model`; a `provider::default` ref is resolved to a real id before it is sent, and provider failures come back as `{ok:false, error, fix, verdict, settings_link}` so the UI can show the fix instead of an empty bubble |
 
 ### Proof, not promises
@@ -196,6 +197,12 @@ an endpoint that serves it. So:
   with the closest real id, and says so — `note`, `retried_with`, `asked_for`. When
   there is nothing better to try, the reply carries `fallback` ids as one-click buttons
   in the chat.
+* **The desktop app is held to the same rules.** It runs this same bridge
+  in-process (`desktop/main.mjs` imports `api/bridge.js`), so verify-on-save, live
+  ids and the retry are not web-only. What the .exe adds: keys are encrypted with
+  the OS keyring when there is one, gateways on your own network are allowed, and
+  everything above still works with no website reachable. `node
+  tests/test-desktop.mjs` pins all of it.
 
 ```
 chat(provider, "default") → nvidia has no model "nvidia/nemotron-3.5-super-vl-120b-a12b"
@@ -226,6 +233,23 @@ both legacy JWT keys (`apikey` + `Authorization: Bearer`) and the new
 
 Migrations live in `supabase/schema.sql` and are applied to the project; the
 account tables must exist for sign-in to survive across serverless invocations.
+
+## Desktop parity
+
+The .exe is a second product, and a fix that only lands in the web path is a fix it never got. So the
+packaged app is checked, not assumed:
+
+| Concern | How it works now |
+|---|---|
+| Same AI rules | `startLocalServer()` imports the repo's `api/bridge.js`, so live model ids, verdicts and the `model_not_found` retry run locally; `acx:api` injects the machine's keys into **every** action |
+| Keys at rest | `desktop/keychain.mjs` → Electron `safeStorage` (Windows DPAPI / macOS Keychain / libsecret). No OS keyring? The file stays plaintext **and the app says so** (Settings → Desktop shows `plaintext`, not a lock icon). An older plaintext state file is read, then cleared |
+| Offline verification | The main process mints a per-install secret (`ANTICODEX_LOCAL_TOKEN`, memory only) and sends it with requests to its own loopback server, so testing a key and syncing models work signed-out and unreachable-from-the-site. A deployment that never sets that env var keeps every gate; a proxied request cannot claim to be the machine (any `x-forwarded-for` fails closed) |
+| Your own gateway | Ollama / LM Studio / a LAN vLLM box are kept by the app and sent as `provider_defs`. A public server refuses to dial private addresses on a browser's behalf — it answers *"that address is private; the desktop app can"* instead of pretending, and it will never swap in Demo Core for a gateway it dropped |
+| Shipping the fix | `desktop/package.json` **version** is the single source: `main.mjs`, the preload, `package-win.mjs` (`--app-version`, zip name) and `lib/keys.js` (`CATALOG.version`) all read it. The updater only offers an update when a GitHub Release tag is *higher*, so a fix reaches installed apps only via `git tag v<new>` + `git push --tags`; the workflow fails the release if the tag and `desktop/package.json` disagree, which is how an "update available" with no installable asset happens |
+| The bundle it ships | `package-win.mjs` rebuilds `web/dist` by default and passes `api/` + `lib/` as `--extra-resource`, so the .exe carries the current renderer and the current provider layer |
+
+Build it: `node desktop/package-win.mjs` (add `--skip-build` to reuse `web/dist`). Verify it: `node tests/test-desktop.mjs`
+— 74 assertions over the sources, the keychain, the local trust gate and a live mock gateway.
 
 ## Desktop auto-update
 

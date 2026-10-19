@@ -24,22 +24,37 @@ jobs:
       - name: Build ANTICODEX for Windows
         working-directory: desktop
         run: npm run package:win
-      - name: Zip the app
+      # package-win.mjs already zips the app and names the file after the version
+      # in desktop/package.json. Deriving the name here as well is how a release
+      # ends up with no installable asset: the updater then tells every installed
+      # app "an update is available" and has nothing to hand them.
+      - name: Verify the asset matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
         run: |
-          cd release
-          tar -a -c -f ANTICODEX-0.1.7-win32-x64.zip ANTICODEX-win32-x64
+          $v = (node -p "require('./desktop/package.json').version").Trim()
+          if ("v$v" -ne $env:TAG) {
+            Write-Error "tag $env:TAG does not match desktop/package.json version $v — installed apps would never see this release. Bump the version, tag it, then publish."
+            exit 1
+          }
+          if (-not (Test-Path "release/ANTICODEX-$v-win32-x64.zip")) {
+            Write-Error "release/ANTICODEX-$v-win32-x64.zip was not produced by package:win"
+            exit 1
+          }
+        env:
+          TAG: ${{ github.ref_name }}
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: release/ANTICODEX-0.1.7-win32-x64.zip
+          files: release/ANTICODEX-*-win32-x64.zip
           generate_release_notes: true
       - name: Upload build artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ANTICODEX-win32-x64
-          path: release/ANTICODEX-0.1.7-win32-x64.zip
+          path: release/ANTICODEX-*-win32-x64.zip
 
   tests:
     runs-on: ubuntu-latest
@@ -55,3 +70,4 @@ jobs:
           node tests/test-auth.mjs
           node tests/test-web.mjs
           node tests/test-web-mount.mjs
+          node tests/test-desktop.mjs

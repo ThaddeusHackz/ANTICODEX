@@ -8,9 +8,28 @@ const DESKTOP_PROXY = ['chat', 'search', 'image', 'video_start', 'video_status']
 // app shows "needs key" for a key that is actually installed on this machine.
 const DESKTOP_KEYS = ['models', 'sync_models', 'test_endpoint', 'config'];
 
+/** Gateways this device knows about (Ollama, LM Studio, a LAN box). The server has
+ *  no copy of them, so a request that names one has to carry its definition —
+ *  endpoint and wire type only; the key is resolved from the account/keychain by
+ *  key_env, which is why a raw `api_key` in that list is never sent. */
+const GATEWAY_ACTIONS = ['models', 'sync_models', 'test_endpoint', 'config', 'chat', 'search', 'image', 'video_start'];
+function localGateways() {
+  try {
+    const list = JSON.parse(localStorage.getItem('acx_custom_providers') || '[]');
+    if (!Array.isArray(list)) return [];
+    return list.map((p) => ({
+      id: p.id, name: p.name, type: p.type, endpoint: p.endpoint, key_env: p.key_env, default_model: p.default_model
+    }));
+  } catch { return []; }
+}
+
 export async function api(action, payload = {}) {
   const body = { action, ...payload };
   const token = localStorage.getItem('acx_token');
+  if (!body.provider_defs && GATEWAY_ACTIONS.includes(action)) {
+    const defs = localGateways();
+    if (defs.length) body.provider_defs = defs;
+  }
   // The token also goes in the body: Electron webviews and some corporate
   // proxies drop or rewrite Authorization on same-origin POSTs.
   if (token) body.token = token;

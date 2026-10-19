@@ -419,14 +419,55 @@ async function main() {
   ok('anthropic wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
   r = await api('test_endpoint', { provider: 'cohere', api_key: 'bad', token: tokenLive });
   ok('cohere wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
-  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive });
+  r = await api('test_endpoint', { endpoint: 'http://example.invalid/v1', api_key: 'whatever', type: 'openai', token: tokenLive });
   ok('an unreachable endpoint is never blamed on your key', r.data.ok === false && r.data.verdict === 'unreachable' && /not a bad key|network limit/i.test(`${r.data.error} ${r.data.fix || ''}`), JSON.stringify(r.data).slice(0, 220));
+  // A signed-in account may not turn this server into a relay into its LAN either:
+  // registration is free, so "has a session" is not the same as "trusted to dial
+  // 169.254.169.254". The desktop app runs the same code on the machine itself, so
+  // only that instance gets the private addresses.
+  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive });
+  ok('a private/LAN address is refused on a shared server, and says why', r.status === 403 && r.data.fix === 'desktop' && /ANTICODEX Desktop/i.test(r.data.hint || ''), JSON.stringify(r.data).slice(0, 200));
+  r = await api('sync_models', { provider: 'localmock', endpoint: 'http://192.168.0.7:8000/v1' });
+  ok('and syncing a LAN gateway from a browser is refused too', r.status === 403 && r.data.fix === 'desktop');
   r = await api('test_endpoint', { provider: 'localmock', api_key: 'revoked-key', token: tokenLive });
   ok('a rejected key is called a rejected key', r.data.ok === false && r.data.verdict === 'key' && r.data.settings_link === '/settings', JSON.stringify(r.data).slice(0, 200));
   r = await api('test_endpoint', { token: tokenLive });
   ok('a probe with no endpoint is refused politely', r.status === 200 && r.data.ok === false && /endpoint required/i.test(r.data.error || ''));
   r = await api('sync_models', { provider: 'deepseek' });
   ok('sync_models returns keyed error gracefully', r.status === 200 && r.data.ok === false);
+
+  console.log('— gateways a device brings with it —');
+  // Settings → Providers can hold a gateway this server knows nothing about. The
+  // definition travels with the request; a private address is dropped here (the
+  // desktop suite proves it is honoured there), and a key is never accepted in the
+  // definition — only a key_env name, resolved from that account's own store.
+  r = await api('models', {
+    provider_defs: [
+      { id: 'custom_lan', name: 'LAN vLLM', type: 'openai', endpoint: 'http://192.168.0.7:8000/v1', api_key: 'sk-should-be-ignored' },
+      { id: '..bad..', name: 'Junk', type: 'openai', endpoint: 'http://127.0.0.1:9/v1' },
+      { id: 'custom_ok', name: 'Public Box', type: 'openai', endpoint: 'https://gateway.example.com/v1', key_env: 'CUSTOM_OK_API_KEY' }
+    ]
+  });
+  const defIds = (r.data.providers || []).map((p) => p.id);
+  ok('a device gateway with a public endpoint is usable', defIds.includes('custom_ok'), JSON.stringify(defIds));
+  ok('a private one is dropped on a shared server', !defIds.includes('custom_lan'));
+  ok('and a malformed id never reaches the provider list', !defIds.includes('..bad..'));
+  ok('the UI is told a gateway had to be dropped', /desktop app/i.test(r.data.provider_defs_note || ''), JSON.stringify(r.data.provider_defs_note || ''));
+  r = await api('chat', {
+    provider: 'custom_lan', model: 'anything', messages: [{ role: 'user', content: 'hi' }],
+    provider_defs: [{ id: 'custom_lan', name: 'LAN vLLM', type: 'openai', endpoint: 'http://192.168.0.7:8000/v1' }]
+  });
+  ok('a dropped gateway is named as dropped, not dialled', r.status === 200 && r.data.ok === false && r.data.verdict === 'blocked' && r.data.fix === 'desktop', JSON.stringify(r.data).slice(0, 200));
+  ok('and it is never answered by quietly swapping in Demo Core', !/Demo Core/i.test(r.data.text || ''), JSON.stringify(r.data).slice(0, 120));
+  r = await api('chat', {
+    provider: 'custom_ok', model: 'mock/big-model', messages: [{ role: 'user', content: 'hi' }],
+    provider_defs: [{ id: 'custom_ok', name: 'Public Box', type: 'openai', endpoint: 'https://gateway.example.invalid/v1', key_env: 'CUSTOM_OK_API_KEY' }],
+    provider_keys: { CUSTOM_OK_API_KEY: 'device-key' }
+  });
+  // The address is public, so it is honoured: the failure must read as "could not
+  // reach it", never as "I have never heard of that provider" (the desktop suite
+  // proves the other half — that the key comes from the account, not the payload).
+  ok('a public gateway is honoured, not called unknown', r.data.ok !== true && !/unknown provider/i.test(r.data.error || '') && !/Demo Core/i.test(r.data.text || ''), JSON.stringify(r.data).slice(0, 140));
 
   console.log('— extras (voice/search/data services) —');
   r = await api('extras', { op: 'status' });
