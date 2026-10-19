@@ -5,7 +5,7 @@ import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
 import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
-import { insert, findOne, find, update, remove, audit } from '../lib/store.js';
+import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { MCP_CATALOG, McpClient, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
@@ -33,11 +33,12 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true, key_env: body.key_env });
       }
       case 'test_endpoint': return json(res, 200, await testEndpoint(body));
-      case 'chat': return await handleChat(body, res);
-      case 'search': return json(res, 200, await webSearch(body));
-      case 'image': return json(res, 200, await generateImage(body));
-      case 'video_start': return json(res, 200, await startVideo(body));
+      case 'chat': return await handleChat(body, res, req);
+      case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
+      case 'image': return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) }));
+      case 'video_start': return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) }));
       case 'video_status': return json(res, 200, await queryVideo(body.id));
+      case 'user_keys': return await handleUserKeys(req, body, res);
       case 'register': return json(res, 200, await authx.register(body));
       case 'verify_code': return json(res, 200, await authx.verifyCode(body));
       case 'login': return json(res, 200, await authx.login(body));
@@ -89,10 +90,42 @@ function publicConfig() {
 
 // --- chat -------------------------------------------------------------------
 
-async function handleChat(body, res) {
-  const { messages, model, system, temperature, max_tokens, images, provider, provider_keys, use_mcp } = body;
+// Resolve the keychain for a request: the account's own keys REPLACE the
+// built-in defaults automatically; explicit per-call keys win overall.
+async function mergedKeys(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  const user = auth ? await authx.findByToken(auth) : null;
+  const uKeys = user ? await userKeyMap(user.email) : {};
+  return { ...uKeys, ...(body?.provider_keys || {}) };
+}
+
+async function handleUserKeys(req, body, res) {
+  const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+  const user = await authx.findByToken(auth);
+  if (!user) return json(res, 401, { error: 'sign in to manage your API keys' });
+  const op = body.op || 'get';
+  if (op === 'get') {
+    const map = await userKeyMap(user.email);
+    const masked = {};
+    for (const [k, v] of Object.entries(map)) masked[k] = v.length > 8 ? `${v.slice(0, 4)}…${v.slice(-4)}` : '•••';
+    return json(res, 200, { ok: true, keys: masked, count: Object.keys(map).length, email: user.email });
+  }
+  if (op === 'save') {
+    if (!body.key_env || typeof body.value !== 'string' || !body.value.trim()) return json(res, 400, { error: 'key_env and value required' });
+    await saveUserKey(user.email, String(body.key_env), String(body.value).trim());
+    return json(res, 200, { ok: true, key_env: body.key_env, message: 'Your key now replaces the built-in default for your account.' });
+  }
+  if (op === 'delete') {
+    await deleteUserKey(user.email, String(body.key_env));
+    return json(res, 200, { ok: true, message: 'Reverted to the built-in default.' });
+  }
+  return json(res, 400, { error: 'unknown user_keys op' });
+}
+
+async function handleChat(body, res, req) {
+  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
-  const keys = provider_keys;
+  const keys = await mergedKeys(req, body);
 
   if (use_mcp !== false) {
     const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
@@ -396,6 +429,9 @@ async function handlePair(body, res) {
       const v = getKey(k);
       if (v && !String(k).startsWith('ADMIN_')) service_keys[k] = v;
     }
+    // The account's own keys replace the built-ins for this user.
+    const ownKeys = await userKeyMap(s.linked_user?.email);
+    Object.assign(service_keys, ownKeys);
     return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: s.linked_user, user_id: s.claimed_by, service_keys });
   }
   return json(res, 400, { error: 'unknown pair op' });

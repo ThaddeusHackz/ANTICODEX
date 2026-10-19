@@ -9,10 +9,25 @@ create table if not exists public.users (
   role text default 'user',
   provider text default 'email',
   github_id text,
+  github_login text,
+  supabase_uid text,
   avatar_url text,
+  confirmed boolean default false,
+  sessions jsonb default '[]'::jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+
+create table if not exists public.user_keys (
+  id text primary key,
+  user_id text,
+  email text,
+  key_env text not null,
+  value text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists user_keys_email_idx on public.user_keys(email);
 
 create table if not exists public.threads (
   id text primary key,
@@ -30,6 +45,7 @@ create table if not exists public.reset_codes (
   code_hash text not null,
   expires_at timestamptz not null,
   used boolean default false,
+  purpose text default 'recovery',
   created_at timestamptz default now()
 );
 
@@ -64,7 +80,18 @@ create table if not exists public.sessions (
   connection_id text,
   scopes jsonb,
   approved boolean default false,
+  approved_at timestamptz,
   used boolean default false,
+  claimed_by text,
+  linked_token text,
+  linked_user jsonb,
+  claimed_at timestamptz,
+  verifier text,
+  client_id text,
+  client_secret text,
+  meta jsonb,
+  redirect_uri text,
+  url text,
   expires_at timestamptz,
   created_at timestamptz default now()
 );

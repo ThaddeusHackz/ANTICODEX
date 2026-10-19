@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { models as modelsApi, testEndpoint, updateCheck, api } from '../lib/api.js';
+import { models as modelsApi, testEndpoint, updateCheck, api, userKeys } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
 
@@ -73,6 +73,78 @@ function ProviderCard({ def, onSave, onTest }) {
   );
 }
 
+const USER_KEY_OPTIONS = [
+  'NVIDIA_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY',
+  'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'ATRIA_API_KEY',
+  'EXPLABS_API_KEY', 'TAVILY_API_KEY', 'EXA_API_KEY', 'CF_API_TOKEN', 'CF_ACCOUNT_ID',
+  'MINIMAX_API_KEY', 'ELEVENLABS_API_KEY', 'UNSPLASH_ACCESS_KEY', 'COHERE_API_KEY', 'MOONSHOT_API_KEY'
+];
+
+function MyKeysPanel() {
+  const { notify } = useApp();
+  const [owned, setOwned] = useState({});
+  const [keyEnv, setKeyEnv] = useState('NVIDIA_API_KEY');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    try { const r = await userKeys.get(); setOwned(r.keys || {}); } catch { /* signed out */ }
+  }
+  useEffect(() => { refresh(); }, []);
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Your API keys</h3>
+      <p className="small" style={{ color: 'var(--text-2)' }}>
+        ANTICODEX works out of the box on the built-in key pool. Paste <strong>your own</strong> key and it
+        automatically replaces the built-in one — for <strong>your account only</strong> (linked to {user?.email || 'your email'}).
+        Remove it any time to fall back to the default.
+      </p>
+      <div className="grid-2">
+        <div className="field">
+          <label className="tiny">Key</label>
+          <select value={keyEnv} onChange={(e) => setKeyEnv(e.target.value)}>
+            {USER_KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label className="tiny">Your key value</label>
+          <input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="paste key…" />
+        </div>
+      </div>
+      <div className="row">
+        <button className="btn primary" disabled={busy || !value.trim()} onClick={async () => {
+          setBusy(true);
+          try {
+            const r = await userKeys.save(keyEnv, value.trim());
+            if (r.ok === false) { notify(r.error || 'failed'); return; }
+            notify(r.message || 'Saved — your key now replaces the default');
+            setValue('');
+            await refresh();
+          } catch (e) { notify(e.message); }
+          finally { setBusy(false); }
+        }}>Save my key</button>
+        <span className="tiny">stored with your account · never shown in full</span>
+      </div>
+      {Object.keys(owned).length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h4>Your overrides</h4>
+          {Object.entries(owned).map(([k, v]) => (
+            <div key={k} className="perm-row">
+              <div><strong style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>{k}</strong> <span className="tiny">{v}</span></div>
+              <button className="btn ghost" onClick={async () => {
+                await userKeys.remove(k);
+                notify('Reverted to the built-in default');
+                await refresh();
+              }}>Use built-in instead</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { notify, cfg, theme, setTheme, user, model, setModel } = useApp();
   const [tab, setTab] = useState('providers');
@@ -121,13 +193,15 @@ export default function SettingsPage() {
           </p>
         </div>
         <div className="tabs">
-          {['providers', 'search', 'media', 'account', 'desktop'].map((t) => (
+          {['mykeys', 'providers', 'search', 'media', 'account', 'desktop'].map((t) => (
             <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
               {t[0].toUpperCase() + t.slice(1)}
             </button>
           ))}
         </div>
       </div>
+
+      {tab === 'mykeys' && <MyKeysPanel />}
 
       {tab === 'providers' && (
         <>

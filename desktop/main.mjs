@@ -10,7 +10,7 @@ import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
 // Works both from the repo (../web/dist) and packaged (extra-resource dist).
 const RES_ROOT = process.resourcesPath || path.join(__dirname, '..');
 const WEB_DIST_CANDIDATES = [

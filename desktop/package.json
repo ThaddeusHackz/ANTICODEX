@@ -1,7 +1,7 @@
 {
   "name": "anticodex-desktop",
   "productName": "ANTICODEX",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "ANTICODEX desktop — universal AI workspace with computer-use and auto-update",
   "main": "main.mjs",
   "type": "module",

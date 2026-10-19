@@ -176,6 +176,24 @@ async function main() {
   r = await api('admin', { op: 'stats', token: 'bad' });
   ok('admin bad token rejected', r.status === 401);
 
+  console.log('— per-user API keys (replace built-ins per account) —');
+  r = await api('user_keys', { op: 'get' });
+  ok('user_keys requires login', r.status === 401);
+  r = await api('user_keys', { op: 'get', token });
+  ok('user_keys empty initially', r.status === 200 && r.data.count === 0);
+  r = await api('user_keys', { op: 'save', token, key_env: 'NVIDIA_API_KEY', value: 'nvapi-MY-OWN-KEY-1234567890' });
+  ok('save_user_key', r.status === 200 && r.data.ok);
+  r = await api('user_keys', { op: 'get', token });
+  ok('user key masked + tied to email', r.status === 200 && r.data.keys.NVIDIA_API_KEY?.includes('…') && r.data.email === email);
+  r = await api('user_keys', { op: 'save', token, key_env: 'TAVILY_API_KEY', value: 'tvly-personal-abcdefghijk' });
+  ok('second user key saved', r.data.ok);
+  r = await api('user_keys', { op: 'delete', token, key_env: 'NVIDIA_API_KEY' });
+  ok('delete reverts to built-in', r.data.ok);
+  r = await api('user_keys', { op: 'get', token });
+  ok('override removed, one remains', r.data.count === 1 && !r.data.keys.NVIDIA_API_KEY && r.data.keys.TAVILY_API_KEY);
+  r = await api('user_keys', { op: 'delete', token, key_env: 'TAVILY_API_KEY' });
+  ok('cleanup', r.data.ok);
+
   console.log('— GitHub OAuth + desktop pairing —');
   r = await api('admin', { op: 'set_keys', token: at, GITHUB_CLIENT_ID: 'Iv1.testclient', GITHUB_CLIENT_SECRET: 'testsecret' });
   ok('github keys saved', r.status === 200 && r.data.ok);
@@ -223,7 +241,7 @@ async function main() {
 
   console.log('— full provider catalog (26 providers / 471 OpenRouter ids) —');
   const { PROVIDER_DIRECTORY, OPENROUTER_EXTRA_MODELS } = await import('../lib/catalog.js');
-  ok('26 directory providers', PROVIDER_DIRECTORY.length === 26);
+  ok('27 directory providers', PROVIDER_DIRECTORY.length === 27);
   ok('471 OpenRouter ids in fallback', OPENROUTER_EXTRA_MODELS.length === 471 && new Set(OPENROUTER_EXTRA_MODELS).size === 471);
   const spot = [
     'deepseek/deepseek-v4.1-flash-1017', '~openai/gpt-sol-latest', 'sakana/fugu-ultra-v2',
@@ -235,6 +253,8 @@ async function main() {
   ok('appendix spot ids present', spot.every((id) => OPENROUTER_EXTRA_MODELS.includes(id)));
   const find = (pid) => PROVIDER_DIRECTORY.find((p) => p.id === pid).models.map((m) => m.id);
   ok('deepseek-flash + 1017 in directory', ['deepseek-flash', 'deepseek-v4.1-flash-1017'].every((id) => find('deepseek').includes(id)));
+  ok('atria endpoint is real', PROVIDER_DIRECTORY.find((p) => p.id === 'atria')?.endpoint === 'https://api.atria-asi.ai/v1');
+  ok('experientiallabs provider present', PROVIDER_DIRECTORY.some((p) => p.id === 'experientiallabs' && p.endpoint === 'https://api.experientiallabs.ai/v1' && p.key_env === 'EXPLABS_API_KEY'));
   ok('directory stragglers present',
     ['gpt-3.5-turbo', 'gpt-4', 'o1-pro'].every((id) => find('openai').includes(id)) &&
     ['claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101'].every((id) => find('anthropic').includes(id)) &&

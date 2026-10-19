@@ -85,4 +85,9 @@ export const pairing = {
 };
 
 export const extras = (payload) => api('extras', payload);
+export const userKeys = {
+  get: () => api('user_keys', { op: 'get' }),
+  save: (key_env, value) => api('user_keys', { op: 'save', key_env, value }),
+  remove: (key_env) => api('user_keys', { op: 'delete', key_env })
+};
 export const updateCheck = () => api('update_check', {});
