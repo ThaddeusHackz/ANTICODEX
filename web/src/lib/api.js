@@ -10,6 +10,7 @@ export async function api(action, payload = {}) {
   };
   const token = localStorage.getItem('acx_token');
   if (token) opts.headers.Authorization = `Bearer ${token}`;
+  if (token) opts.body = JSON.stringify({ action, token, ...payload });
   const adminToken = localStorage.getItem('acx_admin_token');
   if (adminToken) opts.headers['X-Admin-Token'] = adminToken;
 
@@ -43,8 +44,10 @@ export const testEndpoint = (payload) => api('test_endpoint', payload);
 export const auth = {
   register: (p) => api('register', p),
   verifyCode: (p) => api('verify_code', p),
+  resend: (p) => api('resend_code', p),
   login: (p) => api('login', p),
   me: () => api('me'),
+  logout: () => api('logout', {}).catch(() => ({ ok: true })),
   forgot: (p) => api('forgot', p),
   reset: (p) => api('reset', p),
   github: (p) => api('github_login', p || {}),

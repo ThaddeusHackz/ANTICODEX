@@ -219,6 +219,7 @@ button { font-family: inherit; }
 .btn.ghost, .ghost { background: #ffffff14; color: var(--text); }
 .btn.danger, .danger { background: var(--danger); color: #fff; }
 .btn:disabled { opacity: .55; cursor: default; }
+.btn.small { padding: 5px 10px; font-size: 12.5px; border-radius: 9px; background: #ffffff1f; color: var(--text); }
 .badge, .pill {
   display: inline-flex; align-items: center; gap: 6px; border-radius: 999px;
   padding: 3px 10px; font-size: 12px; background: #ffffff16; color: var(--text-2);
@@ -304,6 +305,8 @@ h3 { font-size: 16px; }
   border-radius: 10px; padding: 10px 12px; margin: 14px 0 0; font-size: 13.5px;
 }
 .auth-note.ok { background: #e9f7ef; color: #1e6b3c; border-color: #bfe6cf; }
+.setup-steps { margin: 0; padding-left: 18px; font-size: 12.8px; line-height: 1.55; }
+.setup-steps li { margin: 4px 0; }
 
 /* mcp / connectors */
 .mcp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }

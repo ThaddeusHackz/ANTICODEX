@@ -19,7 +19,13 @@ import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return json(res, 204, {});
   const body = await readBody(req).catch(() => ({}));
-  const action = body.action || (req.url || '').split('/').pop();
+  const raw = (req.url || '');
+  const pathOnly = raw.split('?')[0];
+  const qs = new URLSearchParams(raw.slice(pathOnly.length + 1));
+  const action = body.action || qs.get('action') || pathOnly.split('/').pop();
+  // Where this request is being served from — used to build OAuth callbacks so
+  // preview deployments and the desktop app work without extra env vars.
+  const origin = requestOrigin(req);
   try {
     switch (action) {
       case 'health': return json(res, 200, { ok: true, version: VERSION, name: 'ANTICODEX', time: new Date().toISOString() });
@@ -39,38 +45,109 @@ export default async function handler(req, res) {
       case 'video_start': return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) }));
       case 'video_status': return json(res, 200, await queryVideo(body.id));
       case 'user_keys': return await handleUserKeys(req, body, res);
-      case 'register': return json(res, 200, await authx.register(body));
-      case 'verify_code': return json(res, 200, await authx.verifyCode(body));
-      case 'login': return json(res, 200, await authx.login(body));
+      case 'register': return json(res, 200, await safeAuth(() => authx.register(body)));
+      case 'verify_code': return json(res, 200, await safeAuth(() => authx.verifyCode(body)));
+      case 'resend_code': return json(res, 200, await safeAuth(() => authx.resendCode(body)));
+      case 'login': return json(res, 200, await safeAuth(() => authx.login(body)));
+      case 'logout': return await handleLogout(req, body, res);
       case 'me': return await handleMe(req, body, res);
-      case 'forgot': return json(res, 200, await authx.forgot(body));
-      case 'reset': return json(res, 200, await authx.resetPassword({ email: body.email, code: body.code, token_hash: body.token_hash, token: body.token, password: body.new_password || body.password }));
-      case 'github_login': return json(res, 200, await authx.githubAuth(body));
-      case 'oauth_callback': return json(res, 200, await authx.oauthExchange(body));
+      case 'forgot': return json(res, 200, await safeAuth(() => authx.forgot(body)));
+      case 'reset': {
+        // The admin console can reset any account without the emailed code.
+        const privileged = await isAdmin(req, body);
+        return json(res, 200, await safeAuth(() => authx.resetPassword({
+          email: body.email, code: body.code, token_hash: body.token_hash, token: body.token,
+          password: body.new_password || body.password, privileged
+        })));
+      }
+      case 'github_login': return json(res, 200, await safeAuth(() => authx.githubAuth({ ...body, origin })));
+      case 'oauth_callback': return json(res, 200, await safeAuth(() => authx.oauthExchange({
+        code: body.code || qs.get('code'), state: body.state || qs.get('state'),
+        redirect_to: body.redirect_to, origin
+      })));
       case 'threads': return await handleThreads(req, body, res);
       case 'mcp': return await handleMcp(body, res);
       case 'admin': return await handleAdmin(body, res);
-      case 'pair': return await handlePair(body, res);
+      case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
       default: return json(res, 404, { error: `unknown action: ${action}` });
     }
   } catch (e) {
-    return json(res, 500, { error: String(e.message || e) });
+    // Never forward internals (auth provider / DB chatter) to the browser.
+    const detail = String(e?.message || e);
+    const msg = process.env.NODE_ENV === 'production'
+      ? 'Something went wrong on our side — try again.'
+      : `Something went wrong on our side — ${detail.slice(0, 160)}`;
+    return json(res, 500, { error: authx.humanize(detail, msg) });
   }
+}
+
+// --- auth plumbing ----------------------------------------------------------
+
+/** Requests may arrive from a proxy, a preview URL or the desktop app; derive
+ *  the public origin so OAuth callbacks match without extra configuration. */
+function requestOrigin(req) {
+  const fwdHost = req.headers['x-forwarded-host'];
+  const host = (Array.isArray(fwdHost) ? fwdHost[0] : fwdHost) || req.headers.host || '';
+  if (!host) return '';
+  const rawProto = req.headers['x-forwarded-proto'];
+  const proto = String(Array.isArray(rawProto) ? rawProto[0] : (rawProto || '')).split(',')[0].trim();
+  const local = /^(localhost|127\.0\.0\.1|\[::1\]|(\d+\.){3}\d+)$/.test(host.split(':')[0]);
+  return `${proto || (local ? 'http' : 'https')}://${host}`;
+}
+
+function isLoopback(req) {
+  const fwd = req?.headers?.['x-forwarded-for'];
+  if (fwd) return false;
+  const ip = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  return ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.');
+}
+
+/** Sign-in must survive any failure mode of the email provider: an exception
+ *  from a dependency becomes a friendly, retryable answer instead of a 500. */
+async function safeAuth(run) {
+  try {
+    const out = await run();
+    return out || { ok: false, error: 'No response from the auth service — try again.' };
+  } catch (e) {
+    return { ok: false, error: authx.humanize(String(e?.message || e), 'Sign-in is temporarily unavailable — try again in a moment.') };
+  }
+}
+
+async function isAdmin(req, body) {
+  const expected = `adm_${await sha256(`${getKey('ADMIN_USERNAME') || 'Thaddeusadmin'}:${getKey('ADMIN_PASSWORD') || 'Thaddeusk12'}:anticodex`)}`;
+  const sent = body?.token || (req?.headers?.['x-admin-token'] || '');
+  return Boolean(sent) && sent === expected;
+}
+
+async function handleLogout(req, body, res) {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+  const out = await authx.logout({ token });
+  return json(res, 200, out);
 }
 
 // --- config -----------------------------------------------------------------
 
 function publicConfig() {
+  const gh = { clientId: Boolean(getKey('GITHUB_CLIENT_ID') || process.env.GITHUB_CLIENT_ID), secret: Boolean(getKey('GITHUB_CLIENT_SECRET') || process.env.GITHUB_CLIENT_SECRET) };
+  const supa = authx.supabaseInfo();
   return {
     name: 'ANTICODEX',
     version: VERSION,
     admin_username: getKey('ADMIN_USERNAME') || 'Thaddeusadmin',
     features: {
       chat: true, codex: true, claude_agent: true, images: true, video: true,
-      mcp: true, computer_use: true, github_login: Boolean(process.env.GITHUB_CLIENT_ID || getKey('GITHUB_CLIENT_ID')),
-      email_reset: true
+      mcp: true, computer_use: true,
+      // 'oauth' when the whole round-trip is ready, 'setup' when it is half
+      // configured (the UI then shows the exact steps instead of a dead button).
+      github_login: gh.clientId && gh.secret ? 'oauth' : (gh.clientId || supa.hasAuth ? 'setup' : 'off'),
+      github_ready: Boolean(gh.clientId && gh.secret) || supa.hasAuth,
+      email_reset: true,
+      email_auth: true,
+      email_verification_required: /^(1|true|yes|on)$/i.test(String(getKey('REQUIRE_EMAIL_VERIFICATION') || process.env.REQUIRE_EMAIL_VERIFICATION || '')),
+      supabase_auth: Boolean(supa.hasAuth),
+      mailer_dev_codes: /^(1|true|yes|on)$/i.test(String(getKey('EXPOSE_RESET_CODES') || process.env.EXPOSE_RESET_CODES || ''))
     },
     providers: listProviders().map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind })),
     provider_count: PROVIDER_DIRECTORY.length,
@@ -83,8 +160,10 @@ function publicConfig() {
     },
     flux_configured: Boolean(getKey('CF_API_TOKEN') && getKey('CF_ACCOUNT_ID')),
     minimax_configured: Boolean(getKey('MINIMAX_API_KEY')),
-    supabase_url: process.env.SUPABASE_URL || getKey('SUPABASE_URL') || '',
-    supabase_anon: process.env.SUPABASE_ANON_KEY || getKey('SUPABASE_ANON_KEY') || ''
+    // Booleans only — key material never leaves the server, not even the
+    // public anon key (the browser does not talk to Supabase directly).
+    supabase_configured: Boolean(supa.hasAuth),
+    supabase_service_key: Boolean(supa.hasService)
   };
 }
 
@@ -177,9 +256,10 @@ function githubAuthUrl() {
 
 async function handleMe(req, body, res) {
   const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+  if (!auth) return json(res, 401, { error: 'not authenticated', sign_in: '/login' });
   const user = await authx.findByToken(auth) || await findOne('users', (u) => u.id === auth);
-  if (!user) return json(res, 401, { error: 'not authenticated' });
-  return json(res, 200, { user: authx.sanitizeUser(user) });
+  if (!user) return json(res, 401, { error: 'Your session expired — sign in again.', sign_in: '/login' });
+  return json(res, 200, { user: authx.sanitizeUser(user), ok: true });
 }
 
 // --- threads ----------------------------------------------------------------
@@ -187,21 +267,27 @@ async function handleMe(req, body, res) {
 async function handleThreads(req, body, res) {
   const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
   const op = body.op || 'list';
+  // Threads belong to the ACCOUNT, not to one session token, so chats survive
+  // signing out and back in. Rows saved by the old token-keyed version are
+  // still matched.
+  const owner = await authx.findByToken(auth);
+  const mine = (row) => row && (row.user_id === auth || (owner && (row.user_id === owner.id || row.user_email === owner.email)));
   if (op === 'list') {
-    return json(res, 200, { threads: await find('threads', (t) => t.user_id === auth, 500) });
+    return json(res, 200, { threads: await find('threads', mine, 500) });
   }
   if (op === 'save') {
     const t = body.thread;
     if (!t?.id) return json(res, 400, { error: 'thread.id required' });
     const existing = await findOne('threads', (x) => x.id === t.id);
-    const row = { ...t, user_id: auth, updated_at: new Date().toISOString() };
+    if (existing && !mine(existing)) return json(res, 403, { error: 'that thread belongs to another account' });
+    const row = { ...t, user_id: owner?.id || auth, user_email: owner?.email || null, updated_at: new Date().toISOString() };
     if (existing) await update('threads', (x) => x.id === t.id, row);
     else await insert('threads', row);
     return json(res, 200, { ok: true, thread: row });
   }
   if (op === 'delete') {
     const { remove } = await import('../lib/store.js');
-    await remove('threads', (t) => t.id === body.id && t.user_id === auth);
+    await remove('threads', (t) => t.id === body.id && mine(t));
     return json(res, 200, { ok: true });
   }
   return json(res, 400, { error: 'unknown threads op' });
@@ -337,10 +423,6 @@ async function handleMcp(body, res) {
 
 // --- admin ------------------------------------------------------------------
 
-function adminToken(user) {
-  return `adm_${sha256 ? '' : ''}${user}`;
-}
-
 async function handleAdmin(body, res) {
   const op = body.op || 'login';
   const expectedUser = getKey('ADMIN_USERNAME') || 'Thaddeusadmin';
@@ -372,6 +454,26 @@ async function handleAdmin(body, res) {
     });
   }
   if (op === 'users') return json(res, 200, { users: (await find('users', () => true, 10000)).map(authx.sanitizeUser) });
+  if (op === 'ensure_owner') {
+    // Materialise/repair the owner account (role=admin) in the ledger so the
+    // admin can sign in to the app itself. Idempotent.
+    const out = await authx.ensureBootstrapAccounts();
+    await audit({ type: 'admin_ensure_owner', ip: 'admin' });
+    return json(res, 200, { ...out, users: (await find('users', () => true, 10000)).map(authx.sanitizeUser) });
+  }
+  if (op === 'reset_user') {
+    // Admin-side password reset: no emailed code required.
+    if (!body.email) return json(res, 400, { error: 'email required' });
+    const out = await authx.resetPassword({ email: body.email, password: body.password, privileged: true });
+    await audit({ type: 'admin_reset_user', email: String(body.email).toLowerCase(), ip: 'admin' });
+    return json(res, 200, out);
+  }
+  if (op === 'verify_user') {
+    const row = await findOne('users', (u) => u.email === String(body.email || '').toLowerCase());
+    if (!row) return json(res, 404, { error: 'no such user' });
+    await update('users', (u) => u.id === row.id, { confirmed: true });
+    return json(res, 200, { ok: true, user: authx.sanitizeUser({ ...row, confirmed: true }) });
+  }
   if (op === 'set_keys') {
     const allowed = allKeyEnvs();
     const patch = {};
@@ -397,7 +499,7 @@ async function handleAdmin(body, res) {
 
 // --- desktop pairing & updates ----------------------------------------------
 
-async function handlePair(body, res) {
+async function handlePair(body, res, req) {
   const op = body.op || 'create';
   if (op === 'create') {
     const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -406,6 +508,13 @@ async function handlePair(body, res) {
       expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), used: false
     });
     return json(res, 200, { code, expires_in: 600 });
+  }
+  if (op === 'adopt') {
+    // The desktop app links a website-issued session into its own local ledger
+    // so /me, threads and per-user keys work offline. Loopback only.
+    if (!isLoopback(req)) return json(res, 403, { error: 'desktop-local op' });
+    const out = await authx.adoptSession({ token: body.token, user: body.user });
+    return json(res, 200, out);
   }
   if (op === 'claim') {
     // Called by the website after the user signs in (email or GitHub).
@@ -424,10 +533,14 @@ async function handlePair(body, res) {
     const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code);
     if (!s) return json(res, 404, { error: 'unknown code' });
     if (!s.used) return json(res, 200, { ok: true, claimed: false, expires_in: Math.max(0, Math.round((new Date(s.expires_at) - new Date()) / 1000)) });
+    // Only provider/media keys travel to the desktop. Admin, owner and
+    // service-level secrets (Supabase service role, OAuth secret, state
+    // signing key) stay on the server.
+    const NEVER_PAIR = /^(ADMIN_|OWNER_|BOOTSTRAP_|AUTH_STATE_SECRET$|SUPABASE_.*SERVICE.*$|.*SECRET$)/i;
     const service_keys = {};
     for (const k of allKeyEnvs()) {
       const v = getKey(k);
-      if (v && !String(k).startsWith('ADMIN_')) service_keys[k] = v;
+      if (v && !NEVER_PAIR.test(k) && !String(k).startsWith('ADMIN_')) service_keys[k] = v;
     }
     // The account's own keys replace the built-ins for this user.
     const ownKeys = await userKeyMap(s.linked_user?.email);

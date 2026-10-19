@@ -25,6 +25,24 @@ export function AppProvider({ children }) {
     api.config().then(setCfg).catch(() => {});
   }, []);
 
+  // Restore the session from the token on disk, and drop tokens the server no
+  // longer recognises (a reset or a sign-out elsewhere) so the app never sits
+  // in a half-signed-in state.
+  useEffect(() => {
+    if (!localStorage.getItem('acx_token')) return;
+    let alive = true;
+    api.auth.me()
+      .then((r) => {
+        if (!alive) return;
+        if (r?.user) { setUser(r.user); localStorage.setItem('acx_user', JSON.stringify(r.user)); }
+      })
+      .catch((e) => {
+        if (!alive) return;
+        if (e?.status === 401) { localStorage.removeItem('acx_token'); localStorage.removeItem('acx_user'); setUser(null); }
+      });
+    return () => { alive = false; };
+  }, []);
+
   const notify = useCallback((message, kind = 'info') => {
     setToast({ message, kind });
     setTimeout(() => setToast(null), 4200);
@@ -40,6 +58,7 @@ export function AppProvider({ children }) {
     localStorage.removeItem('acx_token');
     localStorage.removeItem('acx_user');
     setUser(null);
+    api.auth.logout();
   }, []);
 
   return (

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { models as modelsApi, testEndpoint, updateCheck, api, userKeys } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
@@ -145,8 +146,16 @@ function MyKeysPanel() {
   );
 }
 
+function githubNote(cfg) {
+  const mode = cfg?.features?.github_login;
+  if (mode === 'oauth') return 'Ready — one click signs you in with GitHub';
+  if (mode === 'setup') return 'Almost: finish the GitHub OAuth App (Client ID + secret) in Admin → Keys';
+  return 'Set GITHUB_CLIENT_ID/SECRET in Admin → Keys to enable';
+}
+
 export default function SettingsPage() {
-  const { notify, cfg, theme, setTheme, user, model, setModel } = useApp();
+  const { notify, cfg, theme, setTheme, user, model, setModel, signOut } = useApp();
+  const nav = useNavigate();
   const [tab, setTab] = useState('providers');
   const [directory, setDirectory] = useState([]);
   const [providers, setProviders] = useState([]);
@@ -313,16 +322,30 @@ export default function SettingsPage() {
           <div className="perm-row">
             <div>
               <div style={{ fontWeight: 700, fontSize: 13 }}>GitHub login</div>
-              <div className="tiny">{cfg?.features?.github_login ? 'Configured' : 'Set GITHUB_CLIENT_ID/SECRET in Admin → Keys to enable'}</div>
+              <div className="tiny">{githubNote(cfg)}</div>
             </div>
-            <Pill kind={cfg?.features?.github_login ? 'ok' : 'warn'}>{cfg?.features?.github_login ? 'on' : 'off'}</Pill>
+            <Pill kind={cfg?.features?.github_login === 'oauth' ? 'ok' : 'warn'}>{cfg?.features?.github_login === 'oauth' ? 'on' : 'setup'}</Pill>
           </div>
           <div className="perm-row">
             <div>
-              <div style={{ fontWeight: 700, fontSize: 13 }}>Password reset email codes</div>
-              <div className="tiny">6-digit codes, 15-minute expiry, single-use, verified against the database</div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Password reset codes</div>
+              <div className="tiny">6-digit codes, 15-minute expiry, single-use, stored with their expiry so they can never be lost</div>
             </div>
             <Pill kind="ok">enabled</Pill>
+          </div>
+          <div className="perm-row">
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Email verification</div>
+              <div className="tiny">{cfg?.features?.email_verification_required ? 'Required before sign-in on this server' : 'Not required — you keep access to your account even if the mailer is down'}</div>
+            </div>
+            <Pill kind={cfg?.features?.email_verification_required ? 'warn' : 'ok'}>{cfg?.features?.email_verification_required ? 'gated' : 'off'}</Pill>
+          </div>
+          <div className="perm-row">
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Account role</div>
+              <div className="tiny">{user ? (user.role === 'admin' ? 'Administrator — full access to the app and the desktop build' : 'Member') : 'Signed out'}</div>
+            </div>
+            <button className="btn" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>
           </div>
         </div>
       )}

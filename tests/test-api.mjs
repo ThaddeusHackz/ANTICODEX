@@ -2,6 +2,7 @@
 // critical flow: health, models, chat, auth, reset codes, MCP, admin, media.
 
 import { spawn, execFileSync } from 'node:child_process';
+import net from 'node:net';
 import assert from 'node:assert';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -9,8 +10,16 @@ import path from 'node:path';
 const ROOT = new URL('..', import.meta.url).pathname;
 const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'anticodex-test-'));
 
-const PORT = 8791;
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => { const port = probe.address().port; probe.close(() => resolve(port)); });
+  });
+}
+
 let passed = 0, failed = 0;
 
 async function api(action, payload = {}, headers = {}) {
@@ -97,26 +106,32 @@ async function main() {
   console.log('— auth flows —');
   const email = `tester${Date.now()}@anticodex.dev`;
   r = await api('register', { email, password: 'secret123', name: 'Test User' });
-  ok('register sends code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
+  ok('register creates the account and signs in', r.status === 200 && r.data.ok && r.data.token && r.data.user.email === email);
+  ok('register still hands out a verification code', r.data.dev_code?.length === 6);
+  ok('no provider internals leak into sign-up errors', !/bearer|apikey|jwt|schema|ERFOS|EROFS|PostgREST|relation/i.test(JSON.stringify(r.data)));
   const regCode = r.data.dev_code;
+  const sessionToken = r.data.token;
+
+  r = await api('me', { token: sessionToken });
+  ok('the sign-up session is live', r.status === 200 && r.data.user.email === email);
 
   r = await api('login', { email, password: 'secret123' });
-  ok('login blocked before email verify', r.status === 200 && r.data.ok === false && /not verified|verify/i.test(r.data.error || ''));
+  ok('login works right after sign-up (no email gate)', r.status === 200 && r.data.ok && r.data.token);
 
   r = await api('verify_code', { email, code: '000000', purpose: 'signup' });
   ok('wrong verify code rejected', r.status === 200 && r.data.ok === false);
 
-  r = await api('register', { email, password: 'secret123', name: 'Dup' });
-  ok('re-register unconfirmed resends code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
+  r = await api('resend_code', { email });
+  ok('resend issues a fresh code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
 
   r = await api('verify_code', { email, code: regCode, purpose: 'signup' });
-  ok('verify_code confirms account', r.status === 200 && r.data.ok);
+  ok('verify_code accepts a live code', r.status === 200 && r.data.ok && r.data.token);
 
   r = await api('register', { email, password: 'secret123', name: 'Dup' });
-  ok('duplicate register rejected once verified', r.status === 200 && r.data.ok === false);
+  ok('duplicate register rejected', r.status === 200 && r.data.ok === false && /already exists/i.test(r.data.error));
 
   r = await api('login', { email, password: 'wrong' });
-  ok('wrong password rejected', r.status === 200 && r.data.ok === false);
+  ok('wrong password rejected', r.status === 200 && r.data.ok === false && /wrong email or password/i.test(r.data.error));
 
   r = await api('login', { email, password: 'secret123' });
   ok('login after verify', r.status === 200 && r.data.token && r.data.user.email === email);
@@ -124,6 +139,12 @@ async function main() {
 
   r = await api('me', { token });
   ok('me returns user', r.status === 200 && r.data.user.email === email);
+
+  r = await api('logout', { token });
+  ok('logout drops the session', r.status === 200 && r.data.ok && (await api('me', { token })).status === 401);
+
+  r = await api('login', { email, password: 'secret123' });
+  const token2 = r.data.token;
 
   r = await api('forgot', { email });
   ok('forgot emails code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
@@ -176,35 +197,61 @@ async function main() {
   r = await api('admin', { op: 'stats', token: 'bad' });
   ok('admin bad token rejected', r.status === 401);
 
+  console.log('— owner account (second admin: app sign-in, not the console) —');
+  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  ok('owner signs in to the app', r.status === 200 && r.data.ok && r.data.token);
+  ok('owner is flagged admin', r.data.user?.role === 'admin' && r.data.role === 'admin');
+  ok('owner display name', r.data.user?.name === 'Thaddeus');
+  r = await api('register', { email: 'tthaddeus75@gmail.com', password: 'another123', name: 'Hijack' });
+  ok('owner account cannot be re-registered over', r.data.ok === false && /already exists/i.test(r.data.error || ''));
+  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'nope-nope-nope' });
+  ok('owner password is still required', r.data.ok === false && /wrong email or password/i.test(r.data.error || ''));
+  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  ok('owner email is NOT an admin-console login', r.status === 401);
+  r = await api('admin', { op: 'ensure_owner', token: at });
+  ok('admin can re-materialise the owner row', r.status === 200 && r.data.ok && r.data.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
+
+  r = await api('login', { email, password: 'newpass123' });
+  const tokenLive = r.data.token;
+  r = await api('me', { token: token2 });
+  ok('a password reset signs other devices out', r.status === 401);
+  r = await api('user_keys', { op: 'get', token: tokenLive });
+  ok('the new session works', r.status === 200 && r.data.ok);
+
   console.log('— per-user API keys (replace built-ins per account) —');
   r = await api('user_keys', { op: 'get' });
   ok('user_keys requires login', r.status === 401);
-  r = await api('user_keys', { op: 'get', token });
+  r = await api('user_keys', { op: 'get', token: tokenLive });
   ok('user_keys empty initially', r.status === 200 && r.data.count === 0);
-  r = await api('user_keys', { op: 'save', token, key_env: 'NVIDIA_API_KEY', value: 'nvapi-MY-OWN-KEY-1234567890' });
+  r = await api('user_keys', { op: 'save', token: tokenLive, key_env: 'NVIDIA_API_KEY', value: 'nvapi-MY-OWN-KEY-1234567890' });
   ok('save_user_key', r.status === 200 && r.data.ok);
-  r = await api('user_keys', { op: 'get', token });
+  r = await api('user_keys', { op: 'get', token: tokenLive });
   ok('user key masked + tied to email', r.status === 200 && r.data.keys.NVIDIA_API_KEY?.includes('…') && r.data.email === email);
-  r = await api('user_keys', { op: 'save', token, key_env: 'TAVILY_API_KEY', value: 'tvly-personal-abcdefghijk' });
+  r = await api('user_keys', { op: 'save', token: tokenLive, key_env: 'TAVILY_API_KEY', value: 'tvly-personal-abcdefghijk' });
   ok('second user key saved', r.data.ok);
-  r = await api('user_keys', { op: 'delete', token, key_env: 'NVIDIA_API_KEY' });
+  r = await api('user_keys', { op: 'delete', token: tokenLive, key_env: 'NVIDIA_API_KEY' });
   ok('delete reverts to built-in', r.data.ok);
-  r = await api('user_keys', { op: 'get', token });
+  r = await api('user_keys', { op: 'get', token: tokenLive });
   ok('override removed, one remains', r.data.count === 1 && !r.data.keys.NVIDIA_API_KEY && r.data.keys.TAVILY_API_KEY);
-  r = await api('user_keys', { op: 'delete', token, key_env: 'TAVILY_API_KEY' });
+  r = await api('user_keys', { op: 'delete', token: tokenLive, key_env: 'TAVILY_API_KEY' });
   ok('cleanup', r.data.ok);
 
   console.log('— GitHub OAuth + desktop pairing —');
   r = await api('admin', { op: 'set_keys', token: at, GITHUB_CLIENT_ID: 'Iv1.testclient', GITHUB_CLIENT_SECRET: 'testsecret' });
   ok('github keys saved', r.status === 200 && r.data.ok);
   r = await api('github_login', {});
-  ok('github authorize url issued', r.status === 200 && r.data.url?.includes('github.com/login/oauth/authorize') && r.data.url.includes('client_id=Iv1.testclient') && r.data.url.includes('state=gh_') && r.data.mode === 'github-oauth');
+  ok('github authorize url issued', r.status === 200 && r.data.url?.includes('github.com/login/oauth/authorize') && r.data.url.includes('client_id=Iv1.testclient') && r.data.url.includes('state=st_') && r.data.mode === 'github-oauth');
   ok('github callback url configured', r.data.callback?.endsWith('/auth/callback'));
+  ok('github state is self-contained (no db row needed)', /^st_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test((r.data.url.match(/state=([^&]+)/) || [])[1] || ''));
   const ghState = (r.data.url.match(/state=([^&]+)/) || [])[1];
   r = await api('oauth_callback', { code: 'badcode', state: 'gh_nope' });
   ok('unknown oauth state rejected', r.data.ok === false);
+  r = await api('oauth_callback', { code: 'badcode', state: `${ghState.slice(0, -2)}zz` });
+  ok('tampered oauth state rejected', r.data.ok === false);
   r = await api('oauth_callback', { code: 'badcode', state: ghState });
-  ok('bad github code fails gracefully', r.data.ok === false && Boolean(r.data.error));
+  ok('bad github code fails gracefully', r.data.ok === false && Boolean(r.data.error) && !/node_modules|at .*\.js:|fetch failed|undici/i.test(r.data.error));
+  r = await api('oauth_callback', { state: ghState });
+  ok('missing github code explained', r.data.ok === false && /authorization code/i.test(r.data.error));
   r = await api('admin', { op: 'set_keys', token: at, GITHUB_CLIENT_ID: '', GITHUB_CLIENT_SECRET: '' });
   ok('github keys cleared', r.status === 200 && r.data.ok);
 

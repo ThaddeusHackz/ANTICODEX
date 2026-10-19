@@ -126,10 +126,17 @@ ipcMain.handle('acx:api', async (_e, action, payload) => {
   // Provider calls run in the main process — no CORS, keys stay local.
   const state = loadState();
   const base = state.apiBase || apiBase || 'http://127.0.0.1:8787';
+  const headers = { 'Content-Type': 'application/json' };
+  // Carry the signed-in session through the proxy hop so /me, threads and
+  // per-user keys authenticate exactly like they do in the browser.
+  if (state.desktopToken) headers.Authorization = `Bearer ${state.desktopToken}`;
   const res = await fetch(`${base}/api/bridge`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...payload, provider_keys: state.providerKeys || {}, _desktop: true })
+    headers,
+    body: JSON.stringify({
+      action, ...payload, token: payload?.token || state.desktopToken || undefined,
+      provider_keys: state.providerKeys || {}, _desktop: true
+    })
   });
   return res.json();
 });
@@ -174,16 +181,64 @@ async function siteBridge(body) {
   const res = await fetch(`${SITE}/api/bridge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(12000)
+  });
+  return res.json();
+}
+
+async function localBridge(body) {
+  const base = loadState().apiBase || apiBase;
+  if (!base) return null;
+  const res = await fetch(`${base}/api/bridge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8000)
   });
   return res.json();
 }
 
 ipcMain.handle('acx:githubLogin', async () => {
-  const data = await siteBridge({ action: 'pair', op: 'create' });
-  if (!data?.code) return { ok: false, error: 'could not create pairing code' };
-  shell.openExternal(`${SITE}/login?desktop=${data.code}`);
-  return { ok: true, code: data.code, url: `${SITE}/login?desktop=${data.code}` };
+  // Preferred: sign in on the website, which claims a pairing code and hands
+  // this install the session (plus the shared provider keys).
+  let code = null;
+  let online = true;
+  try {
+    const data = await siteBridge({ action: 'pair', op: 'create' });
+    code = data?.code || null;
+  } catch { online = false; }
+
+  if (code) {
+    let url = `${SITE}/login?desktop=${code}&provider=github`;
+    try {
+      // Ask the site where GitHub sign-in points, so a half-configured server
+      // does not open a browser tab that dead-ends.
+      const gh = await siteBridge({ action: 'github_login', redirect_to: `${SITE}/`, pair_code: code });
+      if (gh?.url) {
+        await shell.openExternal(gh.url);
+        return { ok: true, code, url: gh.url, mode: 'site-oauth' };
+      }
+      if (gh?.needs_setup) {
+        await shell.openExternal(url);
+        return { ok: true, code, url, mode: 'pairing', notice: gh.error || 'GitHub sign-in is not configured on the website yet — sign in with email there and this app links automatically.' };
+      }
+    } catch { /* fall through to the plain login link */ }
+    await shell.openExternal(url);
+    return { ok: true, code, url, mode: 'pairing' };
+  }
+
+  // Offline / no website: link whatever session this install already has, or
+  // send the user to the local sign-in screen.
+  const state = loadState();
+  if (state.desktopToken && state.user) return { ok: true, signedIn: true, user: state.user };
+  const local = `${apiBase || 'http://127.0.0.1:8787'}/login?desktop=local`;
+  if (online) { await shell.openExternal(local).catch(() => {}); }
+  return {
+    ok: false, offline: true, url: local,
+    error: 'ANTICODEX could not reach the website to link a GitHub account. Sign in on this machine instead — your email and password work here too.',
+    local_login: local
+  };
 });
 
 ipcMain.handle('acx:pairWait', async (_e, code) => {
@@ -193,6 +248,9 @@ ipcMain.handle('acx:pairWait', async (_e, code) => {
       const s = await siteBridge({ action: 'pair', op: 'status', code });
       if (s?.claimed) {
         saveState({ desktopToken: s.token, user: s.user, pairedAt: new Date().toISOString() });
+        // Teach this install's own bridge about the linked session, otherwise
+        // /me and /threads would 401 against the local copy of the ledger.
+        try { await localBridge({ action: 'pair', op: 'adopt', token: s.token, user: s.user }); } catch { /* non-fatal */ }
         // Mirror the website's service keychain into the local bridge config so
         // the desktop works with the same NVIDIA / Tavily / Flux / MiniMax /
         // ElevenLabs / Whisper / Unsplash / weather / YouTube keys.
@@ -228,7 +286,10 @@ ipcMain.handle('acx:pair', async (_e, code) => {
     body: JSON.stringify({ action: 'pair', op: 'claim', code, user_id: 'desktop' })
   });
   const data = await res.json();
-  if (data.ok) saveState({ desktopToken: data.token, pairedAt: new Date().toISOString() });
+  if (data.ok) {
+    saveState({ desktopToken: data.token, pairedAt: new Date().toISOString() });
+    try { await localBridge({ action: 'pair', op: 'adopt', token: data.token, user: data.user || { email: data.email } }); } catch { /* non-fatal */ }
+  }
   return data;
 });
 

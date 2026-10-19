@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { admin } from '../lib/api.js';
+import { admin, api } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Brand } from '../ui.jsx';
 
@@ -12,7 +12,11 @@ export default function AdminPage() {
   const [creds, setCreds] = useState({ username: '', password: '' });
   const [keyForm, setKeyForm] = useState({
     TAVILY_API_KEY: '', EXA_API_KEY: '', NVIDIA_API_KEY: '',
-    CF_ACCOUNT_ID: '', CF_API_TOKEN: '', MINIMAX_API_KEY: '', MINIMAX_GROUP_ID: ''
+    CF_ACCOUNT_ID: '', CF_API_TOKEN: '', MINIMAX_API_KEY: '', MINIMAX_GROUP_ID: '',
+    // sign-in wiring (blank keeps the current value)
+    GITHUB_CLIENT_ID: '', GITHUB_CLIENT_SECRET: '', AUTH_REDIRECT: '', SITE_URL: '',
+    REQUIRE_EMAIL_VERIFICATION: '', EXPOSE_RESET_CODES: '',
+    OWNER_EMAIL: '', OWNER_NAME: '', OWNER_ROLE: ''
   });
   const [tab, setTab] = useState('overview');
 
@@ -108,17 +112,47 @@ export default function AdminPage() {
 
       {tab === 'users' && (
         <div className="card">
-          <h3>Users ({users.length})</h3>
+          <div className="row between" style={{ alignItems: 'center' }}>
+            <h3 style={{ margin: 0 }}>Users ({users.length})</h3>
+            <button className="btn" onClick={async () => {
+              try {
+                const r = await api('admin', { op: 'ensure_owner', token });
+                setUsers(r.users || []);
+                notify(r.created?.length ? `Owner account created: ${r.created.join(', ')}` : 'Owner account already in place');
+              } catch (e) { notify(e.message || 'Could not reach the ledger', 'error'); }
+            }}>Check owner account</button>
+          </div>
+          <p className="sub">Anyone here can sign in to the app and the desktop build with their email and
+            password. “Reset” sets a new password directly — no email needed, and it signs that user's other
+            devices out.</p>
           <table className="tbl">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Provider</th><th>Joined</th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Provider</th><th>Joined</th><th></th></tr></thead>
             <tbody>
               {users.map((u) => (
                 <tr key={u.id}>
                   <td>{u.name}</td><td>{u.email}</td><td>{u.role}</td><td>{u.provider}</td>
                   <td>{new Date(u.created_at).toLocaleDateString()}</td>
+                  <td>
+                    <div className="row" style={{ gap: 6 }}>
+                      {!u.confirmed && (
+                        <button className="btn small" onClick={async () => {
+                          await api('admin', { op: 'verify_user', token, email: u.email }).catch(() => ({}));
+                          notify('Marked verified'); refresh();
+                        }}>verify</button>
+                      )}
+                      <button className="btn small" onClick={async () => {
+                        const pw = window.prompt(`New password for ${u.email} (at least 8 characters):`, '');
+                        if (!pw) return;
+                        try {
+                          const r = await api('admin', { op: 'reset_user', token, email: u.email, password: pw });
+                          notify(r.ok ? `Password reset for ${u.email}` : (r.error || 'Reset failed'));
+                        } catch (e) { notify(e.message || 'Reset failed', 'error'); }
+                      }}>reset</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
-              {users.length === 0 && <tr><td colSpan={5}>No users yet — sign-up is open.</td></tr>}
+              {users.length === 0 && <tr><td colSpan={6}>No users yet — sign-up is open.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -129,6 +163,7 @@ export default function AdminPage() {
           <h3>Global API keys</h3>
           <p className="sub">
             Keys set here apply to the whole deployment (Tavily + Exa are owner-approved to ship inside the product).
+            Leave a box blank to keep the value that is already saved.
             Current state: {keys && Object.entries(keys).map(([k, v]) => (
               <span key={k} className="pill" style={{ margin: 3 }}>{k}: {v}</span>
             ))}
