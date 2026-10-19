@@ -355,14 +355,29 @@ async function handlePair(body, res) {
   const op = body.op || 'create';
   if (op === 'create') {
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    await insert('sessions', { id: uid('pair'), kind: 'desktop-pair', code, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), used: false });
+    await insert('sessions', {
+      id: uid('pair'), kind: 'desktop-pair', code, created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), used: false
+    });
     return json(res, 200, { code, expires_in: 600 });
   }
   if (op === 'claim') {
+    // Called by the website after the user signs in (email or GitHub).
     const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code && !x.used && new Date(x.expires_at) > new Date());
     if (!s) return json(res, 400, { error: 'Invalid or expired pairing code' });
-    await update('sessions', (x) => x.id === s.id, { used: true, claimed_by: body.user_id || 'desktop' });
-    return json(res, 200, { ok: true, token: `dsk_${s.id}` });
+    await update('sessions', (x) => x.id === s.id, {
+      used: true, claimed_by: body.user_id || 'desktop',
+      linked_token: body.user_token || null, linked_user: body.user || null,
+      claimed_at: new Date().toISOString()
+    });
+    return json(res, 200, { ok: true, token: body.user_token || `dsk_${s.id}` });
+  }
+  if (op === 'status') {
+    // Desktop polls this until the website claims the code.
+    const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code);
+    if (!s) return json(res, 404, { error: 'unknown code' });
+    if (!s.used) return json(res, 200, { ok: true, claimed: false, expires_in: Math.max(0, Math.round((new Date(s.expires_at) - new Date()) / 1000)) });
+    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: s.linked_user, user_id: s.claimed_by });
   }
   return json(res, 400, { error: 'unknown pair op' });
 }

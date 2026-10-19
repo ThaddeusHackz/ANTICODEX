@@ -4,6 +4,48 @@ import { useApp } from '../lib/state.jsx';
 import * as api from '../lib/api.js';
 import { Logo } from '../ui.jsx';
 
+// If the page was opened by the desktop app (?desktop=CODE) remember the code
+// and claim it right after any successful sign-in, so the app logs in too.
+function rememberDesktopPair() {
+  const q = new URLSearchParams(window.location.search);
+  const code = q.get('desktop');
+  if (code) sessionStorage.setItem('acx_pair_code', code);
+}
+async function claimDesktopPair(user, token) {
+  const code = sessionStorage.getItem('acx_pair_code');
+  if (!code) return;
+  try {
+    await api.pairing.claim(code, user?.id, token, user);
+    sessionStorage.removeItem('acx_pair_code');
+  } catch { /* expired code — harmless */ }
+}
+
+export function CallbackPage() {
+  const nav = useNavigate();
+  const { signIn, notify } = useApp();
+  const [error, setError] = useState('');
+  React.useEffect(() => {
+    rememberDesktopPair();
+    const q = new URLSearchParams(window.location.search);
+    const code = q.get('code'); const state = q.get('state');
+    if (!code) { setError('No OAuth code in the callback URL'); return; }
+    api.auth.oauthCallback({ code, state }).then(async (r) => {
+      if (r.ok === false) { setError(r.error || 'GitHub sign-in failed'); return; }
+      signIn(r.token, r.user);
+      await claimDesktopPair(r.user, r.token);
+      notify(`Signed in as ${r.user?.name || r.user?.email}`);
+      nav(sessionStorage.getItem('acx_pair_code') ? '/' : (r.redirect_to || '/'), { replace: true });
+    }).catch((e) => setError(e.message || 'GitHub sign-in failed'));
+  }, []);
+  return (
+    <Card title="Signing you in…" sub="Completing GitHub authorization">
+      {error
+        ? <div className="badge err" style={{ display: 'block', padding: '10px 12px' }}>{error} — <a onClick={() => nav('/login')} style={{ cursor: 'pointer' }}>back to sign in</a></div>
+        : <div className="typing"><i /><i /><i /></div>}
+    </Card>
+  );
+}
+
 function Card({ title, sub, children }) {
   return (
     <div className="auth-shell">
@@ -24,6 +66,7 @@ function ErrorLine({ error }) {
 export function LoginPage() {
   const { signIn, notify } = useApp();
   const nav = useNavigate();
+  React.useEffect(() => { rememberDesktopPair(); }, []);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -36,6 +79,7 @@ export function LoginPage() {
       const r = await api.auth.login({ email, password });
       if (r.ok === false) { setError(r.error || 'Sign-in failed'); return; }
       signIn(r.token, r.user);
+      await claimDesktopPair(r.user, r.token);
       notify(`Welcome back, ${r.user?.name || r.user?.email}`);
       nav('/');
     } catch (e2) {
@@ -46,9 +90,29 @@ export function LoginPage() {
   return (
     <Card title="Welcome back" sub="Sign in to ANTICODEX">
       <button className="oauth-btn" onClick={async () => {
-        const r = await api.auth.github({ redirect_to: window.location.origin + '/' });
+        // In the desktop app: open the system browser and link the account.
+        if (window.anticodexDesktop?.githubLogin) {
+          try {
+            const r = await window.anticodexDesktop.githubLogin();
+            notify('Browser opened — sign in with GitHub there and the app links automatically');
+            if (r?.code && window.anticodexDesktop?.pairWait) {
+              const done = await window.anticodexDesktop.pairWait(r.code);
+              if (done?.token) {
+                signIn(done.token, done.user || {});
+                notify(`Linked: ${done.user?.name || done.user?.email || 'GitHub account'}`);
+                nav('/');
+              }
+            }
+            return;
+          } catch (e) { notify(String(e.message || e)); return; }
+        }
+        const q = new URLSearchParams(window.location.search);
+        const r = await api.auth.github({
+          redirect_to: window.location.origin + '/',
+          pair_code: q.get('desktop') || sessionStorage.getItem('acx_pair_code') || undefined
+        });
         if (r.url) window.location.href = r.url;
-        else notify(r.message || 'GitHub sign-in needs setup in Supabase → Auth → Providers');
+        else notify(r.message || 'GitHub sign-in needs setup — see Admin → Keys');
       }}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         Continue with GitHub

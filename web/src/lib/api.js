@@ -80,7 +80,8 @@ export const admin = {
 
 export const pairing = {
   create: () => api('pair', { op: 'create' }),
-  claim: (code, user_id) => api('pair', { op: 'claim', code, user_id })
+  claim: (code, user_id, user_token, user) => api('pair', { op: 'claim', code, user_id, user_token, user }),
+  status: (code) => api('pair', { op: 'status', code })
 };
 
 export const updateCheck = () => api('update_check', {});

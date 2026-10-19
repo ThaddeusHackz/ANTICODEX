@@ -46,6 +46,26 @@ cd desktop && npm install && npm run package:win
 | **Admin** | `Thaddeusadmin` console: users, global API keys, system status, activity |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 
+## GitHub sign-in (2-minute setup)
+
+Users click **Continue with GitHub** — no tokens or passwords for them. You only
+need one free GitHub **OAuth App** (its Client ID + Secret are the app's
+credentials, not a personal access token):
+
+1. Open <https://github.com/settings/developers> → **New OAuth App**.
+2. Fill in: **Application name** `ANTICODEX`, **Homepage** `https://anticodex.vercel.app`,
+   **Authorization callback URL** `https://anticodex.vercel.app/auth/callback` → **Register application**.
+3. Copy the **Client ID**. Click **Generate a new client secret** and copy it.
+4. In ANTICODEX → **Admin → Keys** (or the website Admin page) set
+   `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`, then **Save**.
+5. Done — "Continue with GitHub" now signs users in and creates their account.
+   For localhost dev, register a second OAuth app with callback
+   `http://localhost:8787/auth/callback` and set the keys in your dev instance.
+
+**Desktop app:** the "Continue with GitHub" button opens the website in the
+system browser with a 6-digit pairing code; after signing in (GitHub or email)
+the account links to the desktop app automatically.
+
 ## API keys
 
 Set keys in **Settings → Providers** (per-device / desktop keychain) or **Admin → Keys** (global).

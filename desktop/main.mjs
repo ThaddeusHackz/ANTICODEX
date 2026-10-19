@@ -10,7 +10,7 @@ import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 // Works both from the repo (../web/dist) and packaged (extra-resource dist).
 const RES_ROOT = process.resourcesPath || path.join(__dirname, '..');
 const WEB_DIST_CANDIDATES = [
@@ -162,6 +162,43 @@ ipcMain.handle('acx:computer', async (_e, cmd, args) => {
 ipcMain.handle('acx:state', (_e, patch) => {
   if (patch) return saveState(patch);
   return loadState();
+});
+
+// --- GitHub sign-in / account linking --------------------------------------
+// The desktop opens the SYSTEM browser at the website's GitHub login with a
+// pairing code; when the user finishes signing in there, the site claims the
+// code and the desktop picks up the linked account automatically.
+const SITE = process.env.ANTICODEX_SITE || 'https://anticodex.vercel.app';
+
+async function siteBridge(body) {
+  const res = await fetch(`${SITE}/api/bridge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+ipcMain.handle('acx:githubLogin', async () => {
+  const data = await siteBridge({ action: 'pair', op: 'create' });
+  if (!data?.code) return { ok: false, error: 'could not create pairing code' };
+  shell.openExternal(`${SITE}/login?desktop=${data.code}`);
+  return { ok: true, code: data.code, url: `${SITE}/login?desktop=${data.code}` };
+});
+
+ipcMain.handle('acx:pairWait', async (_e, code) => {
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    try {
+      const s = await siteBridge({ action: 'pair', op: 'status', code });
+      if (s?.claimed) {
+        saveState({ desktopToken: s.token, user: s.user, pairedAt: new Date().toISOString() });
+        return { ok: true, token: s.token, user: s.user };
+      }
+    } catch { /* network hiccup — keep polling */ }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  return { ok: false, error: 'pairing timed out' };
 });
 
 ipcMain.handle('acx:pair', async (_e, code) => {

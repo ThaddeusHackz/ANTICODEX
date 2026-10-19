@@ -168,11 +168,28 @@ async function main() {
   r = await api('admin', { op: 'stats', token: 'bad' });
   ok('admin bad token rejected', r.status === 401);
 
+  console.log('— GitHub OAuth + desktop pairing —');
+  r = await api('admin', { op: 'set_keys', token: at, GITHUB_CLIENT_ID: 'Iv1.testclient', GITHUB_CLIENT_SECRET: 'testsecret' });
+  ok('github keys saved', r.status === 200 && r.data.ok);
+  r = await api('github_login', {});
+  ok('github authorize url issued', r.status === 200 && r.data.url?.includes('github.com/login/oauth/authorize') && r.data.url.includes('client_id=Iv1.testclient') && r.data.url.includes('state=gh_') && r.data.mode === 'github-oauth');
+  ok('github callback url configured', r.data.callback?.endsWith('/auth/callback'));
+  const ghState = (r.data.url.match(/state=([^&]+)/) || [])[1];
+  r = await api('oauth_callback', { code: 'badcode', state: 'gh_nope' });
+  ok('unknown oauth state rejected', r.data.ok === false);
+  r = await api('oauth_callback', { code: 'badcode', state: ghState });
+  ok('bad github code fails gracefully', r.data.ok === false && Boolean(r.data.error));
+  r = await api('admin', { op: 'set_keys', token: at, GITHUB_CLIENT_ID: '', GITHUB_CLIENT_SECRET: '' });
+  ok('github keys cleared', r.status === 200 && r.data.ok);
+
   console.log('— pairing & updates —');
   r = await api('pair', { op: 'create' });
   ok('pair code', r.status === 200 && r.data.code?.length === 6);
-  r = await api('pair', { op: 'claim', code: r.data.code, user_id: 'u1' });
-  ok('pair claim', r.status === 200 && r.data.token);
+  const pairCode = r.data.code;
+  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u1', user_token: 'acx_linked', user: { name: 'Linked', email: 'l@x.com' } });
+  ok('pair claim', r.status === 200 && r.data.token === 'acx_linked');
+  r = await api('pair', { op: 'status', code: pairCode });
+  ok('pair status returns linked account', r.status === 200 && r.data.claimed === true && r.data.token === 'acx_linked' && r.data.user?.email === 'l@x.com');
   r = await api('update_check');
   ok('update check runs', r.status === 200);
 
