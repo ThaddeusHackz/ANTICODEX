@@ -63,11 +63,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Install, build, test
-        run: |
-          cd web && npm ci || npm install && npm run build && cd ..
-          node tests/test-api.mjs
-          node tests/test-auth.mjs
-          node tests/test-web.mjs
-          node tests/test-web-mount.mjs
-          node tests/test-desktop.mjs
+      - name: Install web deps and build the bundle
+        run: cd web && (npm ci || npm install) && npm run build
+      # One step per suite: when a suite fails only on a runner with real
+      # outbound access, a single combined step just says "exit 1" and the
+      # diagnosis becomes a log-download exercise. Named steps answer it in
+      # one click, and the red X points at the file to open.
+      - name: API suite
+        run: node tests/test-api.mjs
+      - name: Auth suite
+        run: node tests/test-auth.mjs
+      - name: Web static suite
+        run: node tests/test-web.mjs
+      - name: Web mount suite
+        run: node tests/test-web-mount.mjs
+      - name: Desktop suite
+        run: node tests/test-desktop.mjs
