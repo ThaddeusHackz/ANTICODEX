@@ -3,7 +3,11 @@
 
 import { spawn, execFileSync } from 'node:child_process';
 import assert from 'node:assert';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 const ROOT = new URL('..', import.meta.url).pathname;
+const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'anticodex-test-'));
 
 const PORT = 8791;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -27,7 +31,11 @@ function ok(name, cond, extra = '') {
 async function main() {
   const server = spawn('node', ['server.mjs'], {
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true' },
+    env: {
+      ...process.env, PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true',
+      // Isolated data dir so tests never touch the real config.json / db.json
+      ANTICODEX_DATA: DATA_TMP
+    },
     stdio: 'ignore'
   });
 
