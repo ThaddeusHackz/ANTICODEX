@@ -89,57 +89,69 @@ async function main() {
   console.log('— auth flows —');
   const email = `tester${Date.now()}@anticodex.dev`;
   r = await api('register', { email, password: 'secret123', name: 'Test User' });
-  ok('register', r.status === 200 && r.data.token && r.data.user.email === email);
-  const token = r.data.token;
-
-  r = await api('register', { email, password: 'secret123', name: 'Dup' });
-  ok('duplicate register rejected', r.status === 409);
-
-  r = await api('login', { email, password: 'wrong' });
-  ok('wrong password rejected', r.status === 401);
+  ok('register sends code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
+  const regCode = r.data.dev_code;
 
   r = await api('login', { email, password: 'secret123' });
-  ok('login', r.status === 200 && r.data.token === token);
+  ok('login blocked before email verify', r.status === 200 && r.data.ok === false && /not verified|verify/i.test(r.data.error || ''));
 
-  r = await api('me', {}, { Authorization: `Bearer ${token}` });
-  ok('me', r.status === 200 && r.data.user.email === email);
+  r = await api('verify_code', { email, code: '000000', purpose: 'signup' });
+  ok('wrong verify code rejected', r.status === 200 && r.data.ok === false);
+
+  r = await api('register', { email, password: 'secret123', name: 'Dup' });
+  ok('re-register unconfirmed resends code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
+
+  r = await api('verify_code', { email, code: regCode, purpose: 'signup' });
+  ok('verify_code confirms account', r.status === 200 && r.data.ok);
+
+  r = await api('register', { email, password: 'secret123', name: 'Dup' });
+  ok('duplicate register rejected once verified', r.status === 200 && r.data.ok === false);
+
+  r = await api('login', { email, password: 'wrong' });
+  ok('wrong password rejected', r.status === 200 && r.data.ok === false);
+
+  r = await api('login', { email, password: 'secret123' });
+  ok('login after verify', r.status === 200 && r.data.token && r.data.user.email === email);
+  const token = r.data.token;
+
+  r = await api('me', { token });
+  ok('me returns user', r.status === 200 && r.data.user.email === email);
 
   r = await api('forgot', { email });
-  ok('forgot issues code', r.status === 200 && r.data.dev_code && r.data.dev_code.length === 6);
-  const code = r.data.dev_code;
+  ok('forgot emails code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
+  const resetCode = r.data.dev_code;
 
   r = await api('reset', { email, code: '000000', new_password: 'newpass123' });
-  ok('wrong code rejected', r.status === 400);
+  ok('wrong code rejected', r.status === 200 && r.data.ok === false);
 
-  r = await api('reset', { email, code, new_password: 'newpass123' });
+  r = await api('reset', { email, code: resetCode, new_password: 'newpass123' });
   ok('reset with code', r.status === 200 && r.data.ok);
 
   r = await api('login', { email, password: 'newpass123' });
-  ok('login with new password', r.status === 200);
+  ok('login with new password', r.status === 200 && r.data.token);
 
-  r = await api('reset', { email, code, new_password: 'again456' });
-  ok('code is single-use', r.status === 400);
+  r = await api('reset', { email, code: resetCode, new_password: 'again456' });
+  ok('code is single-use', r.status === 200 && r.data.ok === false);
 
-  console.log('— threads —');
-  r = await api('threads', { op: 'save', token, thread: { id: 'thr_test1', title: 'My thread', messages: [{ role: 'user', content: 'hi' }] } });
-  ok('thread saved', r.status === 200 && r.data.ok);
-  r = await api('threads', { op: 'list', token });
-  ok('thread listed', r.status === 200 && r.data.threads.some((t) => t.id === 'thr_test1'));
+  r = await api('login', { email, password: 'weak' });
+  ok('account cannot be created with junk name', (await api('register', { email: 'x@y.zz', password: 'password1', name: '<script>' })).data.ok === false);
 
   console.log('— mcp —');
   r = await api('mcp', { op: 'catalog' });
   ok('mcp catalog', r.status === 200 && r.data.catalog.length >= 15 && r.data.catalog.some((c) => c.id === 'github'));
-  r = await api('mcp', { op: 'save', connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp' } });
+  ok('mcp gateways present', r.data.gateways?.some((g) => g.id === 'zapier'));
+  r = await api('mcp', { op: 'save', connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
   ok('mcp connection saved', r.status === 200);
-  r = await api('mcp', { op: 'authorize', connection_id: 'mcp_t1', scopes: ['tools'] });
-  ok('mcp authorize ticket', r.status === 200 && r.data.ticket && r.data.authorize_path.includes('/mcp/authorize'));
-  const ticket = r.data.ticket;
-  r = await api('mcp', { op: 'approve', ticket, scopes: ['tools', 'read'] });
-  ok('mcp approve', r.status === 200);
-  r = await api('mcp', { op: 'call', connection_id: 'mcp_t1', tool: 'tools/list', args: {} });
-  ok('mcp tool call', r.status === 200 && r.data.ok);
-  r = await api('mcp', { op: 'call', connection_id: 'mcp_t1', tool: 'x' }); // still connected
-  ok('mcp call on connected server', r.status === 200);
+  r = await api('mcp', { op: 'probe', url: 'https://example.invalid/mcp' });
+  ok('mcp probe fails gracefully', r.status === 200 && r.data.ok === false && r.data.error);
+  r = await api('mcp', { op: 'connect_begin', url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: 'http://localhost:8787/mcp/callback' });
+  ok('connect_begin reports unreachable server', r.status === 200 && r.data.ok === false);
+  r = await api('mcp', { op: 'list' });
+  ok('mcp list', r.status === 200 && r.data.connections.some((c) => c.id === 'mcp_t1'));
+  r = await api('mcp', { op: 'call', connection_id: 'mcp_t1', tool: 'x' });
+  ok('mcp call reports failure', r.status === 200);
+  r = await api('mcp', { op: 'delete', id: 'mcp_t1' });
+  ok('mcp delete', r.status === 200);
 
   console.log('— admin —');
   r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'wrong' });

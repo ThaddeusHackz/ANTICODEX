@@ -42,11 +42,13 @@ export const testEndpoint = (payload) => api('test_endpoint', payload);
 
 export const auth = {
   register: (p) => api('register', p),
+  verifyCode: (p) => api('verify_code', p),
   login: (p) => api('login', p),
   me: () => api('me'),
   forgot: (p) => api('forgot', p),
   reset: (p) => api('reset', p),
-  github: () => api('github_login')
+  github: (p) => api('github_login', p || {}),
+  oauthCallback: (p) => api('oauth_callback', p)
 };
 
 export const threads = {
@@ -60,8 +62,10 @@ export const mcp = {
   list: () => api('mcp', { op: 'list' }),
   save: (connection) => api('mcp', { op: 'save', connection }),
   remove: (id) => api('mcp', { op: 'delete', id }),
-  authorize: (connection_id, scopes) => api('mcp', { op: 'authorize', connection_id, scopes }),
-  approve: (ticket, scopes) => api('mcp', { op: 'approve', ticket, scopes }),
+  probe: (url, token) => api('mcp', { op: 'probe', url, token }),
+  connectBegin: (p) => api('mcp', { op: 'connect_begin', ...p }),
+  connectCallback: (p) => api('mcp', { op: 'connect_callback', ...p }),
+  test: (connection_id) => api('mcp', { op: 'test', connection_id }),
   call: (connection_id, tool, args) => api('mcp', { op: 'call', connection_id, tool, args })
 };
 

@@ -1,7 +1,7 @@
-import React from 'react';
-import { Routes, Route, NavLink, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp, loadThreads } from './lib/state.jsx';
-import { Brand, Logo, Toast } from './ui.jsx';
+import { Brand, Toast } from './ui.jsx';
 import ChatPage from './pages/Chat.jsx';
 import CodexPage from './pages/Codex.jsx';
 import ClaudePage from './pages/Claude.jsx';
@@ -11,128 +11,211 @@ import McpPage from './pages/Mcp.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
-import { LoginPage, SignupPage, ForgotPage, ResetPage } from './pages/Auth.jsx';
+import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage } from './pages/Auth.jsx';
 
+// Sidebar nav mirrors the reverse-engineered ChatGPT desktop rail (new chat,
+// search, library, codex) with ANTICODEX sections added below.
 const NAV = [
-  { to: '/', icon: '◉', label: 'Chat', end: true },
-  { to: '/codex', icon: '⌘', label: 'Codex Workspace' },
-  { to: '/claude', icon: '✳', label: 'Agent Studio' },
-  { to: '/images', icon: '▦', label: 'Images · Flux' },
-  { to: '/video', icon: '▶', label: 'Video · Hailuo' },
-  { to: '/mcp', icon: '⇄', label: 'MCP Connectors' },
-  { to: '/computer', icon: '▣', label: 'Computer Use' },
-  { to: '/settings', icon: '⚙', label: 'Settings' },
-  { to: '/admin', icon: '◈', label: 'Admin' }
+  { to: '/', icon: '⌗', label: 'Chat', end: true, main: true },
+  { to: '/codex', icon: '⌘', label: 'Codex', main: true },
+  { to: '/claude', icon: '✳', label: 'Agent Studio', main: true },
+  { to: '/images', icon: '▦', label: 'Images' },
+  { to: '/video', icon: '▶', label: 'Video' },
+  { to: '/mcp', icon: '⇄', label: 'Connectors' },
+  { to: '/computer', icon: '▣', label: 'Computer Use' }
 ];
 
+function groupThreads(list) {
+  const now = Date.now();
+  const day = 86400000;
+  const groups = { Today: [], Yesterday: [], 'Previous 7 days': [], Older: [] };
+  for (const t of list) {
+    const at = new Date(t.updated_at || t.created_at || 0).getTime();
+    const diff = now - at;
+    if (diff < day) groups.Today.push(t);
+    else if (diff < 2 * day) groups.Yesterday.push(t);
+    else if (diff < 8 * day) groups['Previous 7 days'].push(t);
+    else groups.Older.push(t);
+  }
+  return groups;
+}
+
 function Sidebar() {
-  const { user, signOut, sidebarOpen, theme, setTheme } = useApp();
+  const { user, signOut, sidebarOpen, setSidebarOpen, cfg, notify } = useApp();
   const nav = useNavigate();
-  const threads = loadThreads().slice(0, 12);
+  const loc = useLocation();
+  const [threads, setThreads] = useState([]);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (user) loadThreads().then((t) => setThreads(Array.isArray(t) ? t : [])).catch(() => {});
+  }, [user, loc.pathname]);
+
+  const groups = useMemo(() => groupThreads(threads), [threads]);
 
   return (
-    <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
-      <div className="sidebar-head"><Brand small /></div>
-      <button className="btn primary small" style={{ margin: '0 12px 10px' }} onClick={() => nav('/')}>
-        + New chat
-      </button>
-      <nav className="nav">
-        {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-            <span className="ico">{n.icon}</span>{n.label}
-          </NavLink>
-        ))}
-      </nav>
-      {threads.length > 0 && (
-        <div className="sidebar-scroll">
-          <div className="nav-section">Recent</div>
-          {threads.map((t) => (
-            <button key={t.id} className="thread-item" onClick={() => nav(`/?t=${t.id}`)}>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || 'Untitled'}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="sidebar-foot">
-        <button className="icon-btn" title="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-          {theme === 'dark' ? '☀' : '☾'}
+    <aside className={`sidebar ${sidebarOpen ? '' : 'closed'}`}>
+      <div className="sidebar-head">
+        <Brand />
+        <div className="between" />
+        <button className="icon-btn" title="Close sidebar" onClick={() => setSidebarOpen(false)}>⇤</button>
+      </div>
+      <div style={{ padding: '2px 8px' }}>
+        <button className="nav-item" onClick={() => nav('/')}>
+          <span className="ico">＋</span> New chat
         </button>
-        {user ? (
-          <>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.name}</div>
-              <div className="tiny">{user.email}</div>
+        <button className="nav-item" onClick={() => notify('Search chats — full-text thread search is on the roadmap')}>
+          <span className="ico">⌕</span> Search chats
+        </button>
+        <button className="nav-item" onClick={() => nav('/images')}>
+          <span className="ico">▤</span> Library
+        </button>
+      </div>
+      <div className="sidebar-scroll">
+        {NAV.filter((n) => n.main).map((n) => (
+          <button key={n.to} className={`nav-item ${loc.pathname === n.to ? 'active' : ''}`} onClick={() => nav(n.to)}>
+            <span className="ico">{n.icon}</span> {n.label}
+          </button>
+        ))}
+        <div className="nav-label">Workspace</div>
+        {NAV.filter((n) => !n.main).map((n) => (
+          <button key={n.to} className={`nav-item ${loc.pathname === n.to ? 'active' : ''}`} onClick={() => nav(n.to)}>
+            <span className="ico">{n.icon}</span> {n.label}
+          </button>
+        ))}
+        {user && threads.length > 0 && <div className="nav-label">Chats</div>}
+        {Object.entries(groups).map(([label, items]) =>
+          items.length ? (
+            <div key={label}>
+              {items.slice(0, 20).map((t) => (
+                <button
+                  key={t.id}
+                  className={`thread-item ${loc.search.includes(t.id) ? 'active' : ''}`}
+                  onClick={() => nav(`/?thread=${encodeURIComponent(t.id)}`)}
+                >
+                  {t.title || 'Untitled chat'}
+                </button>
+              ))}
             </div>
-            <button className="icon-btn" title="Sign out" onClick={() => { signOut(); nav('/login'); }}>⏻</button>
-          </>
-        ) : (
-          <button className="btn small" style={{ flex: 1 }} onClick={() => nav('/login')}>Sign in</button>
+          ) : null
         )}
+      </div>
+      <div className="sidebar-foot" style={{ position: 'relative' }}>
+        {menuOpen && (
+          <div className="model-menu" style={{ bottom: 64, top: 'auto', left: 8, width: 240 }}>
+            <button className="m-item" onClick={() => { setMenuOpen(false); nav('/settings'); }}>
+              <span>⚙ Settings</span>
+              <span className="desc">Provider API keys, personalization, data</span>
+            </button>
+            <button className="m-item" onClick={() => { setMenuOpen(false); nav('/admin'); }}>
+              <span>◈ Admin</span>
+              <span className="desc">Platform console</span>
+            </button>
+            <button className="m-item" onClick={() => { setMenuOpen(false); signOut(); nav('/login'); }}>
+              <span>⇥ Log out</span>
+            </button>
+          </div>
+        )}
+        <div className="user-pill" onClick={() => setMenuOpen((v) => !v)}>
+          <div className="avatar">{(user?.name || '?').slice(0, 1).toUpperCase()}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {user ? user.name || user.email : 'Sign in'}
+            </div>
+            <div className="tiny">{user ? (cfg?.name || 'ANTICODEX') : 'Sync your chats'}</div>
+          </div>
+        </div>
       </div>
     </aside>
   );
 }
 
-function Shell({ children, wide = false }) {
-  const { sidebarOpen, setSidebarOpen, toast } = useApp();
+function Topbar() {
+  const { sidebarOpen, setSidebarOpen, model, setModel, cfg } = useApp();
+  const [menu, setMenu] = useState(false);
+  const loc = useLocation();
+  const models = cfg?.providers || [];
   return (
-    <div className="app">
-      <Sidebar />
-      <main className="main">
-        <div className="topbar">
-          <button className="icon-btn" onClick={() => setSidebarOpen(!sidebarOpen)} title="Toggle sidebar">☰</button>
-          <div className="row" style={{ gap: 8 }}>
-            <PillLive />
-          </div>
-          <div style={{ flex: 1 }} />
-          <a className="icon-btn" href="https://github.com/ThaddeusHackz/ANTICODEX" target="_blank" rel="noreferrer" title="GitHub">⌥</a>
+    <div className="topbar">
+      {!sidebarOpen && (
+        <>
+          <button className="icon-btn" title="Open sidebar" onClick={() => setSidebarOpen(true)}>⇥</button>
+          <Brand compact />
+        </>
+      )}
+      {loc.pathname === '/' && (
+        <div style={{ position: 'relative' }}>
+          <button className="model-select" onClick={() => setMenu((v) => !v)}>
+            {model.includes('::') ? model.split('::')[1] : model.split('/').pop()} <span style={{ fontSize: 10 }}>▼</span>
+          </button>
+          {menu && (
+            <div className="model-menu" onClick={() => setMenu(false)}>
+              <div className="m-title">ANTICODEX Demo</div>
+              <button className="m-item" onClick={() => setModel('anticodex/demo-core')}>
+                <span>Demo Core (offline)</span><span className="desc">No API key needed</span>
+              </button>
+              <div className="m-title">Providers — Settings → API keys</div>
+              {models.filter((p) => p.id !== 'demo').slice(0, 12).map((p) => (
+                <button key={p.id} className="m-item" onClick={() => setModel(`${p.id}::${(p.models && p.models[0]?.id) || 'default'}`)}>
+                  <span>{p.name}</span>
+                  <span className="desc">{p.configured ? 'configured ✓' : 'add an API key to use'}</span>
+                </button>
+              ))}
+              <button className="m-item" onClick={() => { window.location.hash = ''; window.location.pathname = '/settings'; }}>
+                <span>⚙ All provider models…</span><span className="desc">NVIDIA, OpenAI, Anthropic, DeepSeek, 26 endpoints</span>
+              </button>
+            </div>
+          )}
         </div>
-        <div className="content">{children}</div>
-      </main>
-      <Toast toast={toast} />
+      )}
+      <div className="spacer" />
+      <button className="chip-toggle" onClick={() => { window.location.pathname = '/mcp'; }}>⇄ Connect</button>
+      <button className="icon-btn" title="Settings" onClick={() => { window.location.pathname = '/settings'; }}>⚙</button>
     </div>
   );
 }
 
-function PillLive() {
-  const { cfg } = useApp();
+function Shell({ children }) {
   return (
-    <span className="pill ok">
-      <span className="status-dot ok" /> v{cfg?.version || '0.1.0'} · all systems
-    </span>
+    <div className="app">
+      <Sidebar />
+      <main className="main">
+        <Topbar />
+        {children}
+      </main>
+    </div>
   );
 }
 
-function Private({ children }) {
+function Guarded({ children }) {
   const { user } = useApp();
-  const loc = useLocation();
-  if (!user && loc.pathname !== '/login') return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/login" replace />;
   return children;
 }
 
 export default function App() {
+  const { toast } = useApp();
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-      <Route path="/forgot" element={<ForgotPage />} />
-      <Route path="/reset" element={<ResetPage />} />
-      <Route path="/mcp/authorize" element={<McpPage authorizeOnly />} />
-      <Route path="/*" element={
-        <Shell>
-          <Routes>
-            <Route path="/" element={<Private><ChatPage /></Private>} />
-            <Route path="/codex" element={<Private><CodexPage /></Private>} />
-            <Route path="/claude" element={<Private><ClaudePage /></Private>} />
-            <Route path="/images" element={<Private><ImagesPage /></Private>} />
-            <Route path="/video" element={<Private><VideoPage /></Private>} />
-            <Route path="/mcp" element={<Private><McpPage /></Private>} />
-            <Route path="/computer" element={<Private><ComputerPage /></Private>} />
-            <Route path="/settings" element={<Private><SettingsPage /></Private>} />
-            <Route path="/admin" element={<AdminPage />} />
-          </Routes>
-        </Shell>
-      } />
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route path="/forgot" element={<ForgotPage />} />
+        <Route path="/reset" element={<ResetPage />} />
+        <Route path="/verify" element={<VerifyPage />} />
+        <Route path="/" element={<Shell><Guarded><ChatPage /></Guarded></Shell>} />
+        <Route path="/codex" element={<Shell><Guarded><CodexPage /></Guarded></Shell>} />
+        <Route path="/claude" element={<Shell><Guarded><ClaudePage /></Guarded></Shell>} />
+        <Route path="/images" element={<Shell><Guarded><ImagesPage /></Guarded></Shell>} />
+        <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
+        <Route path="/mcp" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
+        <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
+        <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />
+        <Route path="/settings" element={<Shell><Guarded><SettingsPage /></Guarded></Shell>} />
+        <Route path="/admin" element={<Shell><AdminPage /></Shell>} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      {toast && <Toast />}
+    </>
   );
 }

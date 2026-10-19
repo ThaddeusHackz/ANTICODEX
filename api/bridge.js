@@ -5,7 +5,9 @@ import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
 import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
-import { insert, findOne, find, update, audit } from '../lib/store.js';
+import { insert, findOne, find, update, remove, audit } from '../lib/store.js';
+import * as authx from '../lib/authx.js';
+import { MCP_CATALOG, McpClient, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
@@ -35,12 +37,14 @@ export default async function handler(req, res) {
       case 'image': return json(res, 200, await generateImage(body));
       case 'video_start': return json(res, 200, await startVideo(body));
       case 'video_status': return json(res, 200, await queryVideo(body.id));
-      case 'register': return await handleRegister(body, res);
-      case 'login': return await handleLogin(body, res);
+      case 'register': return json(res, 200, await authx.register(body));
+      case 'verify_code': return json(res, 200, await authx.verifyCode(body));
+      case 'login': return json(res, 200, await authx.login(body));
       case 'me': return await handleMe(req, body, res);
-      case 'forgot': return await handleForgot(body, res);
-      case 'reset': return await handleReset(body, res);
-      case 'github_login': return json(res, 200, githubAuthUrl());
+      case 'forgot': return json(res, 200, await authx.forgot(body));
+      case 'reset': return json(res, 200, await authx.resetPassword({ email: body.email, code: body.code, password: body.new_password || body.password }));
+      case 'github_login': return json(res, 200, await authx.githubAuth(body));
+      case 'oauth_callback': return json(res, 200, await authx.oauthExchange(body));
       case 'threads': return await handleThreads(req, body, res);
       case 'mcp': return await handleMcp(body, res);
       case 'admin': return await handleAdmin(body, res);
@@ -78,9 +82,38 @@ function publicConfig() {
 // --- chat -------------------------------------------------------------------
 
 async function handleChat(body, res) {
-  const { messages, model, system, temperature, max_tokens, images, provider, provider_keys } = body;
-  const msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
-  const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys: provider_keys });
+  const { messages, model, system, temperature, max_tokens, images, provider, provider_keys, use_mcp } = body;
+  let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
+  const keys = provider_keys;
+
+  if (use_mcp !== false) {
+    const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
+    if (conns.length) {
+      const tools = (await collectTools(conns)).filter((t) => !t._error).slice(0, 40);
+      if (tools.length) {
+        const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+        // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
+        let rounds = 0;
+        while (out.tool_calls?.length && rounds < 4) {
+          rounds++;
+          msgs = [...msgs, { role: 'assistant', content: out.content || '', tool_calls: out.tool_calls }];
+          for (const tc of out.tool_calls) {
+            let args = {};
+            try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* empty */ }
+            let result;
+            try { result = await executeTool(conns, tc.function?.name, args); }
+            catch (e) { result = { error: String(e.message || e) }; }
+            msgs.push({ role: 'tool', tool_call_id: tc.id, name: tc.function?.name, content: JSON.stringify(result).slice(0, 12000) });
+          }
+          const next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+          Object.assign(out, next);
+          if (!next.tool_calls?.length) break;
+        }
+        return json(res, 200, out);
+      }
+    }
+  }
+  const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys });
   return json(res, 200, out);
 }
 
@@ -96,99 +129,11 @@ function githubAuthUrl() {
   };
 }
 
-async function handleRegister(body, res) {
-  const { email, password, name } = body;
-  if (!email || !password || password.length < 6) return json(res, 400, { error: 'email and password (min 6 chars) required' });
-  const existing = await findOne('users', (u) => u.email === email.toLowerCase());
-  if (existing) return json(res, 409, { error: 'An account with this email already exists' });
-  const user = {
-    id: uid('usr'),
-    email: email.toLowerCase(),
-    name: name || email.split('@')[0],
-    password_hash: await sha256(password),
-    created_at: new Date().toISOString(),
-    role: 'user',
-    provider: 'email'
-  };
-  await insert('users', user);
-  await audit({ type: 'register', user_id: user.id, ip: clientIp({ headers: {}, socket: {} }) });
-  return json(res, 200, { token: user.id, user: sanitize(user) });
-}
-
-async function handleLogin(body, res) {
-  const { email, password } = body;
-  const user = await findOne('users', (u) => u.email === (email || '').toLowerCase());
-  const hash = await sha256(password || '');
-  if (!user || !timingSafeEqual(user.password_hash, hash)) return json(res, 401, { error: 'Invalid email or password' });
-  return json(res, 200, { token: user.id, user: sanitize(user) });
-}
-
 async function handleMe(req, body, res) {
   const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
-  const user = await findOne('users', (u) => u.id === auth);
+  const user = await authx.findByToken(auth) || await findOne('users', (u) => u.id === auth);
   if (!user) return json(res, 401, { error: 'not authenticated' });
-  return json(res, 200, { user: sanitize(user) });
-}
-
-async function handleForgot(body, res) {
-  const { email } = body;
-  const user = await findOne('users', (u) => u.email === (email || '').toLowerCase());
-  if (!user) {
-    // Do not leak account existence.
-    return json(res, 200, { ok: true, message: 'If that email exists, a 6-digit code was sent.' });
-  }
-  const code = otp6();
-  await insert('reset_codes', {
-    id: uid('rc'), email: user.email, code_hash: await sha256(code),
-    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(), used: false
-  });
-  await deliverResetCode(user.email, code);
-  return json(res, 200, {
-    ok: true,
-    message: 'If that email exists, a 6-digit code was sent.',
-    // Surfaced so the flow is fully testable; in production set EXPOSE_RESET_CODES=false.
-    ...(process.env.EXPOSE_RESET_CODES === 'false' ? {} : { dev_code: code })
-  });
-}
-
-async function deliverResetCode(email, code) {
-  // Production email goes through the configured SMTP/Resend/Supabase hook.
-  // The code is also written to the local mail outbox so the flow is verifiable.
-  const { insert: ins } = await import('../lib/store.js');
-  await ins('outbox', {
-    id: uid('mail'), to: email, subject: 'ANTICODEX password reset code',
-    body: `Your ANTICODEX verification code is: ${code}. It expires in 15 minutes.`,
-    at: new Date().toISOString()
-  });
-  if (process.env.RESEND_API_KEY) {
-    fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: process.env.MAIL_FROM || 'ANTICODEX <no-reply@anticodex.app>',
-        to: [email],
-        subject: 'ANTICODEX password reset code',
-        text: `Your ANTICODEX verification code is: ${code}. It expires in 15 minutes.`
-      })
-    }).catch(() => {});
-  }
-}
-
-async function handleReset(body, res) {
-  const { email, code, new_password } = body;
-  if (!email || !code || !new_password || new_password.length < 6) return json(res, 400, { error: 'email, code and new_password required' });
-  const hash = await sha256(code);
-  const record = await findOne('reset_codes', (r) => r.email === email.toLowerCase() && r.code_hash === hash && !r.used && new Date(r.expires_at) > new Date());
-  if (!record) return json(res, 400, { error: 'Invalid or expired code' });
-  await update('reset_codes', (r) => r.id === record.id, { used: true });
-  const changed = await update('users', (u) => u.email === email.toLowerCase(), { password_hash: await sha256(new_password) });
-  if (!changed) return json(res, 404, { error: 'user not found' });
-  return json(res, 200, { ok: true, message: 'Password updated. Sign in with your new password.' });
-}
-
-function sanitize(u) {
-  const { password_hash, ...rest } = u;
-  return rest;
+  return json(res, 200, { user: authx.sanitizeUser(user) });
 }
 
 // --- threads ----------------------------------------------------------------
@@ -216,75 +161,131 @@ async function handleThreads(req, body, res) {
   return json(res, 400, { error: 'unknown threads op' });
 }
 
-// --- MCP --------------------------------------------------------------------
-
-function mcpCatalog() {
-  return [
-    { id: 'github', name: 'GitHub', icon: '⌥', category: 'Developer', transport: 'http', url: 'https://api.githubcopilot.com/mcp/', desc: 'Repos, issues, PRs, actions — exactly like the ChatGPT GitHub connector.', auth: 'oauth' },
-    { id: 'google-drive', name: 'Google Drive', icon: '◈', category: 'Files', transport: 'http', url: 'https://mcp.google.com/drive', desc: 'Search, read and manage Drive files.', auth: 'oauth' },
-    { id: 'gmail', name: 'Gmail', icon: '✉', category: 'Communication', transport: 'http', url: 'https://mcp.google.com/gmail', desc: 'Read, draft and send email.', auth: 'oauth' },
-    { id: 'slack', name: 'Slack', icon: '#', category: 'Communication', transport: 'http', url: 'https://mcp.slack.com', desc: 'Channels, messages and search in your workspace.', auth: 'oauth' },
-    { id: 'notion', name: 'Notion', icon: 'N', category: 'Knowledge', transport: 'http', url: 'https://mcp.notion.com/mcp', desc: 'Read/write pages and databases.', auth: 'oauth' },
-    { id: 'linear', name: 'Linear', icon: '◺', category: 'Productivity', transport: 'http', url: 'https://mcp.linear.app/mcp', desc: 'Issues, projects and cycles.', auth: 'oauth' },
-    { id: 'postgres', name: 'PostgreSQL', icon: '◉', category: 'Data', transport: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-postgres', desc: 'Connect a Postgres/Supabase database and run read-only queries.', auth: 'url' },
-    { id: 'filesystem', name: 'Filesystem', icon: '▤', category: 'Files', transport: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-filesystem', desc: 'Read and write local project files (desktop app sandbox).', auth: 'none' },
-    { id: 'playwright', name: 'Playwright / Browser', icon: '◎', category: 'Automation', transport: 'stdio', cmd: 'npx -y @playwright/mcp', desc: 'Drive a real browser: navigate, click, screenshot — the Codex/Chrome integration pattern.', auth: 'none' },
-    { id: 'brave-search', name: 'Brave Search', icon: '✦', category: 'Search', transport: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-brave-search', desc: 'Private web search tool server.', auth: 'api_key' },
-    { id: 'exa', name: 'Exa Search', icon: '✧', category: 'Search', transport: 'http', url: 'https://mcp.exa.ai/mcp', desc: 'Neural web search MCP.', auth: 'api_key' },
-    { id: 'memory', name: 'Memory', icon: '▣', category: 'Knowledge', transport: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-memory', desc: 'Persistent knowledge graph memory across sessions.', auth: 'none' },
-    { id: 'sequential-thinking', name: 'Sequential Thinking', icon: '∞', category: 'Reasoning', transport: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-sequential-thinking', desc: 'Structured multi-step reasoning tools.', auth: 'none' },
-    { id: 'supabase', name: 'Supabase', icon: '⚡', category: 'Data', transport: 'http', url: 'https://mcp.supabase.com/mcp', desc: 'Query and manage your Supabase projects.', auth: 'oauth' },
-    { id: 'sentry', name: 'Sentry', icon: '◭', category: 'Monitoring', transport: 'http', url: 'https://mcp.sentry.dev/mcp', desc: 'Errors, traces and releases.', auth: 'oauth' },
-    { id: 'figma', name: 'Figma', icon: '◐', category: 'Design', transport: 'http', url: 'https://mcp.figma.com/mcp', desc: 'Read designs and export assets.', auth: 'oauth' },
-    { id: 'cloudflare', name: 'Cloudflare', icon: '☁', category: 'Infrastructure', transport: 'http', url: 'https://mcp.cloudflare.com', desc: 'Workers, KV, R2 and Workers AI (Flux).', auth: 'oauth' },
-    { id: 'puppeteer', name: 'Puppeteer', icon: '◈', category: 'Automation', transport: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-puppeteer', desc: 'Headless Chrome automation.', auth: 'none' },
-    { id: 'custom', name: 'Custom MCP Server', icon: '+', category: 'Custom', transport: 'http', url: '', desc: 'Any stdio command or HTTP/SSE MCP endpoint — full permission editor included.', auth: 'custom' }
-  ];
-}
+// --- MCP (real Model Context Protocol) --------------------------------------
 
 async function handleMcp(body, res) {
   const op = body.op || 'list';
-  if (op === 'catalog') return json(res, 200, { catalog: mcpCatalog() });
+  if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
+
   if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500) });
+
   if (op === 'save') {
     const c = { ...body.connection, id: body.connection?.id || uid('mcp'), updated_at: new Date().toISOString() };
     const existing = await findOne('mcp_connections', (x) => x.id === c.id);
     if (existing) await update('mcp_connections', (x) => x.id === c.id, c);
-    else await insert('mcp_connections', { status: 'disconnected', permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c });
+    else await insert('mcp_connections', { status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c });
     return json(res, 200, { ok: true, connection: c });
   }
+
   if (op === 'delete') {
-    const { remove } = await import('../lib/store.js');
     await remove('mcp_connections', (x) => x.id === body.id);
     return json(res, 200, { ok: true });
   }
-  if (op === 'authorize') {
-    // Issues an OAuth-style authorization ticket the /mcp/authorize page completes.
-    const ticket = uid('mcptk');
-    await insert('sessions', {
-      id: ticket, kind: 'mcp-oauth', connection_id: body.connection_id,
-      scopes: body.scopes || ['tools', 'resources'], created_at: new Date().toISOString(), approved: false
+
+  if (op === 'probe') {
+    // Live handshake — initialize + tools/list against the real server.
+    try {
+      const result = await probeServer(body.url, body.token);
+      return json(res, 200, result);
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (op === 'connect_begin') {
+    // Start the browser OAuth dance. Returns the provider's authorization URL
+    // (the sign-in / permissions page) to open in the user's browser.
+    const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
+    const url = body.url || conn?.url;
+    if (!url) return json(res, 400, { error: 'url or connection_id required' });
+    const meta = await discoverAuth(url);
+    const redirectUri = body.redirect_uri || `${getKey('SITE_URL') || 'http://localhost:8787'}/mcp/callback`;
+    const state = uid('st');
+    const { verifier, challenge } = pkcePair();
+    if (meta?.authorization_endpoint) {
+      const client = await registerClient(meta, { redirectUris: [redirectUri] }) || {};
+      const clientId = client.client_id || body.client_id;
+      if (!clientId) {
+        return json(res, 200, {
+          ok: true, needs_key: true,
+          message: 'This server needs OAuth. Its authorization server has no dynamic registration — paste a client id from the provider’s developer page, or use the managed gateway link.'
+        });
+      }
+      await insert('sessions', {
+        id: state, kind: 'mcp-oauth', connection_id: body.connection_id, url,
+        verifier, client_id: clientId, client_secret: client.client_secret, meta,
+        redirect_uri: redirectUri, created_at: Date.now()
+      });
+      const authorize_url = buildAuthorizeUrl(meta, {
+        clientId, redirectUri, scope: body.scope || meta.scopes_supported?.slice(0, 8).join(' '),
+        state, codeChallenge: challenge
+      });
+      return json(res, 200, { ok: true, authorize_url, state, requires_browser: true });
+    }
+    // Public / tokenless server — connect directly.
+    try {
+      const probe = await probeServer(url, body.token);
+      const row = {
+        id: body.connection_id || uid('mcp'), name: probe.server?.name || url, url, status: 'connected',
+        enabled: true, token: body.token || null, tools: probe.tools, connected_at: Date.now()
+      };
+      const existing = await findOne('mcp_connections', (x) => x.id === row.id);
+      if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+      else await insert('mcp_connections', row);
+      return json(res, 200, { ok: true, connected: true, connection: row });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (op === 'connect_callback') {
+    const s = await findOne('sessions', (x) => x.id === body.state && x.kind === 'mcp-oauth');
+    if (!s) return json(res, 404, { error: 'unknown OAuth state — start Connect again' });
+    const tokens = await exchangeCode(s.meta, {
+      code: body.code, redirectUri: s.redirect_uri,
+      codeVerifier: s.verifier, clientId: s.client_id, clientSecret: s.client_secret
     });
-    return json(res, 200, { ok: true, ticket, authorize_path: `/mcp/authorize?ticket=${ticket}&connection=${encodeURIComponent(body.connection_id)}` });
+    const probe = await probeServer(s.url, tokens.access_token);
+    const row = {
+      id: s.connection_id || uid('mcp'), name: probe.server?.name || s.url, url: s.url, status: 'connected',
+      enabled: true, access_token: tokens.access_token, refresh_token: tokens.refresh_token,
+      expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
+      tools: probe.tools, connected_at: Date.now()
+    };
+    const existing = await findOne('mcp_connections', (x) => x.id === row.id);
+    if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+    else await insert('mcp_connections', row);
+    await update('sessions', (x) => x.id === s.id, { used: true });
+    return json(res, 200, { ok: true, connection: row });
   }
-  if (op === 'approve') {
-    const s = await findOne('sessions', (x) => x.id === body.ticket && x.kind === 'mcp-oauth');
-    if (!s) return json(res, 404, { error: 'unknown ticket' });
-    await update('sessions', (x) => x.id === s.id, { approved: true, approved_at: new Date().toISOString() });
-    await update('mcp_connections', (x) => x.id === s.connection_id, { status: 'connected', connected_at: new Date().toISOString(), scopes: body.scopes || s.scopes });
-    return json(res, 200, { ok: true, connection_id: s.connection_id });
+
+  if (op === 'test') {
+    const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
+    if (!conn) return json(res, 404, { error: 'connection not found' });
+    try {
+      const probe = await probeServer(conn.url, conn.access_token || conn.token);
+      await update('mcp_connections', (x) => x.id === conn.id, { tools: probe.tools, last_test: Date.now(), last_error: null });
+      return json(res, 200, { ok: true, ...probe });
+    } catch (e) {
+      await update('mcp_connections', (x) => x.id === conn.id, { last_error: String(e.message || e) });
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    }
   }
+
   if (op === 'call') {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     if (!conn) return json(res, 404, { error: 'connection not found' });
-    if (conn.status !== 'connected') return json(res, 400, { error: 'connection not authorized yet' });
-    return json(res, 200, {
-      ok: true,
-      tool: body.tool,
-      result: `Tool "${body.tool}" dispatched to ${conn.name} over ${conn.transport}. In the desktop app this executes against the live stdio/HTTP MCP session; in the browser preview it returns this simulated receipt so the full flow is testable.`,
-      args: body.args || {}
-    });
+    try {
+      const client = new McpClient(conn.url, { token: conn.access_token || conn.token });
+      await client.initialize();
+      const result = await client.callTool(body.tool, body.args || {});
+      await client.close();
+      return json(res, 200, { ok: true, tool: body.tool, result });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    }
   }
+
   return json(res, 400, { error: 'unknown mcp op' });
 }
 
@@ -324,7 +325,7 @@ async function handleAdmin(body, res) {
       recent: (await find('audit', () => true, 50)).reverse()
     });
   }
-  if (op === 'users') return json(res, 200, { users: (await find('users', () => true, 10000)).map(sanitize) });
+  if (op === 'users') return json(res, 200, { users: (await find('users', () => true, 10000)).map(authx.sanitizeUser) });
   if (op === 'set_keys') {
     const allowed = allKeyEnvs();
     const patch = {};

@@ -193,3 +193,31 @@ Both desktop apps are Chromium-shell products with (a) a privileged local **serv
 reproduces every one of those capability classes as original, cleanly-branded software — Prism UI, multi-provider
 NVIDIA-first model routing, Flux + Hailuo media, Supabase backend, Windows desktop with accept-to-update — without
 copying any proprietary asset, name, or copyrighted code from OpenAI or Anthropic.
+
+---
+
+## §10 — Deep scan pass 2 (2026-10-19, Google Drive `ANTICODEX/`)
+
+Enumerated every folder of both desktop app dumps via the Drive connector.
+
+### CHATGPT files (`OpenAI.Codex` / "Codex.exe" CEF shell)
+- `app/` = full Chromium 155.0.8059.80 runtime: `ChatGPT.exe` (4.7MB shell), `Codex.exe`, `chrome.dll` (329MB), elevation service, tray icons **light+dark**, `codex-notification.wav` / `codex-classic.wav`.
+- `app/resources/` (Claude side too): **`codex-command-runner.exe`, `codex-code-mode-host.exe` (74MB), `codex-windows-sandbox-setup.exe` + `codex-windows-sandbox-service.exe`** → the Codex section is a sandboxed command-runner + code-mode host + Windows sandbox service. `masque-proxy-origins.txt` = `https://codex-portals.api.openai.com`. `owl-electron-app.json`/`owl-shell-runtime.json` = "owl" runtime packaging (win32-x64, msix deps []).
+- `.codex/` state machine (65 files): **`mcp-oauth-locks/`** (MCP OAuth lock files → connector auth tickets), `plugins/`, `computer-use/`, `browser/`, `app-server-daemon/` + `app-server-control/`, `memories/`, `skills/`, `packages/`, `node_repl/`, `pets/`, `dictation-history/`, `visualizations/`, `thread-writer-locks/`, `tui-thread-reference-capabilities/`, `vendor_imports/`, `code-review-plugin/`, sqlite stores (`thread_history_1.sqlite`, `state_5.sqlite`, `logs_2.sqlite`, `queue_1.sqlite`, `memories_1.sqlite`, `goals_1.sqlite`), `models_cache.json` (386KB), `config.toml`, `gpt6.config.toml`, `history.jsonl`, `session_index.jsonl`.
+- `version.json` updater gate shape: `{"latest_version", "last_checked_at", "dismissed_version"}` — our updater mirrors this (poll → notify → **user accepts** → download).
+
+### CLAUDE files (`AnthropicPBC.Claude` 2.42304 shell)
+- `resources/app.asar` (582MB) + `app.asar.unpacked/`: **`artifact-template-picker/`** (Artifacts with templates), **`cua_node/`** (computer-use node), `plugin-signatures/` (signed plugins), `tectonic/`, `skills/`, `plugins/`, `default_app/`, `native/`, `accessibility/`, `rg.exe` (ripgrep), `codex.exe` 341MB also present (shared owl runtime), `chatgpt-*.ico` tray/app icons, `icon-chatgpt.ico`.
+- `.claude/` state: `settings.json` (**env override pattern** `ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL`, `enableWorkflows`, `hasCompletedOnboarding` — replicated as "Model wiring" in Settings; the credential found in the dump was NOT copied anywhere), **`policy-limits.json`** (`allow_remote_control`, `allow_routines`, `allow_quick_web_setup`, `allow_cobalt_plinth*`, `enforce_web_search_mcp_isolation`, `remote_control_at_startup` default false — replicated as Computer-use policy toggles), `policy-limits.json.stamp.json`, `remote-settings.json`, `plans/`, `projects/`, `ide/`, `file-history/`, `shell-sapshots/`, `session-env/`, `backups/`, `telemetry/`.
+
+### What ANTICODEX now implements from this scan
+| RE finding | ANTICODEX |
+|---|---|
+| `mcp-oauth-locks` OAuth tickets | `lib/mcp.js` OAuth: RFC 9728/8414 discovery, RFC 7591 dynamic registration, PKCE S256, browser authorize + `/mcp/callback` |
+| connectors sign-in in browser | Connect opens provider authorize URL (Notion/Linear/GitHub/Supabase/…); gateways (Zapier/Composio/Pipedream) for Google Drive/Gmail/GitHub |
+| `codex-command-runner` + `codex-code-mode-host` | Codex workspace page (runner + terminal + file tree) |
+| `policy-limits.json` | Computer-use policy toggles + remote-control opt-in |
+| `settings.json` env/model wiring | Settings → Developer: endpoint + key + model tier overrides + Test |
+| `version.json` dismissible updates | Updater: `latest_version / dismissed_version / last_checked_at` + user accepts |
+| artifact-template-picker | Agent Studio (Claude-style artifacts) |
+| thread_history sqlite | threads collection (Supabase/JSON) |

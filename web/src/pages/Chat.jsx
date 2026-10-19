@@ -1,247 +1,222 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { chat as chatApi, models as modelsApi, search as searchApi } from '../lib/api.js';
-import { useApp, loadThreads, saveThreadLocal, deleteThreadLocal, syncThread } from '../lib/state.jsx';
-import { renderMarkdown, splitCode } from '../lib/markdown.js';
-import { Logo, CopyBtn, Pill } from '../ui.jsx';
+import React, { useEffect, useRef, useState } from 'react';
+import { useApp } from '../lib/state.jsx';
+import * as api from '../lib/api.js';
+import { renderMarkdown } from '../lib/markdown.js';
 
-function ModelPicker({ value, onChange }) {
-  const [open, setOpen] = useState(false);
-  const [providers, setProviders] = useState([]);
-  useEffect(() => { modelsApi().then((r) => setProviders(r.providers || [])).catch(() => {}); }, []);
-  const flat = useMemo(() => (providers || []).flatMap((p) => (p.models || []).map((m) => ({ ...m, value: `${p.id}::${m.id}`, providerName: p.name, providerId: p.id }))), [providers]);
-  const current = flat.find((m) => m.value === value) || { label: value };
+const SUGGESTIONS = [
+  { icon: '⌘', title: 'Write code with Codex', text: 'Build me a REST API scaffold with auth and tests', to: '/codex' },
+  { icon: '✦', title: 'Search the web', text: 'Search: what changed in AI this week?' , tool: 'search' },
+  { icon: '▦', title: 'Generate an image', text: 'Imagine a clean geometric logo in cyan and violet', to: '/images' },
+  { icon: '▶', title: 'Generate a video', text: 'A short product teaser video with smooth camera motion', to: '/video' }
+];
 
+function ToolChips({ active, setActive }) {
+  const chips = [
+    { id: 'search', label: '⌕ Search' },
+    { id: 'imagine', label: '✦ Imagine' },
+    { id: 'video', label: '▶ Video' },
+    { id: 'research', label: '∞ Deep research' },
+    { id: 'mcp', label: '⇄ MCP tools' }
+  ];
   return (
-    <div style={{ position: 'relative' }}>
-      <button className="model-select" onClick={() => setOpen(!open)}>
-        <span className="status-dot ok" /> {current.label || value} ▾
-      </button>
-      {open && (
-        <div className="modal spark" style={{ position: 'absolute', bottom: 46, left: 0, width: 340, padding: 8, zIndex: 50 }}>
-          {providers.map((p) => (
-            <div key={p.id}>
-              <div className="tiny" style={{ padding: '8px 10px 2px', fontWeight: 800, letterSpacing: 1 }}>
-                {p.name} {!p.configured && p.id !== 'demo' && <span className="pill warn" style={{ marginLeft: 6 }}>needs key</span>}
-              </div>
-              {(p.models || []).slice(0, 30).map((m) => (
-                <button key={`${p.id}:${m.id}`} className={`thread-item ${`${p.id}::${m.id}` === value ? 'active' : ''}`}
-                  onClick={() => { onChange(`${p.id}::${m.id}`); setOpen(false); }}>
-                  <span>{m.label}</span>
-                  {m.vision && <span className="pill" style={{ marginLeft: 'auto' }}>vision</span>}
-                </button>
-              ))}
-              {(p.models || []).length > 30 && (
-                <div className="tiny" style={{ padding: '4px 10px 8px' }}>+{(p.models || []).length - 30} more — full catalog in Settings → Providers</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    <>
+      {chips.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          className={`chip-toggle ${active[c.id] ? 'on' : ''}`}
+          onClick={() => setActive((a) => ({ ...a, [c.id]: !a[c.id] }))}
+        >
+          {c.label}
+        </button>
+      ))}
+    </>
   );
 }
 
-function Message({ m, onRegen }) {
-  const isUser = m.role === 'user';
+function MessageActions({ text, onRegen }) {
+  const { notify } = useApp();
   return (
-    <div className="msg-row spark">
-      <div className={`avatar ${isUser ? 'user' : 'ai'}`}>{isUser ? 'You' : <Logo size={20} />}</div>
-      <div className="msg-body">
-        <div className="msg-name">{isUser ? 'You' : m.model || 'ANTICODEX'}</div>
-        <div className="msg-text">
-          {isUser ? <p style={{ whiteSpace: 'pre-wrap' }}>{m.content}</p> : (
-            splitCode(m.content).map((part, i) => part.type === 'code' ? (
-              <div key={i} style={{ position: 'relative', margin: '10px 0' }}>
-                <div className="row between" style={{ position: 'absolute', top: 6, right: 8, zIndex: 2 }}>
-                  <span className="tiny" style={{ marginRight: 8 }}>{part.lang}</span>
-                  <CopyBtn text={part.value} label="⧉" />
-                </div>
-                <pre><code>{part.value}</code></pre>
-              </div>
-            ) : <span key={i} dangerouslySetInnerHTML={{ __html: renderMarkdown(part.value) }} />
-            )
-          )}
-          {m.streaming && <span className="typing" />}
-        </div>
-        {m.images?.map((img, i) => (
-          <img key={i} src={img} alt="attachment" style={{ maxWidth: 260, borderRadius: 12, marginTop: 8, border: '1px solid var(--border)' }} />
-        ))}
-        {m.sources?.length > 0 && (
-          <div className="sources">
-            {m.sources.map((s, i) => (
-              <a key={i} className="source-chip" href={s.url} target="_blank" rel="noreferrer">⌕ {s.title || s.url}</a>
-            ))}
-          </div>
-        )}
-        <div className="msg-actions">
-          <CopyBtn text={m.content} label="Copy" />
-          {!isUser && onRegen && <button className="btn small ghost" onClick={onRegen}>↻ Regenerate</button>}
-        </div>
-      </div>
+    <div className="msg-actions">
+      <button className="icon-btn" title="Copy" onClick={() => {
+        navigator.clipboard?.writeText(text || '');
+        notify('Copied to clipboard');
+      }}>⧉</button>
+      <button className="icon-btn" title="Good response">👍</button>
+      <button className="icon-btn" title="Bad response">👎</button>
+      {onRegen && <button className="icon-btn" title="Regenerate" onClick={onRegen}>↻</button>}
     </div>
   );
 }
 
 export default function ChatPage() {
-  const { model, setModel, notify, user } = useApp();
-  const [params] = useSearchParams();
-  const [threadId, setThreadId] = useState(() => params.get('t') || `thr_${Date.now().toString(36)}`);
-  const [title, setTitle] = useState('New chat');
+  const { model, setModel, user, notify, cfg } = useApp();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const [webOn, setWebOn] = useState(false);
-  const [images, setImages] = useState([]);
-  const bottomRef = useRef(null);
-  const fileRef = useRef(null);
+  const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true });
+  const [threads, setThreads] = useState([]);
+  const [threadId, setThreadId] = useState(() => new URLSearchParams(window.location.search).get('thread') || `th_${Date.now()}`);
+  const scrollRef = useRef(null);
+  const taRef = useRef(null);
 
   useEffect(() => {
-    const t = loadThreads().find((x) => x.id === params.get('t'));
-    if (t) { setThreadId(t.id); setMessages(t.messages || []); setTitle(t.title || 'Untitled'); }
-  }, [params]);
+    const t = new URLSearchParams(window.location.search).get('thread');
+    if (t) {
+      api.threads.list().then((r) => {
+        const th = (r.threads || []).find((x) => x.id === t);
+        if (th?.messages?.length) { setMessages(th.messages); setThreadId(th.id); }
+      }).catch(() => {});
+    }
+  }, [window.location.search]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages, busy]);
 
-  function persist(msgs, newTitle) {
-    const t = {
-      id: threadId, title: newTitle || title, model,
-      messages: msgs, user_id: user?.id, updated_at: new Date().toISOString()
-    };
-    saveThreadLocal(t);
-    syncThread(t);
-    if (newTitle) setTitle(newTitle);
-  }
-
-  async function send(text = input, opts = {}) {
-    const content = (text || '').trim();
-    if (!content && !images.length) return;
-    if (busy) return;
-    setBusy(true);
-    setInput('');
-
-    const userMsg = { role: 'user', content, images: images.length ? [...images] : undefined };
-    const next = [...messages, userMsg, { role: 'assistant', content: '', streaming: true, model }];
-    setMessages(next);
-    setImages([]);
-
-    const newTitle = messages.length === 0 ? content.slice(0, 48) : title;
-    persist(next.filter((m) => !m.streaming), newTitle);
-
+  const persist = async (next) => {
     try {
-      let sources;
-      let enriched = content;
-      if (webOn) {
-        const s = await searchApi({ query: content });
-        if (s?.results?.length) {
-          sources = s.results;
-          enriched = `${content}\n\n[web results]\n${s.results.map((r) => `- ${r.title}: ${r.snippet}`).join('\n')}`;
-        }
-      }
-      const history = [...messages, { ...userMsg, content: enriched }].filter((m) => !m.streaming);
-      const r = await chatApi({ messages: history, model });
+      await api.threads.save({
+        id: threadId,
+        title: (next.find((m) => m.role === 'user')?.content || 'New chat').slice(0, 60),
+        messages: next, model
+      });
+    } catch { /* offline ok */ }
+  };
 
-      // Simulated token stream for a fluid UX regardless of provider transport.
-      const full = r.text || '(empty response)';
-      let shown = '';
-      const words = full.split(/(\s+)/);
-      for (let i = 0; i < words.length; i++) {
-        shown += words[i];
-        setMessages((ms) => ms.map((m, idx) => idx === ms.length - 1 ? { ...m, content: shown, streaming: i < words.length - 1, model: r.model } : m));
-        if (i % 3 === 0) await new Promise((x) => setTimeout(x, 12));
-      }
-      const done = [...next.slice(0, -1), { role: 'assistant', content: full, model: r.model, sources }];
-      setMessages(done);
-      persist(done, newTitle);
+  async function send(text) {
+    const content = (text ?? input).trim();
+    if (!content || busy) return;
+    setInput('');
+    if (taRef.current) taRef.current.style.height = 'auto';
+
+    // Mode shortcuts — chips route into dedicated generators like ChatGPT's
+    // tool menu does for canvas/images.
+    if (active.imagine && text === undefined) {
+      window.location.href = `/images?q=${encodeURIComponent(content)}`;
+      return;
+    }
+    if (active.video && text === undefined) {
+      window.location.href = `/video?q=${encodeURIComponent(content)}`;
+      return;
+    }
+
+    const next = [...messages, { role: 'user', content }];
+    setMessages(next);
+    setBusy(true);
+    try {
+      let system = active.research
+        ? 'You are ANTICODEX in Deep Research mode. Plan, use the search tool when available, and produce a structured, cited report.'
+        : undefined;
+      if (active.search) system = ((system ? system + '\n' : '') + 'Use web search results when the search tool is available; cite sources as [n].');
+      const out = await api.chat({
+        messages: next.map((m) => ({ role: m.role, content: m.content })),
+        model: model.includes('::') ? model.split('::')[1] : model,
+        provider: model.includes('::') ? model.split('::')[0] : undefined,
+        system,
+        use_mcp: active.mcp !== false
+      });
+      const reply = {
+        role: 'assistant',
+        content: out.text || out.content || '(no response)',
+        tool_calls: out.tool_calls,
+        model: out.model
+      };
+      const merged = [...next, reply];
+      setMessages(merged);
+      persist(merged);
     } catch (e) {
-      const fail = [...next.slice(0, -1), { role: 'assistant', content: `⚠ **Request failed:** ${e.message}\n\nCheck **Settings → Providers** (NVIDIA NIM or any custom endpoint) or try the built-in Demo Core model.`, model }];
-      setMessages(fail);
-      persist(fail, newTitle);
-      notify(e.message, 'error');
+      const merged = [...next, { role: 'assistant', content: `⚠ ${e.message || e}` }];
+      setMessages(merged);
     } finally {
       setBusy(false);
     }
   }
 
-  function attach(files) {
-    const list = [...files].slice(0, 4);
-    for (const f of list) {
-      const reader = new FileReader();
-      reader.onload = () => setImages((im) => [...im, reader.result]);
-      reader.readAsDataURL(f);
-    }
-  }
-
-  function regen() {
-    const trimmed = [...messages];
-    while (trimmed.length && trimmed[trimmed.length - 1].role === 'assistant') trimmed.pop();
-    setMessages(trimmed);
-    setTimeout(() => send(trimmed[trimmed.length - 1]?.content || ''), 50);
-  }
+  const empty = messages.length === 0;
 
   return (
-    <div className="chat-wrap">
-      <div className="messages" style={{ padding: '26px 22px 12px', maxWidth: 860, margin: '0 auto', width: '100%' }}>
-        {messages.length === 0 ? (
+    <div className="chat-wrap" ref={scrollRef} style={{ display: 'flex', flexDirection: 'column' }}>
+      <div className={empty ? 'composer-wrap floating' : 'chat-col'} style={empty ? { width: '100%' } : {}}>
+        {empty && (
           <div className="hero">
-            <div className="logo-big"><Logo size={84} /></div>
-            <h1>What shall we build?</h1>
-            <p>One workspace for every model: NVIDIA NIM, custom API endpoints, web search, Flux images, Hailuo video, MCP connectors and computer-use.</p>
-            <div className="suggest-grid">
-              {[
-                ['⚡ Connect an AI', 'Add your NVIDIA API key in Settings and test models instantly'],
-                ['⌘ Open Codex Workspace', 'File tree, diff proposals, sandbox terminal, approval modes'],
-                ['⇄ Browse MCP connectors', 'GitHub, Drive, Slack, Notion, Postgres, Playwright and more'],
-                ['▦ Generate with Flux', 'Cloudflare Workers AI image generation, then Hailuo video']
-              ].map(([t, d]) => (
-                <button key={t} className="suggest-card" onClick={() => {
-                  if (t.includes('Connect')) window.location.hash = '#/settings';
-                  else if (t.includes('Codex')) window.location.href = '/codex';
-                  else if (t.includes('MCP')) window.location.href = '/mcp';
-                  else window.location.href = '/images';
-                }}>
-                  <div className="t">{t}</div><div className="d">{d}</div>
-                </button>
-              ))}
-            </div>
+            <h1>What can I do for you?</h1>
+            <div className="sub">ANTICODEX · Chat, Codex, Agents, Connectors — powered by your models</div>
           </div>
-        ) : messages.map((m, i) => (
-          <Message key={i} m={m} onRegen={i === messages.length - 1 && !busy ? regen : undefined} />
-        ))}
-        <div ref={bottomRef} />
-      </div>
+        )}
+        {!empty && (
+          <>
+            {messages.map((m, i) => (
+              <div key={i} className={`msg-row ${m.role}`}>
+                {m.role === 'assistant' && <div className="msg-name">ANTICODEX</div>}
+                {m.role === 'user' ? (
+                  <div className="msg-user-pill">{m.content}</div>
+                ) : (
+                  <>
+                    <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                    {m.tool_calls?.map((tc, j) => (
+                      <div key={j} className="tool-card">
+                        <div className="tool-name">⇄ {tc.function?.name || 'tool'}</div>
+                        <div className="tiny">{(tc.function?.arguments || '').slice(0, 240)}</div>
+                      </div>
+                    ))}
+                    <MessageActions text={m.content} onRegen={i === messages.length - 1 ? () => send() : undefined} />
+                  </>
+                )}
+              </div>
+            ))}
+            {busy && <div className="typing"><i /><i /><i /></div>}
+          </>
+        )}
 
-      <div className="composer-wrap" style={{ maxWidth: 860, margin: '0 auto', width: '100%', padding: '0 22px 22px' }}>
-        <div className="composer">
+        <div className="composer" style={empty ? { marginTop: 18 } : {}}>
           <textarea
+            ref={taRef}
+            rows={1}
             value={input}
-            placeholder="Message ANTICODEX… (Shift+Enter for newline)"
-            onChange={(e) => setInput(e.target.value)}
+            placeholder={active.imagine ? 'Describe the image to generate…' : active.video ? 'Describe the video to generate…' : 'Ask anything'}
+            onChange={(e) => {
+              setInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(240, e.target.scrollHeight) + 'px';
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
             }}
           />
-          {images.length > 0 && (
-            <div className="row" style={{ padding: '6px 4px' }}>
-              {images.map((img, i) => (
-                <img key={i} src={img} alt="" style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }} />
-              ))}
-            </div>
-          )}
           <div className="composer-bar">
-            <button className={`chip-toggle ${webOn ? 'on' : ''}`} onClick={() => setWebOn(!webOn)}>⌕ Web</button>
-            <button className="chip-toggle" onClick={() => fileRef.current?.click()}>⊕ Vision</button>
-            <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => attach(e.target.files)} />
-            <ModelPicker value={model} onChange={setModel} />
-            <div style={{ flex: 1 }} />
-            <button className="btn primary" disabled={busy || (!input.trim() && !images.length)} onClick={() => send()}>
-              {busy ? 'Thinking…' : 'Send'} ↑
+            <button className="icon-btn" title="Add files" onClick={() => notify('Attach from the Codex workspace — drag & drop lands in v0.2')}>＋</button>
+            <ToolChips active={active} setActive={setActive} />
+            <button className="send-btn" disabled={!input.trim() || busy} onClick={() => send()}>
+              {busy ? '■' : '↑'}
             </button>
           </div>
         </div>
-        <div className="tiny" style={{ textAlign: 'center', marginTop: 8 }}>
-          ANTICODEX can make mistakes. Web search uses Tavily/Exa when configured · vision requires a vision-capable model
-        </div>
+
+        {empty && (
+          <>
+            <div className="suggest-grid">
+              {SUGGESTIONS.map((s) => (
+                <button key={s.title} className="suggest-card" onClick={() => {
+                  if (s.to) { window.location.href = s.to + (s.text ? `?q=${encodeURIComponent(s.text)}` : ''); return; }
+                  if (s.tool) setActive((a) => ({ ...a, [s.tool]: true }));
+                  send(s.text);
+                }}>
+                  <strong>{s.icon} {s.title}</strong>
+                  <div className="tiny" style={{ marginTop: 4 }}>{s.text}</div>
+                </button>
+              ))}
+            </div>
+            <div className="disclaimer">
+              ANTICODEX can make mistakes. {cfg?.provider_count || 26} provider endpoints · Model: {model.includes('::') ? model.split('::')[1] : model}
+            </div>
+          </>
+        )}
+        {!empty && (
+          <div className="disclaimer">
+            {user?.name ? `Chatting as ${user.name} · ` : ''}ANTICODEX can make mistakes. Check important info.
+          </div>
+        )}
       </div>
     </div>
   );
