@@ -42,7 +42,7 @@ export default async function handler(req, res) {
       case 'login': return json(res, 200, await authx.login(body));
       case 'me': return await handleMe(req, body, res);
       case 'forgot': return json(res, 200, await authx.forgot(body));
-      case 'reset': return json(res, 200, await authx.resetPassword({ email: body.email, code: body.code, password: body.new_password || body.password }));
+      case 'reset': return json(res, 200, await authx.resetPassword({ email: body.email, code: body.code, token_hash: body.token_hash, token: body.token, password: body.new_password || body.password }));
       case 'github_login': return json(res, 200, await authx.githubAuth(body));
       case 'oauth_callback': return json(res, 200, await authx.oauthExchange(body));
       case 'threads': return await handleThreads(req, body, res);

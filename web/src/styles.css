@@ -269,20 +269,41 @@ h3 { font-size: 16px; }
 }
 .settings-rail button.active, .settings-rail button:hover { background: var(--hover); color: var(--text); }
 
-/* auth */
-.auth-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); }
-.auth-card {
-  width: min(400px, 92vw); background: var(--bg-elev); border: 1px solid var(--border);
-  border-radius: 20px; padding: 28px; box-shadow: var(--shadow);
+/* auth — ChatGPT-style light canvas */
+.auth-shell { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f9f9f9; color: #0d0d0d; }
+.auth-col { width: min(400px, 92vw); padding: 24px 8px; }
+.auth-title { font-size: 26px; font-weight: 700; text-align: center; margin: 6px 0 6px; color: #0d0d0d; }
+.auth-sub { text-align: center; color: #5d5d5d; margin: 0 0 22px; font-size: 14.5px; }
+.auth-label { display: block; font-size: 13px; font-weight: 600; color: #3d3d3d; margin: 14px 0 6px; }
+.auth-input {
+  width: 100%; background: #fff; border: 1px solid #d0d0d0; border-radius: 10px;
+  padding: 12px 14px; font-size: 15px; color: #0d0d0d; outline: none;
 }
-.auth-card h1 { font-size: 22px; margin: 0 0 4px; text-align: center; }
-.auth-card .sub { text-align: center; margin-bottom: 18px; }
-.oauth-btn {
-  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
-  padding: 11px; border-radius: 12px; border: 1px solid var(--border); background: #ffffff0e;
-  color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer; margin: 8px 0;
+.auth-input:focus { border-color: #0d0d0d; }
+.auth-btn {
+  width: 100%; margin-top: 20px; background: #0d0d0d; color: #fff; border: 0;
+  border-radius: 10px; padding: 13px; font-size: 15px; font-weight: 600; cursor: pointer;
 }
-.oauth-btn:hover { background: var(--hover); }
+.auth-btn:hover { background: #2d2d2d; }
+.auth-btn:disabled { background: #b0b0b0; cursor: default; }
+.oauth-btn.light {
+  background: #fff; border: 1px solid #d0d0d0; color: #0d0d0d; font-weight: 600;
+  padding: 12px; border-radius: 10px;
+}
+.oauth-btn.light:hover { background: #f0f0f0; }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0 2px; color: #8d8d8d; font-size: 12px; }
+.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: #d9d9d9; }
+.auth-foot { text-align: center; margin-top: 22px; color: #5d5d5d; font-size: 13.5px; }
+.auth-foot a, .auth-link { color: #0285ff; cursor: pointer; font-weight: 500; }
+.auth-err {
+  background: #fdecea; color: #b3261e; border: 1px solid #f5c6c0;
+  border-radius: 10px; padding: 10px 12px; margin: 14px 0 0; font-size: 13.5px;
+}
+.auth-note {
+  background: #fff8e6; color: #6b5b1e; border: 1px solid #eadfa8;
+  border-radius: 10px; padding: 10px 12px; margin: 14px 0 0; font-size: 13.5px;
+}
+.auth-note.ok { background: #e9f7ef; color: #1e6b3c; border-color: #bfe6cf; }
 
 /* mcp / connectors */
 .mcp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }

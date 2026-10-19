@@ -11,7 +11,7 @@ import McpPage from './pages/Mcp.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
-import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage } from './pages/Auth.jsx';
+import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler } from './pages/Auth.jsx';
 
 // Sidebar nav mirrors the reverse-engineered ChatGPT desktop rail (new chat,
 // search, library, codex) with ANTICODEX sections added below.
@@ -197,6 +197,7 @@ export default function App() {
   const { toast } = useApp();
   return (
     <>
+      <EmailLinkHandler />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />

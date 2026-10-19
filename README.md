@@ -46,6 +46,23 @@ cd desktop && npm install && npm run package:win
 | **Admin** | `Thaddeusadmin` console: users, global API keys, system status, activity |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 
+## Email verification (works out of the box)
+
+Sign-up and password-reset emails send a **Confirm / Reset link** (Supabase
+mailer) that lands back on the app, verifies the address, and signs the user
+in — or opens the "choose a new password" screen. Verification is **required**
+before login.
+
+To also show a **numeric code** inside those emails (optional), edit the
+templates in Supabase Dashboard → Authentication → Email Templates and add:
+
+```html
+<p>Your code: <strong>{{ .Token }}</strong></p>
+```
+
+to both *Confirm signup* and *Reset password* — the app already accepts either
+the code or the link.
+
 ## GitHub sign-in (2-minute setup)
 
 Users click **Continue with GitHub** — no tokens or passwords for them. You only
