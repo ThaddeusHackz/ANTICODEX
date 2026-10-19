@@ -148,7 +148,15 @@ function makeMockSupabase() {
           return send(200, { id: found.id, email: found.email, email_confirmed_at: found.confirmed ? new Date().toISOString() : null });
         }
         if (p === '/admin/users' && req.method === 'GET') {
-          return send(200, { aud: 'authenticated', users: [...authUsers.entries()].map(([em, u]) => ({ id: u.id, email: em })) });
+          // The admin API filters on `emails=` (plural) and returns [] for an
+          // unknown address — the app's "does this uid exist yet?" branch relies
+          // on that, so the mock must too.
+          const q = url.searchParams.get('emails') || url.searchParams.get('email');
+          const want = q ? String(q).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean) : null;
+          const users = [...authUsers.entries()]
+            .filter(([em]) => !want || want.includes(em))
+            .map(([em, u]) => ({ id: u.id, email: em, aud: 'authenticated' }));
+          return send(200, { aud: 'authenticated', users });
         }
         if (p === '/admin/generate_link') {
           return send(200, { action_link: `http://mock/verify?token=abc&type=${body.type}`, email_otp: '654321', hashed_token: 'nope' });
@@ -294,6 +302,18 @@ async function main() {
   r = await api(BASE, 'forgot', { email });
   ok('forgot password triggers the real mailer path (/recover)', mock.calls((x) => x.kind === 'gotrue' && x.path === '/recover').length > 0 && r.data.ok);
   ok('forgot never touches /admin/generate_link', mock.calls((x) => x.kind === 'gotrue' && x.path === '/admin/generate_link').length === 0);
+  ok('the provider row is created and confirmed too (bare /signup reply handled)',
+    mock.authUsers.get(email)?.confirmed === true);
+  {
+    // Because the provider row is confirmed, supabase-js sessions for this
+    // account work as well — the password grant must not say "Email not confirmed".
+    const res = await fetch(`${mockUrl}/auth/v1/token?grant_type=password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', apikey: ANON },
+      body: JSON.stringify({ email, password: 'hunter2pass' })
+    });
+    const j = await res.json();
+    ok('the same password works through GoTrue directly', res.status === 200 && Boolean(j.access_token));
+  }
   ok('forgot is not blocked by the bearer bug', !/Bearer token/i.test(JSON.stringify(r.data)));
   const code = r.data.dev_code;
   ok('no dev code leaked while a mailer exists', code === undefined);
