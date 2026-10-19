@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { chat as chatApi } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
+import { modelLabel } from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { Pill, Field, CopyBtn } from '../ui.jsx';
 
@@ -132,7 +133,7 @@ export default function ClaudePage() {
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
               style={{ minHeight: 38 }} />
             <div className="composer-bar">
-              <span className="tiny">{model}</span>
+              <span className="tiny" title={model}>{modelLabel(model)}</span>
               <div style={{ flex: 1 }} />
               <button className="btn primary small" disabled={busy || !input.trim()} onClick={send}>{busy ? '…' : 'Send ⏎'}</button>
             </div>

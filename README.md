@@ -49,13 +49,14 @@ cd desktop && npm install && npm run package:win
 ## Service keychain (integrated 2026-10-19)
 
 All service keys live in the same keychain as the provider keys — resolved
-from env (Vercel), the admin runtime config, or Settings → API keys. Wired
+from env (Vercel), the admin runtime config, or your own saved key in
+Settings (per account). Paired desktops mirror those keys into the local
+keychain, which is what every provider call resolves first. Wired
 features: **NVIDIA NIM** chat models · **Groq** LLM · **OpenAI** (GPT + Whisper
 voice input) · **ElevenLabs** read-aloud · **Cloudflare Flux** image gen ·
 **R2** media storage · **MiniMax H3** video · **Tavily** web search ·
 **Unsplash** image search · **OpenWeather** + **Windy** weather/maps ·
-**OpenSky** live flights · **YouTube** search. Paired desktops receive the
-same keychain automatically after sign-in.
+**OpenSky** live flights · **YouTube** search.
 
 ## Sign-in (a plain email address just works)
 
@@ -148,16 +149,35 @@ the account links to the desktop app automatically.
 
 ## API keys
 
-Set keys in **Settings → Providers** (per-device / desktop keychain) or **Admin → Keys** (global).
+Set keys in **Settings → Providers** — they are stored against *your account* (plus the desktop
+keychain on the packaged app), so your key replaces the built-in default for you alone and nobody
+else's traffic. **Admin → Keys** is the global/server-wide override.
 The **provider directory** covers 26 endpoints — OpenAI, Anthropic, Google Gemini, xAI, Mistral,
 DeepSeek (`deepseek-flash` = V4.1-Flash-1017), Moonshot, Z.ai, Qwen, Doubao, MiniMax, Hunyuan, Meta,
 NVIDIA NIM (Nemotron 3/3.5), Cohere, Perplexity, Thinking Machines, Atria ASI, OpenRouter, Groq,
 Together, Fireworks, Cerebras, Azure OpenAI, Vertex AI, Bedrock — plus custom OpenAI-/Anthropic-compatible
-gateways. Resolution order: desktop keychain → env vars → admin runtime config → hardcoded slots in `lib/keys.js`.
+gateways. Resolution order: desktop keychain → this request's account keys → env vars → admin runtime
+config → hardcoded slots in `lib/keys.js`. Unknown-but-real env names are rejected, and a read-only
+filesystem (Vercel) is reported honestly instead of a fake "saved".
+
+### Bring your own model (the picker)
+
+The model menu in the top bar — and in the Codex agent pane — is a searchable index of **every model of
+every provider** (249 curated ids, 700+ with OpenRouter's feed), grouped by provider with vision /
+reasoning / tool badges. Per provider you can hit **Sync models** to pull that endpoint's live `/models`
+list, and **Any model id** takes whatever you type, so a model released after this build still routes.
+
+| Action | What it does |
+|---|---|
+| `models` → `picker` | `{providers:[{id,name,configured,key_env,models:[{id,label,vision,reasoning,tools}]}]}` resolved with *your* keys |
+| `sync_models` | Live `/models` from the provider (10-min cache per provider+key), merged with curated labels |
+| `save_provider_key` | Global slot write — **admin only**, allowlisted env names, `persisted:false` when the disk is read-only |
+| `test_endpoint` | Reachability + wire-format probe — requires a signed-in session (it is an SSR-shaped relay) |
+| `chat` | `provider` + `model`; a `provider::default` ref is resolved to a real id before it is sent, and provider failures come back as `{ok:false, error, fix, settings_link}` so the UI can show the fix instead of an empty bubble |
 
 | Provider | Used for | Where |
 |---|---|---|
-| `NVIDIA_API_KEY` | Primary AI engine (Nemotron 3.5 + 100 hosted models, vision included) | Settings → Providers |
+| `NVIDIA_API_KEY` | Primary AI engine (Nemotron 3.5 + 100 hosted models, vision included) | Settings → Providers → NVIDIA NIM |
 | `DEEPSEEK_API_KEY` + 24 more | All directory providers (`lib/catalog.js`) | Settings → Providers |
 | `TAVILY_API_KEY` / `EXA_API_KEY` | Web search (owner-approved to hardcode in `lib/keys.js`) | Admin → Keys |
 | `CF_ACCOUNT_ID` + `CF_API_TOKEN` | Flux image generation (Workers AI) | Settings → Media |

@@ -1,0 +1,275 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import * as api from './lib/api.js';
+import { useApp } from './lib/state.jsx';
+import { Pill } from './ui.jsx';
+
+// ChatGPT-style model selector: every model of every provider in one searchable
+// list, badges for what a model can do, a live "sync from provider" per gateway,
+// and a free-text row so you can point ANTICODEX at any id you want — including
+// models this build's catalog has not heard of yet.
+//
+// The list comes from `/api/bridge?action=models` → `picker`, which the server
+// resolves with *your* account's keys, so a key you saved in Settings flips
+// `configured` immediately (it used to be invisible to the listing, and the old
+// menu had no model ids at all — it sent "<provider>::default", which every real
+// endpoint rejects. That is why a fresh NVIDIA key "did not work").
+
+const INDEX_TTL = 10 * 60 * 1000;
+const RECENT_MAX = 6;
+let memoryIndex = null;   // per page-load cache; localStorage handles longer life
+
+function readCachedIndex() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('acx_model_index') || 'null');
+    if (raw && raw.at && Date.now() - raw.at < INDEX_TTL && Array.isArray(raw.providers)) return raw;
+  } catch { /* private mode */ }
+  return null;
+}
+
+export function modelLabel(ref, index) {
+  const text = String(ref || '');
+  if (!text.includes('::')) return text === 'anticodex/demo-core' ? 'Demo Core' : (text.split('/').pop() || text);
+  const [pid, ...rest] = text.split('::');
+  const id = rest.join('::');
+  const p = (index?.providers || []).find((x) => x.id === pid);
+  const m = (p?.models || []).find((x) => x.id === id);
+  // A model we know by label shows its friendly name; anything else (including an
+  // id you typed yourself) keeps the full id — dropping the org prefix would make
+  // "vendor/totally-new-2027-model" read as just "2027-model".
+  return m?.label || id || `${pid} · ${id}`;
+}
+
+function recentRefs() {
+  try { return JSON.parse(localStorage.getItem('acx_model_recent') || '[]'); } catch { return []; }
+}
+
+export function rememberModel(ref) {
+  try {
+    const next = [ref, ...recentRefs().filter((x) => x !== ref)].slice(0, RECENT_MAX);
+    localStorage.setItem('acx_model_recent', JSON.stringify(next));
+  } catch { /* quota */ }
+}
+
+export default function ModelPicker({ compact = false, align = 'left' }) {
+  const { model, setModel, notify, cfg } = useApp();
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [index, setIndex] = useState(() => memoryIndex || readCachedIndex());
+  const [q, setQ] = useState('');
+  const [tab, setTab] = useState('configured');
+  const [busy, setBusy] = useState('');
+  const [customProvider, setCustomProvider] = useState('nvidia');
+  const [customId, setCustomId] = useState('');
+  const [cursor, setCursor] = useState(0);
+  const searchRef = useRef(null);
+  const listRef = useRef(null);
+
+  const load = async (force = false) => {
+    if (index && !force) return index;
+    setBusy('list');
+    try {
+      const r = await api.models();
+      const next = r.picker ? { at: Date.now(), providers: r.picker.providers, total: r.picker.total_models } : null;
+      if (next) { memoryIndex = next; try { localStorage.setItem('acx_model_index', JSON.stringify(next)); } catch { /* quota */ } setIndex(next); }
+      else notify('Could not read the model list from this server');
+    } catch (e) { notify(`Model list unavailable: ${e.message || e}`); } finally { setBusy(''); }
+  };
+
+  useEffect(() => { if (index) memoryIndex = index; }, [index]);
+  useEffect(() => {
+    if (!open) return;
+    if (!index) load(false);
+    const t = setTimeout(() => searchRef.current?.focus(), 30);
+    return () => clearTimeout(t);
+  }, [open]);                                    // eslint-disable-line react-hooks/exhaustive-deps
+
+  const providers = index?.providers || [];
+  const configuredCount = providers.filter((p) => p.configured).length;
+  const recents = recentRefs();
+
+  const groups = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const matchModel = (m) => !needle || (m.label || '').toLowerCase().includes(needle) || m.id.toLowerCase().includes(needle);
+    let base = providers;
+    if (tab === 'configured') base = base.filter((p) => p.configured);
+    if (tab === 'recent') {
+      const all = providers.flatMap((p) => (p.models || []).map((m) => ({ p, m })));
+      const picked = recents.map((ref) => all.find(({ p, m }) => `${p.id}::${m.id}` === ref)).filter(Boolean);
+      return picked.length ? [{ id: 'recent', name: 'Recently used', configured: true, models: picked.map((x) => x.m), _from: picked.map((x) => x.p.id) }] : [];
+    }
+    const out = [];
+    for (const p of base) {
+      const models = (p.models || []).filter(matchModel);
+      if (models.length) out.push({ ...p, models });
+      else if (needle && (p.name || '').toLowerCase().includes(needle)) out.push({ ...p, models: [] });
+    }
+    return out;
+  }, [providers, q, tab, recents]);
+
+  const rows = useMemo(() => groups.flatMap((g) => (g.models || []).map((m) => ({ g, m }))), [groups]);
+  useEffect(() => { setCursor(0); }, [q, tab, groups.length]);
+
+  const choose = (pid, m) => {
+    const ref = `${pid}::${m.id}`;
+    const provider = providers.find((p) => p.id === pid);
+    if (provider && !provider.configured) notify(`${provider.name} has no API key yet — add one in Settings and this model goes live.`);
+    setModel(ref);
+    rememberModel(ref);
+    setOpen(false);
+  };
+
+  async function syncProvider(p) {
+    setBusy(`sync:${p.id}`);
+    try {
+      const r = await api.syncModels({ provider: p.id, ...(p.endpoint ? { endpoint: p.endpoint } : {}) });
+      if (!r.ok) { notify(r.error || 'sync failed'); return; }
+      const merged = { ...index, providers: index.providers.map((x) => (x.id === p.id ? { ...x, models: r.models, synced: true } : x)) };
+      setIndex(merged); memoryIndex = merged;
+      try { localStorage.setItem('acx_model_index', JSON.stringify(merged)); } catch { /* quota */ }
+      notify(`${p.name}: ${r.models.length} models from the live endpoint`);
+    } catch (e) { notify(`Sync failed: ${e.message || e}`); } finally { setBusy(''); }
+  }
+
+  function onKeyDown(e) {
+    if (!open) return;
+    if (e.key === 'Escape') { e.preventDefault(); setOpen(false); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!rows.length) return;
+      const next = (cursor + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+      setCursor(next);
+      listRef.current?.querySelectorAll?.('.mp-row')[next]?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (e.key === 'Enter' && rows.length) { e.preventDefault(); const r = rows[cursor]; choose(r.g.id, r.m); }
+  }
+
+  const current = modelLabel(model, index) || 'Choose model';
+  const currentProvider = providers.find((p) => model.startsWith(`${p.id}::`));
+
+  return (
+    <div className={`mp ${compact ? 'compact' : ''}`} onKeyDown={onKeyDown}>
+      <button
+        className="mp-trigger" title="Choose a model (any provider, any id)"
+        onClick={() => { setOpen((v) => !v); }}
+      >
+        <span className="mp-cur">{current}</span>
+        {currentProvider && !currentProvider.configured && <span className="mp-warn" title="this provider has no key yet">needs key</span>}
+        <span className="mp-caret">▾</span>
+      </button>
+      {open && (
+        <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
+          <div className={`modal mp-modal ${align === 'right' ? 'right' : ''}`} role="dialog" aria-label="Choose a model">
+            <div className="mp-head">
+              <div>
+                <div className="mp-title">Choose a model</div>
+                <div className="tiny">
+                  {providers.length} providers · {index ? index.total : '…'} models · {configuredCount} with a key
+                  {index ? '' : busy === 'list' ? ' · loading…' : ''}
+                </div>
+              </div>
+              <div className="row" style={{ gap: 6 }}>
+                <button className="btn small ghost" onClick={load.bind(null, true)} disabled={busy === 'list'}>↻ Reload</button>
+                <button className="icon-btn" onClick={() => setOpen(false)} title="Close (Esc)">✕</button>
+              </div>
+            </div>
+            <div className="mp-tools">
+              <input
+                ref={searchRef} value={q} placeholder="Search 700+ models — DeepSeek, Nemotron, Claude, vision, reasoning…"
+                onChange={(e) => setQ(e.target.value)} aria-label="Search models"
+              />
+              <div className="mp-tabs">
+                {[['configured', 'My keys'], ['all', 'All providers'], ['recent', 'Recent']].map(([id, label]) => (
+                  <button key={id} className={`mp-tab ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <div className="modal-body mp-list" ref={listRef}>
+              {!index && <div className="muted" style={{ padding: 16 }}>{busy === 'list' ? 'Loading the model list…' : 'Model list not loaded yet.'}</div>}
+              {index && tab === 'configured' && configuredCount === 0 && (
+                <div className="mp-empty">
+                  <b>No provider keys on your account yet.</b>
+                  <span>Demo Core answers offline, or paste an NVIDIA / OpenAI / DeepSeek key and pick from hundreds of models.</span>
+                  <button className="btn primary small" onClick={() => { setOpen(false); nav('/settings'); }}>Add an API key</button>
+                </div>
+              )}
+              {index && rows.length === 0 && (
+                <div className="mp-empty">
+                  <b>Nothing matched “{q}”.</b>
+                  {q ? <span>Try the id directly (e.g. <span className="kbd">deepseek-v4</span>), or switch to All providers.</span> : null}
+                  <div className="row" style={{ gap: 8 }}>
+                    {tab === 'configured' && <button className="btn small" onClick={() => setTab('all')}>Search all providers</button>}
+                    <button className="btn small ghost" onClick={() => { setCustomId(q); document.querySelector('.mp-custom input')?.focus(); }}>Use “{q}” as a model id</button>
+                  </div>
+                </div>
+              )}
+              {groups.map((g) => (
+                <div key={g.id} className="mp-group">
+                  <div className="mp-ghead">
+                    <span className="mp-gname">{g.name}</span>
+                    <Pill kind={g.configured ? 'ok' : 'warn'}>{g.configured ? 'key ✓' : 'needs key'}</Pill>
+                    <span className="tiny">{(g.models || []).length}{g.models_note ? ' · live-syncable' : ''}</span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      className="btn small ghost" title="Ask this endpoint for its current /models list"
+                      disabled={!g.configured || busy === `sync:${g.id}`}
+                      onClick={() => syncProvider(g)}
+                    >{busy === `sync:${g.id}` ? 'syncing…' : 'Sync models'}</button>
+                  </div>
+                  {(g.models || []).length === 0 && <div className="tiny" style={{ padding: '4px 10px' }}>{g.models_note || 'no models listed for this endpoint'}</div>}
+                  {(g.models || []).map((m) => {
+                    const flat = rows.findIndex((r) => r.g.id === g.id && r.m.id === m.id);
+                    const isCur = `${g.id}::${m.id}` === model;
+                    return (
+                      <button
+                        key={`${g.id}::${m.id}`} data-mp-row className={`mp-row ${isCur ? 'cur' : ''} ${flat === cursor ? 'hot' : ''}`}
+                        onClick={() => choose(g.id, m)} onMouseEnter={() => setCursor(flat)}
+                      >
+                        <span className="mp-check">{isCur ? '●' : ''}</span>
+                        <span className="mp-label">{m.label || m.id}</span>
+                        <span className="mp-badges">
+                          {m.vision ? <i title="vision / images">◉</i> : null}
+                          {m.reasoning ? <i title="reasoning">∞</i> : null}
+                          {m.tools ? <i title="tool calling">⚙</i> : null}
+                        </span>
+                        {tab !== 'recent' && <span className="mp-prov">{g.name}</span>}
+                        <span className="mp-id">{m.id}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              <div className="mp-custom">
+                <div className="mp-ghead"><span className="mp-gname">Any model id</span><span className="tiny">type it, we route it</span></div>
+                <div className="row" style={{ gap: 8, padding: '2px 8px 6px' }}>
+                  <select value={customProvider} onChange={(e) => setCustomProvider(e.target.value)} aria-label="Provider for this model id">
+                    {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <input
+                    value={customId} placeholder="e.g. nvidia/nemotron-3.5-super-vl-120b-a12b"
+                    onChange={(e) => setCustomId(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && customId.trim()) { choose(customProvider, { id: customId.trim() }); setCustomId(''); } }}
+                  />
+                  <button
+                    className="btn primary small" disabled={!customId.trim()}
+                    onClick={() => { choose(customProvider, { id: customId.trim() }); setCustomId(''); }}
+                  >Use</button>
+                </div>
+                <div className="tiny" style={{ padding: '0 10px 4px' }}>
+                  Sent as <span className="kbd">{customProvider || 'provider'}::{customId || 'model-id'}</span> — useful for brand-new or private
+                  endpoints. Unknown ids still work if the endpoint serves them.
+                </div>
+              </div>
+            </div>
+            <div className="mp-foot">
+              <span className="tiny">↑↓ move · ⏎ use · Esc close</span>
+              <div style={{ flex: 1 }} />
+              <button className="btn small ghost" onClick={() => { setOpen(false); nav('/settings'); }}>Provider keys…</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

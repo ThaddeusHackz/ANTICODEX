@@ -1,5 +1,5 @@
 import { json, readBody } from '../lib/util.js';
-import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef } from '../lib/providers.js';
+import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
@@ -29,16 +29,52 @@ export default async function handler(req, res) {
   try {
     switch (action) {
       case 'health': return json(res, 200, { ok: true, version: VERSION, name: 'ANTICODEX', time: new Date().toISOString() });
-      case 'config': return json(res, 200, publicConfig());
-      case 'models': return json(res, 200, { providers: listProviders(body.keys), directory: directoryWithStatus(body.keys), catalog: CATALOG });
-      case 'sync_models': return json(res, 200, await syncModels(body));
-      case 'save_provider_key': {
-        if (!body.key_env || !['string'].includes(typeof body.key_env)) return json(res, 400, { error: 'key_env required' });
-        const patch = {}; patch[body.key_env] = body.value || '';
-        saveRuntime(patch);
-        return json(res, 200, { ok: true, key_env: body.key_env });
+      case 'config': {
+        const keys = await mergedKeys(req, body);
+        return json(res, 200, await publicConfig(keys, { accountEnvs: new Set(await accountKeyEnvs(req, body)) }));
       }
-      case 'test_endpoint': return json(res, 200, await testEndpoint(body));
+      case 'models': {
+        // Whose keys count: the account on this request, then any explicit keys
+        // (the desktop keychain sends those). Without this the UI could not see
+        // a per-user key and reported a configured provider as "needs key".
+        const keys = await mergedKeys(req, body);
+        const mine = new Set(await accountKeyEnvs(req, body));
+        const own = (p) => (mine.has(p.key_env) ? 'you' : (p.configured ? 'shared' : null));
+        return json(res, 200, {
+          providers: listProviders(keys).map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind, key_env: p.key_env, key_owner: own(p), models: p.models })),
+          directory: directoryWithStatus(keys),
+          picker: modelIndex(keys),
+          catalog: CATALOG
+        });
+      }
+      case 'sync_models': return json(res, 200, await syncModels({ ...body, keys: await mergedKeys(req, body) }));
+      case 'save_provider_key': {
+        // This writes SERVER-WIDE config, so it belongs to the admin console
+        // only. Users put keys in Settings → Providers (per account), which is
+        // what chat/search/image/video actually resolve against.
+        if (!await isAdmin(req, body)) return json(res, 401, { error: 'Global keys are admin-only. Save yours in Settings → Providers — your own key replaces the default for your account.', sign_in: '/login' });
+        if (!body.key_env || typeof body.key_env !== 'string') return json(res, 400, { error: 'key_env required' });
+        if (!/^[A-Z][A-Z0-9_]{2,60}$/.test(body.key_env)) return json(res, 400, { error: 'key_env must look like an env var name (e.g. NVIDIA_API_KEY)' });
+        if (!allKeyEnvs().includes(body.key_env)) return json(res, 400, { error: `${body.key_env} is not a managed key slot`, allowed: allKeyEnvs().slice(0, 40) });
+        const patch = {}; patch[body.key_env] = String(body.value || '');
+        let persisted = true;
+        try { saveRuntime(patch); } catch { persisted = false; }
+        if (!persisted) {
+          // Read-only filesystem (Vercel / packaged app): keep it for this warm
+          // instance instead of pretending the save happened.
+          process.env[body.key_env] = patch[body.key_env];
+        }
+        return json(res, 200, { ok: true, key_env: body.key_env, persisted, message: persisted ? 'Saved to server config.' : 'This server is read-only, so the key lives in memory for now — restart and it is gone.' });
+      }
+      case 'test_endpoint': {
+        // An open "fetch this URL for me" endpoint is an SSRF relay; only
+        // signed-in accounts (and the paired desktop app) may drive it.
+        // Requires a session on purpose: no loopback exception, because
+        // TRUST_PROXY makes a forwarded "127.0.0.1" spoofable by any client.
+        const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+        if (!auth) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
+        return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body) }));
+      }
       case 'chat': return await handleChat(body, res, req);
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
       case 'image': return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) }));
@@ -129,7 +165,7 @@ async function handleLogout(req, body, res) {
 
 // --- config -----------------------------------------------------------------
 
-function publicConfig() {
+async function publicConfig(keys = {}, opts = {}) {
   const gh = { clientId: Boolean(getKey('GITHUB_CLIENT_ID') || process.env.GITHUB_CLIENT_ID), secret: Boolean(getKey('GITHUB_CLIENT_SECRET') || process.env.GITHUB_CLIENT_SECRET) };
   const supa = authx.supabaseInfo();
   return {
@@ -149,7 +185,21 @@ function publicConfig() {
       supabase_auth: Boolean(supa.hasAuth),
       mailer_dev_codes: /^(1|true|yes|on)$/i.test(String(getKey('EXPOSE_RESET_CODES') || process.env.EXPOSE_RESET_CODES || ''))
     },
-    providers: listProviders().map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind })),
+    // `configured` must reflect the ACCOUNT's keys, and each entry carries the
+    // model list + key slot, otherwise the topbar menu could only ever send
+    // "<provider>::default" — which every real provider rejects.
+    // `key_owner` tells the UI "this is YOUR key" from "the shared default" —
+    // the difference between a card that means 'ready' and one that lies.
+    providers: listProviders(keys).map((p) => ({
+      id: p.id, name: p.name, configured: p.configured, kind: p.kind,
+      key_env: p.key_env || null, model_count: (p.models || []).length,
+      key_owner: opts.accountEnvs?.has(p.key_env) ? 'you' : (p.configured ? 'shared' : null),
+      models: (p.models || []).slice(0, 60)
+    })),
+    // Which identity backend is wired up (a label, not a secret): the web UI
+    // and the auth tests use it to confirm they are talking to the right
+    // server before they assert on behaviours that differ per backend.
+    auth_mode: supa.hasAuth ? 'supabase' : 'local',
     provider_count: PROVIDER_DIRECTORY.length,
     search_configured: Boolean(getKey('TAVILY_API_KEY') || getKey('EXA_API_KEY')),
     extras: {
@@ -160,10 +210,9 @@ function publicConfig() {
     },
     flux_configured: Boolean(getKey('CF_API_TOKEN') && getKey('CF_ACCOUNT_ID')),
     minimax_configured: Boolean(getKey('MINIMAX_API_KEY')),
-    // Booleans only — key material never leaves the server, not even the
-    // public anon key (the browser does not talk to Supabase directly).
-    supabase_configured: Boolean(supa.hasAuth),
-    supabase_service_key: Boolean(supa.hasService)
+    // Key material never leaves the server — not even which optional
+    // infrastructure is wired up; nothing in the client read these flags.
+    account_keys: (opts.accountEnvs && [...opts.accountEnvs]) || []
   };
 }
 
@@ -176,6 +225,14 @@ async function mergedKeys(req, body) {
   const user = auth ? await authx.findByToken(auth) : null;
   const uKeys = user ? await userKeyMap(user.email) : {};
   return { ...uKeys, ...(body?.provider_keys || {}) };
+}
+
+// Which key slots the ACCOUNT itself supplied (as opposed to the shared
+// server defaults). Display metadata only — resolution order is unchanged.
+async function accountKeyEnvs(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  const user = auth ? await authx.findByToken(auth) : null;
+  return user ? Object.keys(await userKeyMap(user.email)) : [];
 }
 
 async function handleUserKeys(req, body, res) {
@@ -212,7 +269,10 @@ async function handleChat(body, res, req) {
     if (conns.length || builtins.length) {
       const tools = [...builtins, ...(await collectTools(conns)).filter((t) => !t._error)].slice(0, 40);
       if (tools.length) {
-        const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+        let out;
+        try {
+          out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+        } catch (e) { return json(res, 200, friendlyChatError(e, provider, model)); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
         while (out.tool_calls?.length && rounds < 4) {
@@ -230,7 +290,10 @@ async function handleChat(body, res, req) {
             } catch (e) { result = { error: String(e.message || e) }; }
             msgs.push({ role: 'tool', tool_call_id: tc.id, name: tc.function?.name, content: JSON.stringify(result).slice(0, 12000) });
           }
-          const next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+          let next;
+          try {
+            next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+          } catch (e) { return json(res, 200, friendlyChatError(e, provider, model)); }
           Object.assign(out, next);
           if (!next.tool_calls?.length) break;
         }
@@ -238,8 +301,26 @@ async function handleChat(body, res, req) {
       }
     }
   }
-  const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys });
-  return json(res, 200, out);
+  try {
+    const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys });
+    return json(res, 200, out);
+  } catch (e) {
+    return json(res, 200, friendlyChatError(e, provider, model));
+  }
+}
+
+/** Provider failures used to arrive as an unhandled throw (a bare 500 on
+ *  Vercel) or a raw "NVIDIA NIM returned 400: {...}". Turn them into one
+ *  sentence plus the place that fixes it. */
+function friendlyChatError(e, provider, model) {
+  const ref = provider ? `${provider}::${model}` : String(model || '');
+  const shown = ref.includes('::') ? ref.split('::').slice(1).join('::') : ref;
+  const { error, fix } = explainProviderError(e, provider || ref.split('::')[0] || 'the provider', shown);
+  return {
+    ok: false, error, fix, provider: provider || null, model: shown || null,
+    ...(fix === 'key' || fix === 'endpoint' ? { settings_link: '/settings' } : {}),
+    ...(fix === 'model' ? { model_picker: true } : {})
+  };
 }
 
 // --- auth -------------------------------------------------------------------

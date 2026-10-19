@@ -78,7 +78,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { AppProvider } from './lib/state.jsx';
 import App from './App.jsx';
 globalThis.__mount = (route) => {
+  // A previous mount must be unmounted, not innerHTML-wiped, or React's own
+  // timers (the toast auto-hide) fire against removed nodes and throw.
+  if (globalThis.__root) { try { globalThis.__root.unmount(); } catch (e) { /* already gone */ } }
   const root = createRoot(document.getElementById('root'));
+  globalThis.__root = root;
   root.render(React.createElement(MemoryRouter, { initialEntries: [route], future: { v7_startTransition: true, v7_relativeSplatPath: true } },
     React.createElement(AppProvider, null, React.createElement(App))));
   return root;
@@ -113,6 +117,23 @@ globalThis.__mount = (route) => {
     req.on('error', reject);
     req.end(init.body ? String(init.body) : undefined);
   });
+  // Every bridge call the UI makes is recorded, so "where did my key go?" is
+  // answered from the wire, not from reading the component.
+  const bridgeCalls = [];
+  const rawFetch = win.fetch;
+  win.fetch = (input, init = {}) => {
+    if (init && init.body) { try { bridgeCalls.push(JSON.parse(String(init.body))); } catch { /* non-json */ } }
+    return rawFetch(input, init);
+  };
+  const q = (sel) => win.document.querySelector(sel);
+  const qa = (sel) => [...win.document.querySelectorAll(sel)];
+  const click = (el) => el.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const typeIn = (el, value) => {
+    const proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+  };
+  const keydown = (el, key) => el.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   const errors = [];
   win.addEventListener('error', (e) => errors.push(String(e.message || e.error)));
   const consoleErrors = [];
@@ -122,7 +143,7 @@ globalThis.__mount = (route) => {
     for (let i = 0; i < ticks; i++) await new Promise((r) => setTimeout(r, 25));
   };
   const mountAt = async (route, { token, user } = {}) => {
-    win.eval('document.getElementById("root").innerHTML = ""');
+    win.eval('if (globalThis.__root) { try { globalThis.__root.unmount(); } catch (e) {} } document.getElementById("root").innerHTML = ""');
     for (const [k, v] of Object.entries({ acx_token: token, acx_user: user ? JSON.stringify(user) : null })) {
       if (v === null || v === undefined) continue;
       win.eval(`localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)})`);
@@ -156,6 +177,95 @@ globalThis.__mount = (route) => {
   const panes = wsDom.querySelector('.workspace');
   ok('workspace has all three panes', Boolean(panes && panes.querySelector('.file-tree') && panes.querySelector('.editor-pane') && panes.querySelector('.agent-pane')));
   ok('editor textarea is wired to the file', (panes?.querySelector('.editor-pane textarea')?.value || '').includes('greet'));
+
+
+  console.log('\n— the model picker (topbar, any provider, any id) —');
+  await mountAt('/', { token: reg.token, user: reg.user });
+  ok('the picker lives in the topbar', Boolean(q('#root .mp-trigger')), 'no .mp-trigger');
+  ok('the old hardcoded select is gone', !q('#root .topbar select'), 'a <select> is still in the topbar');
+  const triggerText = () => (q('#root .mp-trigger .mp-cur')?.textContent || '').trim();
+  ok('it shows the current model by name', triggerText().length > 2 && !/undefined/.test(triggerText()), triggerText());
+  click(q('#root .mp-trigger'));
+  await settle(6);
+  ok('the modal opens on "My keys"', Boolean(q('#root .mp-modal')) && qa('#root .mp-tab')[0].textContent === 'My keys');
+  ok('a key-less account still gets the offline model', qa('#root [data-mp-row]').length >= 1, `${qa('#root [data-mp-row]').length} rows`);
+  click(qa('#root .mp-tab')[1]);
+  await settle(4);
+  const allRows = qa('#root [data-mp-row]').length;
+  ok('"All providers" lists the whole catalog', allRows > 150, `${allRows} rows`);
+  typeIn(q('#root .mp-tools input'), 'deepseek');
+  await settle(4);
+  const found = qa('#root [data-mp-row]');
+  ok('search narrows to matching models', found.length > 0 && found.length < allRows && found.every((el) => /deepseek/i.test(el.textContent)), `${found.length} rows`);
+  click(found[0]);
+  await settle(6);
+  const pickedRef = String(win.eval('localStorage.getItem("acx_model")'));
+  ok('clicking a row sets the app model', /::.*deepseek/i.test(pickedRef), pickedRef);
+  ok('the picker closes after choosing', !q('#root .mp-modal'));
+  ok('the trigger now names that model', triggerText().length > 2 && /deepseek/i.test(triggerText()), triggerText());
+  ok('it is remembered for next time', String(win.eval('localStorage.getItem("acx_model_recent")')).includes(pickedRef));
+  click(q('#root .mp-trigger'));
+  await settle(4);
+  typeIn(q('#root .mp-custom input'), 'vendor/totally-new-2027-model');
+  await settle(2);
+  click(qa('#root .mp-custom button').find((b) => b.textContent.trim() === 'Use'));
+  await settle(6);
+  ok('any id you type is usable', String(win.eval('localStorage.getItem("acx_model")')) === 'nvidia::vendor/totally-new-2027-model', String(win.eval('localStorage.getItem("acx_model")')));
+  ok('the trigger falls back to the raw id', triggerText() === 'vendor/totally-new-2027-model', triggerText());
+  click(q('#root .mp-trigger'));
+  await settle(3);
+  keydown(q('#root .mp'), 'Escape');
+  await settle(3);
+  ok('Esc closes it', !q('#root .mp-modal'));
+
+  console.log('\n— pasting a key in Settings is an account write —');
+  bridgeCalls.length = 0;
+  await mountAt('/settings', { token: reg.token, user: reg.user });
+  const cards = qa('#root .mcp-grid > *');
+  ok('provider cards render', cards.length > 5, `${cards.length} cards`);
+  const nvCard = cards.find((c) => /NVIDIA|build.nvidia/i.test(c.textContent));
+  ok('the NVIDIA row is there', Boolean(nvCard));
+  const beforeCfg = await (await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'config', token: reg.token }) })).json();
+  const nvBefore = (beforeCfg.providers || []).find((p) => p.id === 'nvidia');
+  typeIn(nvCard.querySelector('input[type=password]'), 'nvapi-mount-test-key-000111222');
+  await settle(2);
+  click([...nvCard.querySelectorAll('button')].find((b) => /Save key/i.test(b.textContent)));
+  await settle(14);
+  ok('the save writes to the account, not to server config', bridgeCalls.some((c) => c.action === 'user_keys' && c.key_env === 'NVIDIA_API_KEY'), JSON.stringify(bridgeCalls.map((c) => c.action)));
+  ok('the global admin-only action is never called from a user page', !bridgeCalls.some((c) => c.action === 'save_provider_key'), JSON.stringify(bridgeCalls.map((c) => c.action)));
+  ok('the toast reports where it landed', /Saved to/i.test(win.document.getElementById('root').textContent), win.document.querySelector('.toast')?.textContent || 'no toast node');
+  const afterCfg = await (await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'config', token: reg.token }) })).json();
+  const nvAfter = (afterCfg.providers || []).find((p) => p.id === 'nvidia');
+  ok('the server now calls nvidia configured for this account', nvAfter?.configured === true && nvAfter?.key_owner === 'you', JSON.stringify(nvAfter));
+  ok('and it was not configured before', nvBefore?.configured === false, JSON.stringify(nvBefore));
+  ok('a row carries real model ids for the menu', (nvAfter?.models || []).length > 3
+    && nvAfter.models.every((m) => typeof (m.id || m) === 'string' && (m.id || m) !== 'default'), JSON.stringify((nvAfter?.models || []).slice(0, 2)));
+  ok("someone else's account is untouched by it", await (async () => {
+    const stranger = await (await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'register', email: `stranger${Date.now()}@gmail.com`, password: 'strangerpass1', name: 'Stranger' }) })).json();
+    const otherCfg = await (await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'config', token: stranger.token }) })).json();
+    const p = (otherCfg.providers || []).find((x) => x.id === 'nvidia');
+    // 'shared' (the built-in default) is fine — what must never happen is the
+    // mount test's key showing up as somebody else's, or their view changing.
+    return p?.key_owner !== 'you';
+  })());
+
+  console.log('\n— a provider failure is explained, not swallowed —');
+  await mountAt('/', { token: reg.token, user: reg.user });
+  win.eval(`localStorage.setItem('acx_model', 'nvidia::moonshotai/kimi-k2')`);
+  await mountAt('/', { token: reg.token, user: reg.user });
+  const box = q('#root .composer textarea');
+  ok('the composer is present', Boolean(box));
+  typeIn(box, 'hello from the mount test');
+  await settle(2);
+  click(q('#root .send-btn'));
+  await settle(60);
+  const msgs = qa('#root .msg-row.assistant .msg-text').map((el) => el.textContent);
+  ok('the user message is kept even when the reply fails', /hello from the mount test/.test(win.document.getElementById('root').textContent));
+  const last = msgs[msgs.length - 1] || '';
+  ok('the reply is not a blank bubble', last.length > 8, JSON.stringify(msgs));
+  ok('a broken key says so instead of a bare error', /nvidia|API key|reach/i.test(last), last.slice(0, 160));
+  ok('and points at the fix', Boolean(q('#root .msg-fix a[href="/settings"]')), q('#root .msg-fix')?.outerHTML?.slice(0, 160) || 'no .msg-fix row');
+  await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'user_keys', op: 'delete', token: reg.token, key_env: 'NVIDIA_API_KEY' }) });
 
   console.log('\n— signed out —');
   win.eval('localStorage.clear()');
