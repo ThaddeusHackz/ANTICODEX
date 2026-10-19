@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
+import { modelLabel } from '../ModelPicker.jsx';
 import * as api from '../lib/api.js';
 import { renderMarkdown } from '../lib/markdown.js';
 
@@ -131,16 +133,26 @@ export default function ChatPage() {
       if (active.search) system = ((system ? system + '\n' : '') + 'Use web search results when the search tool is available; cite sources as [n].');
       const out = await api.chat({
         messages: next.map((m) => ({ role: m.role, content: m.content })),
-        model: model.includes('::') ? model.split('::')[1] : model,
+        model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
         system,
         use_mcp: active.mcp !== false
       });
+      // A provider failure comes back as { ok:false, error, settings_link } on a
+      // 200 — it used to render as a bare "(no response)" with no explanation,
+      // which is what "I added my NVIDIA key and nothing happens" looked like.
+      const problem = out.ok === false || (out.error && !out.text);
       const reply = {
         role: 'assistant',
-        content: out.text || out.content || '(no response)',
+        content: problem ? `⚠ ${out.error}` : (out.text || out.content || '(no response)'),
         tool_calls: out.tool_calls,
-        model: out.model
+        model: out.model,
+        error: problem || undefined,
+        // The actionable part is UI, not prose: a real button to the key you are
+        // missing, or the model menu that has the one that works.
+        fix: problem ? out.fix : undefined,
+        settings_link: problem ? out.settings_link : undefined,
+        model_picker: problem ? out.model_picker : undefined
       };
       const merged = [...next, reply];
       setMessages(merged);
@@ -174,6 +186,19 @@ export default function ChatPage() {
                 ) : (
                   <>
                     <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                    {m.error ? (
+                      <div className="msg-fix">
+                        {m.settings_link
+                          ? <Link className="btn small" to={m.settings_link}>Add or replace the key →</Link>
+                          : null}
+                        {m.model_picker
+                          ? <span className="tiny">Open the model menu above and pick one this endpoint serves.</span>
+                          : null}
+                        {m.fix === 'quota' ? <span className="tiny">Out of quota on that key — a different model usually answers.</span> : null}
+                        {m.fix === 'retry' ? <button className="btn small ghost" onClick={() => send()}>Try again</button> : null}
+                        {m.fix === 'endpoint' ? <span className="tiny">Base URL + key live in Settings → Providers.</span> : null}
+                      </div>
+                    ) : null}
                     {m.tool_calls?.map((tc, j) => (
                       <div key={j} className="tool-card">
                         <div className="tool-name">⇄ {tc.function?.name || 'tool'}</div>
@@ -242,7 +267,7 @@ export default function ChatPage() {
               ))}
             </div>
             <div className="disclaimer">
-              ANTICODEX can make mistakes. {cfg?.provider_count || 26} provider endpoints · Model: {model.includes('::') ? model.split('::')[1] : model}
+              ANTICODEX can make mistakes. {cfg?.provider_count || 27} provider endpoints · Model: {modelLabel(model, cfg?.picker)}
             </div>
           </>
         )}

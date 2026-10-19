@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { models as modelsApi, testEndpoint, updateCheck, api, userKeys } from '../lib/api.js';
+import { models as modelsApi, testEndpoint, updateCheck, api, userKeys, storeKey } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
 
-function ProviderCard({ def, onSave, onTest }) {
+function ProviderCard({ def, onSave, onTest, onSaved, onPickModel, notify }) {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(def.endpoint);
   const [out, setOut] = useState('');
@@ -24,10 +24,11 @@ function ProviderCard({ def, onSave, onTest }) {
   }
 
   async function sync() {
-    setBusy(true);
+    setBusy(true); setOut('reading the live /models list…');
     try {
-      const r = await api('sync_models', { provider: def.id, endpoint });
-      if (r.ok) { setModels(r.models); setOut(`✓ synced ${r.models.length} live models`); }
+      // the typed key is sent only when present, so "sync before saving" works
+      const r = await api('sync_models', { provider: def.id, endpoint, ...(key ? { api_key: key } : {}) });
+      if (r.ok) { setModels(r.models); setOut(`✓ ${r.models.length} live models${r.source === 'cache' ? ' (cached)' : ''}`); onSaved && onSaved(); }
       else setOut(`✗ ${r.error || 'sync failed'}`);
     } catch (e) { setOut('✗ ' + e.message); }
     finally { setBusy(false); }
@@ -63,11 +64,17 @@ function ProviderCard({ def, onSave, onTest }) {
       {models?.length > 0 && (
         <div className="row" style={{ marginTop: 10, gap: 5, maxHeight: 130, overflowY: 'auto' }}>
           {models.slice(0, 40).map((m) => (
-            <span key={m.id} className="pill" title={m.id} style={{ fontWeight: 600 }}>
+            <button
+              key={m.id} className="pill model-chip" title={`${m.id} — click to use in chat`} style={{ fontWeight: 600 }}
+              onClick={() => {
+                const ref = `${def.id}::${m.id}`;
+                if (onPickModel) { onPickModel(ref); notify(`Model set: ${m.label || m.id}`); }
+              }}
+            >
               {m.label || m.id}{m.vision ? ' ◉' : ''}{m.reasoning ? ' ∞' : ''}
-            </span>
+            </button>
           ))}
-          {models.length > 40 && <span className="tiny">+{models.length - 40} more</span>}
+          {models.length > 40 && <span className="tiny">+{models.length - 40} more — the model menu lists them all</span>}
         </div>
       )}
     </div>
@@ -154,7 +161,7 @@ function githubNote(cfg) {
 }
 
 export default function SettingsPage() {
-  const { notify, cfg, theme, setTheme, user, model, setModel, signOut } = useApp();
+  const { notify, cfg, setCfg, theme, setTheme, user, model, setModel, signOut } = useApp();
   const nav = useNavigate();
   const [tab, setTab] = useState('providers');
   const [directory, setDirectory] = useState([]);
@@ -177,14 +184,18 @@ export default function SettingsPage() {
 
   async function saveKey(def, key, endpoint) {
     if (!key) return notify('Paste an API key first');
-    // 1) server-side runtime config (works for web + desktop)
-    try { await api('save_provider_key', { key_env: def.key_env, value: key }); } catch { /* local fallback below */ }
-    // 2) device-local (this browser)
-    localStorage.setItem(`acx_key_${def.key_env}`, key);
-    // 3) desktop keychain (used for direct main-process calls)
-    if (desktop?.saveKeys) { try { await desktop.saveKeys({ [def.key_env]: key }); } catch { /* optional */ } }
-    notify(`${def.name} key saved`);
+    // Your key goes to your ACCOUNT (which is what chat/search/image/video
+    // resolve server-side) plus the desktop keychain when installed. It used to
+    // be written to server-global config — read-only on serverless, silently
+    // failing, and then reporting "key saved" anyway. That is why a pasted
+    // NVIDIA key looked like nothing happened.
+    const r = await storeKey(def.key_env, key);
+    if (!r.ok) return notify(r.error || 'Could not store that key');
+    notify(`Saved to ${r.scopes.join(' + ')} — ${def.name} is ready. Pick a model in the top bar.`);
     refresh();
+    // the top-bar picker reads cfg.providers: re-pull config so the new key flips
+    // "needs key" → "key ✓" without a reload
+    api('config').then((c) => setCfg && setCfg(c)).catch(() => {});
   }
 
   const visible = useMemo(() => directory.filter((d) =>
@@ -223,7 +234,11 @@ export default function SettingsPage() {
           </div>
           <div className="mcp-grid">
             {visible.map((def) => (
-              <ProviderCard key={def.id} def={def} onSave={saveKey} />
+              <ProviderCard
+                key={def.id} def={def} onSave={saveKey} notify={notify}
+                onSaved={() => api('config').then((c) => setCfg && setCfg(c)).catch(() => {})}
+                onPickModel={(ref) => { setModel(ref); notify(`Model set — ${ref.split('::').slice(1).join('::')}`); }}
+              />
             ))}
           </div>
 
@@ -271,8 +286,8 @@ export default function SettingsPage() {
           <button className="btn primary" onClick={async () => {
             const t = document.getElementById('tavily').value;
             const x = document.getElementById('exa').value;
-            if (t) await api('save_provider_key', { key_env: 'TAVILY_API_KEY', value: t }).catch(() => {});
-            if (x) await api('save_provider_key', { key_env: 'EXA_API_KEY', value: x }).catch(() => {});
+            if (t) await storeKey('TAVILY_API_KEY', t).catch(() => {});
+            if (x) await storeKey('EXA_API_KEY', x).catch(() => {});
             notify('Search keys saved');
           }}>Save search keys</button>
           <div className="tiny" style={{ marginTop: 8 }}>Also editable globally in Admin → Keys.</div>
@@ -288,8 +303,8 @@ export default function SettingsPage() {
             <Field label="API token (Workers AI:run)"><input type="password" placeholder="token" id="cftok" /></Field>
             <button className="btn primary" onClick={async () => {
               const a = document.getElementById('cfacct').value, t = document.getElementById('cftok').value;
-              if (a) await api('save_provider_key', { key_env: 'CF_ACCOUNT_ID', value: a }).catch(() => {});
-              if (t) await api('save_provider_key', { key_env: 'CF_API_TOKEN', value: t }).catch(() => {});
+              if (a) await storeKey('CF_ACCOUNT_ID', a).catch(() => {});
+              if (t) await storeKey('CF_API_TOKEN', t).catch(() => {});
               notify('Cloudflare settings saved');
             }}>Save Flux settings</button>
           </div>
@@ -300,8 +315,8 @@ export default function SettingsPage() {
             <Field label="Group ID (optional)"><input id="mmgrp" /></Field>
             <button className="btn primary" onClick={async () => {
               const k = document.getElementById('mmkey').value, g = document.getElementById('mmgrp').value;
-              if (k) await api('save_provider_key', { key_env: 'MINIMAX_API_KEY', value: k }).catch(() => {});
-              if (g) await api('save_provider_key', { key_env: 'MINIMAX_GROUP_ID', value: g }).catch(() => {});
+              if (k) await storeKey('MINIMAX_API_KEY', k).catch(() => {});
+              if (g) await storeKey('MINIMAX_GROUP_ID', g).catch(() => {});
               notify('MiniMax settings saved');
             }}>Save MiniMax settings</button>
           </div>

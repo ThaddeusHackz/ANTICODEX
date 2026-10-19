@@ -19,7 +19,12 @@ export function AppProvider({ children }) {
     localStorage.setItem('acx_theme', theme);
   }, [theme]);
 
-  useEffect(() => { localStorage.setItem('acx_model', model); }, [model]);
+  useEffect(() => {
+    localStorage.setItem('acx_model', model);
+    // keep a short "recently used" list for the model picker (setModel from any
+    // page — chat, Codex, agent studio — lands here)
+    import('../ModelPicker.jsx').then((m) => m.rememberModel(model)).catch(() => {});
+  }, [model]);
 
   useEffect(() => {
     api.config().then(setCfg).catch(() => {});

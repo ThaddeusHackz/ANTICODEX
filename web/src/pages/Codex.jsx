@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { chat as chatApi } from '../lib/api.js';
 import { useApp, userKey } from '../lib/state.jsx';
+import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { CopyBtn, Pill } from '../ui.jsx';
 
@@ -73,11 +74,12 @@ export default function CodexPage() {
     try {
       const fileContext = Object.entries(fs).map(([k, v]) => `--- ${k} ---\n${v.slice(0, 600)}`).join('\n\n');
       const r = await chatApi({
-        model,
+        model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
+        provider: model.includes('::') ? model.split('::')[0] : undefined,
         system: `You are the ANTICODEX Codex agent (mode: ${mode}). Working files:\n${fileContext}\nWhen proposing changes, output a fenced "diff" block with +/- lines and the file name first.`,
         messages: [...messages, { role: 'user', content }]
       });
-      const full = r.text || '(no response)';
+      const full = r.error ? `⚠ ${r.error}${r.settings_link ? ' — fix it in Settings → Providers' : ''}` : (r.text || '(no response)');
       let shown = '';
       for (const w of full.split(/(\s+)/)) {
         shown += w;
@@ -186,7 +188,7 @@ export default function CodexPage() {
               style={{ minHeight: 40 }}
             />
             <div className="composer-bar">
-              <ModelSelectInline />
+              <ModelPicker compact />
               <div style={{ flex: 1 }} />
               <button className="btn primary small" disabled={busy || !input.trim()} onClick={askAgent}>{busy ? '…' : 'Run ⏎'}</button>
             </div>
@@ -197,16 +199,4 @@ export default function CodexPage() {
   );
 }
 
-function ModelSelectInline() {
-  const { model, setModel } = useApp();
-  return (
-    <select value={model} onChange={(e) => setModel(e.target.value)} style={{ width: 190, padding: '6px 8px', fontSize: 12 }}>
-      <option value="anticodex/demo-core">Demo Core</option>
-      <option value="nvidia::nvidia/nemotron-3.5-lightning-30b-a3b">Nemotron 3.5 Lightning</option>
-      <option value="nvidia::nvidia/nemotron-3-ultra-550b-a55b">Nemotron 3 Ultra</option>
-      <option value="deepseek::deepseek-flash">DeepSeek V4.1 Flash 1017</option>
-      <option value="openai::gpt-5.1-codex">GPT-5.1 Codex</option>
-      <option value="anthropic::claude-sonnet-5.5">Claude Sonnet 5.5</option>
-    </select>
-  );
-}
+

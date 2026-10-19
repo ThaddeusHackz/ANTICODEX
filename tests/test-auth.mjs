@@ -259,7 +259,7 @@ async function main() {
   assert(await waitFor(BASE), 'server did not start');
   {
     const cfg = (await api(BASE, 'config')).data;
-    assert(cfg.supabase_configured === true && cfg.name === 'ANTICODEX', 'this test must reach a server wired to the mock Supabase');
+    assert(cfg.auth_mode === 'supabase' && cfg.name === 'ANTICODEX', 'this test must reach a server wired to the mock Supabase');
   }
 
   const email = `real${Date.now()}@gmail.com`;

@@ -251,25 +251,18 @@ ipcMain.handle('acx:pairWait', async (_e, code) => {
         // Teach this install's own bridge about the linked session, otherwise
         // /me and /threads would 401 against the local copy of the ledger.
         try { await localBridge({ action: 'pair', op: 'adopt', token: s.token, user: s.user }); } catch { /* non-fatal */ }
-        // Mirror the website's service keychain into the local bridge config so
-        // the desktop works with the same NVIDIA / Tavily / Flux / MiniMax /
-        // ElevenLabs / Whisper / Unsplash / weather / YouTube keys.
-        if (s.service_keys) {
+        // Bring the account's keys (NVIDIA, Tavily, Flux, MiniMax, ElevenLabs,
+        // Whisper, …) across so the desktop works exactly like the website. They
+        // land in this install's own keychain — which every provider call in this
+        // app resolves *first* — instead of being POSTed into the bridge as
+        // server-global config (an admin-level write that a paired user must not
+        // need, and that silently 401s now that global keys are admin-only).
+        const mirrored = s.service_keys ? Object.keys(s.service_keys) : [];
+        if (mirrored.length) {
           const state = loadState();
-          const base = state.apiBase;
-          if (base) {
-            for (const [key_env, value] of Object.entries(s.service_keys)) {
-              try {
-                await fetch(`${base}/api/bridge`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ action: 'save_provider_key', key_env, value })
-                });
-              } catch { /* keep going */ }
-            }
-          }
+          saveState({ providerKeys: { ...(state.providerKeys || {}), ...s.service_keys } });
         }
-        return { ok: true, token: s.token, user: s.user, synced_keys: Object.keys(s.service_keys || {}).length };
+        return { ok: true, token: s.token, user: s.user, synced_keys: mirrored.length };
       }
     } catch { /* network hiccup — keep polling */ }
     await new Promise((r) => setTimeout(r, 3000));

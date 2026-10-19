@@ -3,6 +3,7 @@ import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-
 import { useApp, loadThreads, mergeThreads } from './lib/state.jsx';
 import * as api from './lib/api.js';
 import { Brand, Toast } from './ui.jsx';
+import ModelPicker from './ModelPicker.jsx';
 import ChatPage from './pages/Chat.jsx';
 import CodexPage from './pages/Codex.jsx';
 import ClaudePage from './pages/Claude.jsx';
@@ -144,10 +145,8 @@ function Sidebar() {
 }
 
 function Topbar() {
-  const { sidebarOpen, setSidebarOpen, model, setModel, cfg } = useApp();
-  const [menu, setMenu] = useState(false);
+  const { sidebarOpen, setSidebarOpen, cfg } = useApp();
   const loc = useLocation();
-  const models = cfg?.providers || [];
   return (
     <div className="topbar">
       {!sidebarOpen && (
@@ -156,31 +155,7 @@ function Topbar() {
           <Brand compact />
         </>
       )}
-      {loc.pathname === '/' && (
-        <div style={{ position: 'relative' }}>
-          <button className="model-select" onClick={() => setMenu((v) => !v)}>
-            {model.includes('::') ? model.split('::')[1] : model.split('/').pop()} <span style={{ fontSize: 10 }}>▼</span>
-          </button>
-          {menu && (
-            <div className="model-menu" onClick={() => setMenu(false)}>
-              <div className="m-title">ANTICODEX Demo</div>
-              <button className="m-item" onClick={() => setModel('anticodex/demo-core')}>
-                <span>Demo Core (offline)</span><span className="desc">No API key needed</span>
-              </button>
-              <div className="m-title">Providers — Settings → API keys</div>
-              {models.filter((p) => p.id !== 'demo').slice(0, 12).map((p) => (
-                <button key={p.id} className="m-item" onClick={() => setModel(`${p.id}::${(p.models && p.models[0]?.id) || 'default'}`)}>
-                  <span>{p.name}</span>
-                  <span className="desc">{p.configured ? 'configured ✓' : 'add an API key to use'}</span>
-                </button>
-              ))}
-              <button className="m-item" onClick={() => { window.location.hash = ''; window.location.pathname = '/settings'; }}>
-                <span>⚙ All provider models…</span><span className="desc">NVIDIA, OpenAI, Anthropic, DeepSeek, 26 endpoints</span>
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+      <ModelPicker />
       <div className="spacer" />
       <button className="chip-toggle" onClick={() => { window.location.pathname = '/mcp'; }}>⇄ Connect</button>
       <button className="icon-btn" title="Settings" onClick={() => { window.location.pathname = '/settings'; }}>⚙</button>
@@ -230,7 +205,8 @@ export default function App() {
         <Route path="/admin" element={<Shell><AdminPage /></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      {toast && <Toast />}
+      {/* the prop used to be forgotten here, so notify() was invisible everywhere */}
+      {toast && <Toast toast={toast} />}
     </>
   );
 }
