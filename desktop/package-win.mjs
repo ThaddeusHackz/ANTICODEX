@@ -38,7 +38,7 @@ const args = [
   `--out=${out}`,
   '--overwrite',
   '--asar',
-  '--app-version=0.1.5',
+  '--app-version=0.1.6',
   '--ignore=node_modules/electron($|/)',
   '--ignore=node_modules/electron-packager($|/)',
   '--extra-resource=' + path.join(root, 'web', 'dist'),
@@ -58,7 +58,7 @@ console.log(`\n✓ Windows app: ${appDir}`);
 console.log(`  Run with:    ${path.join(appDir, 'ANTICODEX.exe')}`);
 
 // Zip it as the portable release asset (tar: available and long-path-safe on win/mac/linux).
-const zipPath = path.join(out, 'ANTICODEX-0.1.5-win32-x64.zip');
+const zipPath = path.join(out, 'ANTICODEX-0.1.6-win32-x64.zip');
 if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 const zip = spawnSync('tar', ['-a', '-c', '-f', zipPath, 'ANTICODEX-win32-x64'], { cwd: out, stdio: 'inherit', shell: process.platform === 'win32' });
 if (zip.status === 0) console.log(`✓ Portable zip: ${zipPath}`);

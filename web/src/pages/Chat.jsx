@@ -36,12 +36,24 @@ function ToolChips({ active, setActive }) {
 
 function MessageActions({ text, onRegen }) {
   const { notify } = useApp();
+  const [speaking, setSpeaking] = useState(false);
+  async function speak() {
+    setSpeaking(true);
+    try {
+      const r = await api.extras({ op: 'tts', text: (text || '').slice(0, 2000) });
+      if (r.ok === false) { notify(r.error); return; }
+      const audio = new Audio('data:' + r.mime + ';base64,' + r.audio_base64);
+      await audio.play();
+    } catch (e) { notify('Speech failed: ' + e.message); }
+    finally { setSpeaking(false); }
+  }
   return (
     <div className="msg-actions">
       <button className="icon-btn" title="Copy" onClick={() => {
         navigator.clipboard?.writeText(text || '');
         notify('Copied to clipboard');
       }}>⧉</button>
+      <button className="icon-btn" title="Read aloud" onClick={speak}>{speaking ? '⏸' : '🔊'}</button>
       <button className="icon-btn" title="Good response">👍</button>
       <button className="icon-btn" title="Bad response">👎</button>
       {onRegen && <button className="icon-btn" title="Regenerate" onClick={onRegen}>↻</button>}
@@ -186,6 +198,20 @@ export default function ChatPage() {
           />
           <div className="composer-bar">
             <button className="icon-btn" title="Add files" onClick={() => notify('Attach from the Codex workspace — drag & drop lands in v0.2')}>＋</button>
+            <label className="icon-btn" title="Voice input (Whisper)" style={{ cursor: 'pointer' }}>
+              🎤
+              <input type="file" accept="audio/*" style={{ display: 'none' }} onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const b64 = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
+                notify('Transcribing…');
+                try {
+                  const r = await api.extras({ op: 'stt', audio_base64: b64, mime: f.type || 'audio/webm' });
+                  if (r.ok === false) { notify(r.error); return; }
+                  setInput((t) => (t ? t + ' ' : '') + (r.text || ''));
+                } catch (err) { notify('Transcription failed: ' + err.message); }
+              }} />
+            </label>
             <ToolChips active={active} setActive={setActive} />
             <button className="send-btn" disabled={!input.trim() || busy} onClick={() => send()}>
               {busy ? '■' : '↑'}

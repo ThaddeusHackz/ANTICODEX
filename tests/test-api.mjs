@@ -211,6 +211,16 @@ async function main() {
   r = await api('sync_models', { provider: 'deepseek' });
   ok('sync_models returns keyed error gracefully', r.status === 200 && r.data.ok === false);
 
+  console.log('— extras (voice/search/data services) —');
+  r = await api('extras', { op: 'status' });
+  ok('extras status lists services', r.status === 200 && r.data.ok && 'tavily' in r.data.services && 'elevenlabs' in r.data.services);
+  r = await api('extras', { op: 'image_search', query: 'test' });
+  ok('extras degrade gracefully without keys', r.status === 200 && r.data.ok === false && /not configured/i.test(r.data.error || ''));
+  r = await api('extras', { op: 'tts', text: 'hi' });
+  ok('tts degrades gracefully', r.status === 200 && r.data.ok === false);
+  r = await api('extras', { op: 'nope' });
+  ok('unknown extras op rejected', r.data.ok === false);
+
   console.log('— full provider catalog (26 providers / 471 OpenRouter ids) —');
   const { PROVIDER_DIRECTORY, OPENROUTER_EXTRA_MODELS } = await import('../lib/catalog.js');
   ok('26 directory providers', PROVIDER_DIRECTORY.length === 26);

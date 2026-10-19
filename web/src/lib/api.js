@@ -84,4 +84,5 @@ export const pairing = {
   status: (code) => api('pair', { op: 'status', code })
 };
 
+export const extras = (payload) => api('extras', payload);
 export const updateCheck = () => api('update_check', {});

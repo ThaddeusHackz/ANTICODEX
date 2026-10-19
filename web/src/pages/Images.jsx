@@ -1,7 +1,41 @@
 import React, { useState } from 'react';
-import { image as imageApi } from '../lib/api.js';
+import { image as imageApi, extras } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, CopyBtn, Empty } from '../ui.jsx';
+
+function UnsplashSearch() {
+  const { notify } = useApp();
+  const [q, setQ] = useState('');
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginTop: 0 }}>Search Unsplash photos</h3>
+      <div className="row">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="mountains, neon city, abstract…"
+          onKeyDown={(e) => { if (e.key === 'Enter') document.getElementById('unsplash-go')?.click(); }} style={{ flex: 1 }} />
+        <button id="unsplash-go" className="btn primary" disabled={busy || !q.trim()} onClick={async () => {
+          setBusy(true);
+          try {
+            const r = await extras({ op: 'image_search', query: q });
+            if (r.ok === false) { notify(r.error); return; }
+            setItems(r.results || []);
+          } catch (e) { notify(e.message); }
+          finally { setBusy(false); }
+        }}>{busy ? 'Searching…' : 'Search'}</button>
+      </div>
+      {items.length > 0 && (
+        <div className="gallery" style={{ marginTop: 14 }}>
+          {items.map((p) => (
+            <a key={p.id} className="media-frame" href={p.link} target="_blank" rel="noreferrer" title={p.author}>
+              <img src={p.thumb} alt={p.alt || ''} loading="lazy" />
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ImagesPage() {
   const { notify, cfg } = useApp();

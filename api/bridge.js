@@ -7,6 +7,7 @@ import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
 import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
+import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { MCP_CATALOG, McpClient, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
@@ -49,6 +50,7 @@ export default async function handler(req, res) {
       case 'mcp': return await handleMcp(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res);
+      case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
       default: return json(res, 404, { error: `unknown action: ${action}` });
     }
@@ -72,6 +74,12 @@ function publicConfig() {
     providers: listProviders().map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind })),
     provider_count: PROVIDER_DIRECTORY.length,
     search_configured: Boolean(getKey('TAVILY_API_KEY') || getKey('EXA_API_KEY')),
+    extras: {
+      elevenlabs: Boolean(getKey('ELEVENLABS_API_KEY')), whisper: Boolean(getKey('OPENAI_API_KEY')),
+      unsplash: Boolean(getKey('UNSPLASH_ACCESS_KEY')), openweather: Boolean(getKey('OPENWEATHER_API_KEY')),
+      windy: Boolean(getKey('WINDY_API_KEY')), opensky: Boolean(getKey('OPENSKY_CLIENT_ID')),
+      youtube: Boolean(getKey('YOUTUBE_API_KEY')), groq: Boolean(getKey('GROQ_API_KEY'))
+    },
     flux_configured: Boolean(getKey('CF_API_TOKEN') && getKey('CF_ACCOUNT_ID')),
     minimax_configured: Boolean(getKey('MINIMAX_API_KEY')),
     supabase_url: process.env.SUPABASE_URL || getKey('SUPABASE_URL') || '',
@@ -88,8 +96,9 @@ async function handleChat(body, res) {
 
   if (use_mcp !== false) {
     const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
-    if (conns.length) {
-      const tools = (await collectTools(conns)).filter((t) => !t._error).slice(0, 40);
+    const builtins = builtinTools();
+    if (conns.length || builtins.length) {
+      const tools = [...builtins, ...(await collectTools(conns)).filter((t) => !t._error)].slice(0, 40);
       if (tools.length) {
         const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
@@ -101,8 +110,12 @@ async function handleChat(body, res) {
             let args = {};
             try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* empty */ }
             let result;
-            try { result = await executeTool(conns, tc.function?.name, args); }
-            catch (e) { result = { error: String(e.message || e) }; }
+            try {
+              const fname = tc.function?.name || '';
+              result = builtins.some((b) => b.function.name === fname)
+                ? await runBuiltin(fname, args)
+                : await executeTool(conns, fname, args);
+            } catch (e) { result = { error: String(e.message || e) }; }
             msgs.push({ role: 'tool', tool_call_id: tc.id, name: tc.function?.name, content: JSON.stringify(result).slice(0, 12000) });
           }
           const next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
@@ -373,11 +386,17 @@ async function handlePair(body, res) {
     return json(res, 200, { ok: true, token: body.user_token || `dsk_${s.id}` });
   }
   if (op === 'status') {
-    // Desktop polls this until the website claims the code.
+    // Desktop polls this until the website claims the code. Once claimed, the
+    // desktop receives the service keychain so it works identically to the site.
     const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code);
     if (!s) return json(res, 404, { error: 'unknown code' });
     if (!s.used) return json(res, 200, { ok: true, claimed: false, expires_in: Math.max(0, Math.round((new Date(s.expires_at) - new Date()) / 1000)) });
-    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: s.linked_user, user_id: s.claimed_by });
+    const service_keys = {};
+    for (const k of allKeyEnvs()) {
+      const v = getKey(k);
+      if (v && !String(k).startsWith('ADMIN_')) service_keys[k] = v;
+    }
+    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: s.linked_user, user_id: s.claimed_by, service_keys });
   }
   return json(res, 400, { error: 'unknown pair op' });
 }

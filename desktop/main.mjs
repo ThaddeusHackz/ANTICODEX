@@ -10,7 +10,7 @@ import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 // Works both from the repo (../web/dist) and packaged (extra-resource dist).
 const RES_ROOT = process.resourcesPath || path.join(__dirname, '..');
 const WEB_DIST_CANDIDATES = [
@@ -193,7 +193,25 @@ ipcMain.handle('acx:pairWait', async (_e, code) => {
       const s = await siteBridge({ action: 'pair', op: 'status', code });
       if (s?.claimed) {
         saveState({ desktopToken: s.token, user: s.user, pairedAt: new Date().toISOString() });
-        return { ok: true, token: s.token, user: s.user };
+        // Mirror the website's service keychain into the local bridge config so
+        // the desktop works with the same NVIDIA / Tavily / Flux / MiniMax /
+        // ElevenLabs / Whisper / Unsplash / weather / YouTube keys.
+        if (s.service_keys) {
+          const state = loadState();
+          const base = state.apiBase;
+          if (base) {
+            for (const [key_env, value] of Object.entries(s.service_keys)) {
+              try {
+                await fetch(`${base}/api/bridge`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action: 'save_provider_key', key_env, value })
+                });
+              } catch { /* keep going */ }
+            }
+          }
+        }
+        return { ok: true, token: s.token, user: s.user, synced_keys: Object.keys(s.service_keys || {}).length };
       }
     } catch { /* network hiccup — keep polling */ }
     await new Promise((r) => setTimeout(r, 3000));

@@ -46,6 +46,17 @@ cd desktop && npm install && npm run package:win
 | **Admin** | `Thaddeusadmin` console: users, global API keys, system status, activity |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 
+## Service keychain (integrated 2026-10-19)
+
+All service keys live in the same keychain as the provider keys — resolved
+from env (Vercel), the admin runtime config, or Settings → API keys. Wired
+features: **NVIDIA NIM** chat models · **Groq** LLM · **OpenAI** (GPT + Whisper
+voice input) · **ElevenLabs** read-aloud · **Cloudflare Flux** image gen ·
+**R2** media storage · **MiniMax H3** video · **Tavily** web search ·
+**Unsplash** image search · **OpenWeather** + **Windy** weather/maps ·
+**OpenSky** live flights · **YouTube** search. Paired desktops receive the
+same keychain automatically after sign-in.
+
 ## Email verification (works out of the box)
 
 Sign-up and password-reset emails send a **Confirm / Reset link** (Supabase
