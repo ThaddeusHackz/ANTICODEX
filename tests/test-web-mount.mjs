@@ -120,9 +120,18 @@ globalThis.__mount = (route) => {
   // Every bridge call the UI makes is recorded, so "where did my key go?" is
   // answered from the wire, not from reading the component.
   const bridgeCalls = [];
+  // Two responses are stubbed, not because the app is wrong but because those
+  // branches need an upstream this sandbox cannot reach: a provider that answers
+  // 200 with an error body, and a verified/live model list.
+  let chatStub = null;
+  let modelsStub = null;
   const rawFetch = win.fetch;
   win.fetch = (input, init = {}) => {
-    if (init && init.body) { try { bridgeCalls.push(JSON.parse(String(init.body))); } catch { /* non-json */ } }
+    let parsed = null;
+    if (init && init.body) { try { parsed = JSON.parse(String(init.body)); bridgeCalls.push(parsed); } catch { /* non-json */ } }
+    const act = parsed && parsed.action;
+    if (act === 'chat' && chatStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(chatStub)) });
+    if (act === 'models' && modelsStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(modelsStub)) });
     return rawFetch(input, init);
   };
   const q = (sel) => win.document.querySelector(sel);
@@ -266,6 +275,73 @@ globalThis.__mount = (route) => {
   ok('a broken key says so instead of a bare error', /nvidia|API key|reach/i.test(last), last.slice(0, 160));
   ok('and points at the fix', Boolean(q('#root .msg-fix a[href="/settings"]')), q('#root .msg-fix')?.outerHTML?.slice(0, 160) || 'no .msg-fix row');
   await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'user_keys', op: 'delete', token: reg.token, key_env: 'NVIDIA_API_KEY' }) });
+
+
+  console.log('\n— the card proves the key, the picker proves the ids —');
+  bridgeCalls.length = 0;
+  await mountAt('/settings', { token: reg.token, user: reg.user });
+  {
+    const cards2 = qa('#root .mcp-grid > *');
+    const nv = cards2.find((c) => /NVIDIA|build.nvidia/i.test(c.textContent));
+    typeIn(nv.querySelector('input[type=password]'), 'nvapi-verification-key-999');
+    await settle(2);
+    click([...nv.querySelectorAll('button')].find((b) => /Save key/i.test(b.textContent)));
+    await settle(40);
+    const verdict = nv.querySelector('.pc-verdict');
+    const order = bridgeCalls.map((c) => c.action);
+    ok('saving a key immediately probes the provider', order.lastIndexOf('test_endpoint') > order.lastIndexOf('user_keys'), JSON.stringify(order));
+    ok('the card reports a verdict, never a bare "saved"', Boolean(verdict) && !/key saved$/i.test(verdict.textContent || ''), verdict?.textContent || 'no .pc-verdict node');
+    ok('an unreachable provider is admitted as a network limit', /could not reach|network limit|not a bad key|rejected/i.test(verdict?.textContent || ''), (verdict?.textContent || '').slice(0, 180));
+    ok('the verdict line is colour-coded by what it proved', /net|bad|ok/.test([...(verdict?.classList || [])].join(' ')), [...(verdict?.classList || [])].join(' '));
+    ok('and the card states where its model ids came from', /ids from the built-in catalog|ids confirmed by the endpoint/.test(nv.textContent), nv.textContent.slice(-200));
+  }
+
+  console.log('\n— a model list that says what is proven —');
+  modelsStub = {
+    picker: {
+      total_models: 2, configured: 1,
+      providers: [{
+        id: 'nvidia', name: 'NVIDIA NIM', kind: 'openai', configured: true, key_env: 'NVIDIA_API_KEY',
+        verified: true, models_dynamic: true, endpoint: 'https://integrate.api.nvidia.com/v1',
+        models: [
+          { id: 'deepseek-ai/deepseek-r1', label: 'DeepSeek R1', reasoning: true, live: true },
+          { id: 'nvidia/some-2027-guess', label: 'Nemotron Future 900B', live: false, unverified: true }
+        ]
+      }]
+    }
+  };
+  win.eval('localStorage.removeItem("acx_model_index")');
+  win.eval('localStorage.setItem("acx_model", "nvidia::nvidia/some-2027-guess")');
+  await mountAt('/', { token: reg.token, user: reg.user });
+  click(q('#root .mp-trigger'));
+  await settle(10);
+  ok('ids the endpoint listed are marked as proven', qa('#root .mp-live').length >= 1, `${qa('#root .mp-live').length} live marks`);
+  ok('catalog guesses are marked as unproven, not hidden', qa('#root .mp-unver').length >= 1, `${qa('#root .mp-unver').length} unverified marks`);
+  ok('the group header says where the ids came from', /from this endpoint/.test(q('#root .mp-ghead')?.textContent || ''), q('#root .mp-ghead')?.textContent);
+  ok('a proven id sorts before a guessed one', (qa('#root [data-mp-row]')[0]?.textContent || '').includes('DeepSeek R1'), qa('#root [data-mp-row]')[0]?.textContent);
+  ok('the trigger names the model from the same index', /Nemotron Future 900B/.test(triggerText()), triggerText());
+  modelsStub = null;
+
+  console.log('\n— when even the retry cannot help, the reply offers a way out —');
+  win.eval('localStorage.removeItem("acx_model_index")');
+  chatStub = {
+    ok: false, fix: 'model', verdict: 'model', provider: 'nvidia', model: 'nvidia/some-2027-guess',
+    error: 'NVIDIA NIM has no model called "nvidia/some-2027-guess". Pick another model in the picker (or Sync models for the live list).',
+    model_picker: true,
+    fallback: [{ id: 'deepseek-ai/deepseek-r1', label: 'DeepSeek R1' }, { id: 'nvidia/nemotron-3-nano-30b-a3b', label: 'Nemotron 3 Nano 30B A3B' }]
+  };
+  await mountAt('/', { token: reg.token, user: reg.user });
+  typeIn(q('#root .composer textarea'), 'use the model that exists');
+  await settle(2);
+  click(q('#root .send-btn'));
+  await settle(24);
+  const opts = qa('#root .msg-fix-option');
+  ok('the failed reply lists models the endpoint really serves', opts.length === 2, JSON.stringify(opts.map((b) => b.textContent)));
+  click(opts[0]);
+  await settle(8);
+  ok('one click switches to a real model', String(win.eval('localStorage.getItem("acx_model")')) === 'nvidia::deepseek-ai/deepseek-r1', String(win.eval('localStorage.getItem("acx_model")')));
+  ok('the trigger follows the switch', /DeepSeek R1/.test(triggerText()), triggerText());
+  chatStub = null;
 
   console.log('\n— signed out —');
   win.eval('localStorage.clear()');

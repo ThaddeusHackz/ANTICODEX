@@ -24,6 +24,8 @@ function freePort() {
 // A fake OpenAI-compatible provider. Tests assert on `upstreamHits` so "my key
 // was used" and "the model id we sent is real" are proven, not assumed.
 const upstreamHits = [];
+const LIVE = ['mock/big-model', 'mock/tiny-model', 'mock/brand-new-2027'];
+const SOLO = 'mock/solo-model';
 let UPSTREAM_PORT = 0;
 const UPSTREAM = await new Promise((resolve) => {
   const srv = httpModule.createServer((req, res) => {
@@ -37,11 +39,28 @@ const UPSTREAM = await new Promise((resolve) => {
       if ((req.headers.authorization || '') === 'Bearer revoked-key') {
         return res.end(JSON.stringify({ error: { message: 'Incorrect API key provided' } }));
       }
+      const auth = req.headers.authorization || '';
       if (req.url.includes('/models')) {
-        return res.end(JSON.stringify({ object: 'list', data: [{ id: 'mock/big-model' }, { id: 'mock/tiny-model' }, { id: 'mock/brand-new-2027' }] }));
+        // the "solo" gateway lists exactly one model, so there is nothing to
+        // retry with when that one model refuses
+        if (auth === 'Bearer solo-key') return res.end(JSON.stringify({ object: 'list', data: [{ id: SOLO }] }));
+        return res.end(JSON.stringify({ object: 'list', data: LIVE.map((id) => ({ id })) }));
       }
       if (req.url.includes('/chat/completions')) {
-        if (String(body.model || '') === 'does-not-exist') return res.end(JSON.stringify({ error: { message: 'The model `does-not-exist` does not exist' } }));
+        // a key that can list but not call: the retry cannot save this one
+        if (auth === 'Bearer list-only-key') {
+          return res.end(JSON.stringify({ error: { message: 'model_not_found: no capacity is deployed for this model on your key' } }));
+        }
+        // Exactly what a real gateway does with a model it does not host: an HTTP
+        // 200 whose body is an error. ANTICODEX must notice, sync the live list
+        // and answer with a model that exists instead of failing.
+        if (!LIVE.includes(String(body.model || '')) && body.model !== SOLO) {
+          return res.end(JSON.stringify({ error: { message: `The model \`${body.model}\` does not exist or you do not have access to it` } }));
+        }
+        // listed but not callable — the honest "your key cannot use this one" case
+        if (body.model === SOLO) {
+          return res.end(JSON.stringify({ error: { message: `The model \`${SOLO}\` is not available for this key (model_not_found)` } }));
+        }
         // If the literal "default" ever reaches a real upstream, the picker broke.
         if (body.model === 'default' || !body.model) return res.end(JSON.stringify({ error: { message: 'model_not_found: default' } }));
         return res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: `upstream answered with ${body.model}` } }], model: body.model, usage: { total_tokens: 7 } }));
@@ -78,7 +97,13 @@ async function main() {
       CUSTOM_PROVIDERS: JSON.stringify([{
         id: 'localmock', name: 'Mock Gateway', type: 'openai',
         endpoint: `http://127.0.0.1:${UPSTREAM_PORT}/v1`, key_env: 'LOCALMOCK_API_KEY',
-        default_model: 'default', models: [{ id: 'mock/big-model', label: 'Big Model' }]
+        // first curated id is deliberately NOT served by the upstream, so the
+        // auto-retry has something real to recover from
+        default_model: 'default', models: [{ id: 'mock/stale-catalog-model', label: 'Stale Guess' }, { id: 'mock/big-model', label: 'Big Model' }]
+      }, {
+        id: 'mocksolo', name: 'Mock Solo', type: 'openai',
+        endpoint: `http://127.0.0.1:${UPSTREAM_PORT}/v1`, key_env: 'MOCKSOLO_API_KEY',
+        default_model: 'default', models: [{ id: 'mock/solo-model', label: 'Solo' }]
       }]),
       // Isolated data dir so tests never touch the real config.json / db.json
       ANTICODEX_DATA: DATA_TMP
@@ -277,10 +302,12 @@ async function main() {
 
   console.log('— your key + the model picker (end to end, against a real upstream) —');
   const mk = 'Bearer-mock-key-for-tests';
+  const LIVE2 = ['mock/big-model', 'mock/tiny-model', 'mock/brand-new-2027'];
   r = await api('config');
   let gw = (r.data.providers || []).find((p) => p.id === 'localmock');
   ok('a gateway is a first-class row in config', !!gw && gw.key_env === 'LOCALMOCK_API_KEY' && gw.configured === false);
   ok('config carries real model ids, so "provider::default" cannot be built', (gw?.models || []).some((m) => (m.id || m) === 'mock/big-model'));
+  ok('until the endpoint is asked, nothing is claimed as verified', gw?.verified === false, JSON.stringify(gw?.verified));
   r = await api('chat', { provider: 'localmock', model: 'default', messages: [{ role: 'user', content: 'ping' }] });
   ok('an unconfigured provider explains itself instead of a bare 500', r.status === 200 && r.data.ok === false && /no API key yet/i.test(r.data.error || '') && r.data.fix === 'key' && r.data.settings_link === '/settings');
   r = await api('save_provider_key', { key_env: 'LOCALMOCK_API_KEY', value: mk });
@@ -289,6 +316,15 @@ async function main() {
   ok('the key allowlist refuses account/env secrets', r.status === 400);
   r = await api('user_keys', { op: 'save', token: tokenLive, key_env: 'LOCALMOCK_API_KEY', value: mk });
   ok('saving an account key reports ok', r.status === 200 && r.data.ok);
+  upstreamHits.length = 0;
+  r = await api('chat', { provider: 'localmock', model: 'default', messages: [{ role: 'user', content: 'ping' }], token: tokenLive });
+  ok('a catalog guess the endpoint does not serve is answered anyway', r.data.model === 'mock/big-model' && /upstream answered with mock\/big-model/.test(r.data.content || ''), JSON.stringify(r.data).slice(0, 220));
+  ok('and it says what it swapped instead of failing silently', r.data.retried_with === 'mock/big-model' && r.data.asked_for === 'mock/stale-catalog-model' && /no model called/.test(r.data.note || ''), String(r.data.note));
+  ok('the retry is visible on the wire', upstreamHits.filter((h) => h.url.includes('chat/completions')).map((h) => h.body.model).join(',') === 'mock/stale-catalog-model,mock/big-model', JSON.stringify(upstreamHits.map((h) => h.body.model)));
+  ok('the account key was on both calls', upstreamHits.every((h) => h.auth === `Bearer ${mk}`));
+  ok('the live list it pulled is kept for the picker', (await api('models', { token: tokenLive })).data.picker.providers.find((p) => p.id === 'localmock')?.verified === true);
+  r = await api('sync_models', { provider: 'localmock', token: tokenLive });
+  ok('so the picker leads with ids the endpoint confirmed', r.data.models[0].live === true && r.data.models.some((m) => m.id === 'mock/stale-catalog-model' && m.unverified === true));
   r = await api('config', { token: tokenLive });
   gw = (r.data.providers || []).find((p) => p.id === 'localmock');
   ok('the row flips to configured for that account', gw?.configured === true && gw?.key_owner === 'you');
@@ -300,8 +336,11 @@ async function main() {
   ok('picker lists every provider with curated models', r.data.picker?.total_models > 200 && r.data.picker?.providers?.length > 20);
   ok('picker marks the gateway configured with its key_env', pg?.configured === true && pg?.key_env === 'LOCALMOCK_API_KEY' && pg.models.some((m) => m.id === 'mock/big-model' && m.label === 'Big Model'));
   r = await api('sync_models', { provider: 'localmock', token: tokenLive });
-  ok('live models sync using the account key', r.data.ok && r.data.source === 'provider' && r.data.models.some((m) => m.id === 'mock/brand-new-2027'));
+  ok('live models sync using the account key', r.data.ok && ['provider', 'cache'].includes(r.data.source) && r.data.models.some((m) => m.id === 'mock/brand-new-2027'));
   ok('curated labels survive the sync', r.data.models.some((m) => m.id === 'mock/big-model' && m.label === 'Big Model'));
+  ok('live ids lead and are flagged', r.data.models[0].live === true && r.data.models.some((m) => m.id === 'mock/brand-new-2027' && m.live === true));
+  ok('a catalog-only id stays selectable but is honestly tagged', r.data.models.some((m) => m.id === 'mock/stale-catalog-model' && m.unverified === true), JSON.stringify(r.data.models.map((m) => [m.id, !!m.live, !!m.unverified])));
+  ok('sync reports what it proved', r.data.verified === true && r.data.live === 3, JSON.stringify({ verified: r.data.verified, live: r.data.live }));
   r = await api('sync_models', { provider: 'localmock', token: tokenLive });
   ok('a second sync is cached, not hammered', r.data.source === 'cache');
   r = await api('sync_models', { provider: 'nosuchprovider', token: tokenLive });
@@ -313,7 +352,19 @@ async function main() {
   ok('the upstream sees your key and a real model', hit?.auth === `Bearer ${mk}` && hit?.body.model === 'mock/big-model');
   ok('routing metadata is reported back', r.data.provider === 'localmock' && r.data.usage?.total_tokens === 7);
   r = await api('chat', { provider: 'localmock', model: 'does-not-exist', messages: [{ role: 'user', content: 'ping' }], token: tokenLive });
-  ok('an upstream 200-with-error becomes a readable failure', r.status === 200 && r.data.ok === false && /does-not-exist/.test(r.data.error || '') && r.data.fix === 'model');
+  ok('an unknown id is retried with a real one instead of erroring', r.data.model === 'mock/big-model' && r.data.retried_with === 'mock/big-model' && r.data.asked_for === 'does-not-exist');
+  await api('user_keys', { op: 'save', token: tokenLive, key_env: 'LOCALMOCK_API_KEY', value: 'list-only-key' });
+  upstreamHits.length = 0;
+  r = await api('chat', { provider: 'localmock', model: 'mock/ghost-model', messages: [{ role: 'user', content: 'ping' }], token: tokenLive });
+  ok('when even the retry fails, you get alternatives to click, not a shrug', r.data.ok === false && r.data.fix === 'model' && r.data.verdict === 'model' && r.data.model_picker === true && (r.data.fallback || []).length >= 1 && r.data.fallback.every((f) => LIVE2.includes(f.id)) && (r.data.tried_models || []).length === 2, JSON.stringify(r.data).slice(0, 240));
+  ok('it tried more than one model before giving up', upstreamHits.filter((h) => h.url.includes('chat/completions')).length === 2);
+  await api('user_keys', { op: 'save', token: tokenLive, key_env: 'LOCALMOCK_API_KEY', value: mk });
+  await api('user_keys', { op: 'save', token: tokenLive, key_env: 'MOCKSOLO_API_KEY', value: 'solo-key' });
+  upstreamHits.length = 0;
+  r = await api('chat', { provider: 'mocksolo', model: 'default', messages: [{ role: 'user', content: 'ping' }], token: tokenLive });
+  ok('a listed-but-unusable model with nothing else to try says so honestly', r.data.ok === false && r.data.fix === 'model' && /no model called/.test(r.data.error || '') && !r.data.tried_models && upstreamHits.filter((h) => h.url.includes('chat/completions')).length === 1, JSON.stringify(r.data).slice(0, 240));
+  ok('and it names the model that was actually sent', r.data.model === 'mock/solo-model', String(r.data.model));
+  await api('user_keys', { op: 'delete', token: tokenLive, key_env: 'MOCKSOLO_API_KEY' });
   await api('user_keys', { op: 'save', token: tokenLive, key_env: 'LOCALMOCK_API_KEY', value: 'revoked-key' });
   r = await api('chat', { provider: 'localmock', model: 'mock/tiny-model', messages: [{ role: 'user', content: 'ping' }], token: tokenLive });
   ok('a rejected key is blamed on the key, with a fix', r.data.ok === false && r.data.fix === 'key' && r.data.settings_link === '/settings');
@@ -321,7 +372,12 @@ async function main() {
   ok('your saved key is never used for anonymous callers', r.data.ok === false && /no API key yet/i.test(r.data.error || ''));
   r = await api('test_endpoint', { provider: 'localmock', api_key: mk, token: tokenLive });
   ok('a gateway row tests itself from its own id', r.data.ok === true && r.data.type === 'openai'
-    && (r.data.models || []).includes('mock/big-model') && /models available/.test(r.data.message || ''));
+    && (r.data.models || []).includes('mock/big-model') && r.data.verified === 3 && /Key works/.test(r.data.message || ''));
+  r = await api('test_endpoint', { provider: 'mocksolo', api_key: 'solo-key', token: tokenLive });
+  ok('a key that lists a model but cannot call it is not called "working"', r.data.ok === false && r.data.listed_models >= 1
+    && /not available|answered with an error/i.test(r.data.error || ''), JSON.stringify(r.data).slice(0, 240));
+  r = await api('sync_models', { provider: 'mocksolo', api_key: 'solo-key', refresh: true, token: tokenLive });
+  ok('and the refusal does not stop the list from syncing', r.data.ok === true && r.data.models[0].live === true, JSON.stringify(r.data).slice(0, 200));
   await api('user_keys', { op: 'delete', token: tokenLive, key_env: 'LOCALMOCK_API_KEY' });
 
   console.log('— GitHub OAuth + desktop pairing —');
@@ -363,6 +419,10 @@ async function main() {
   ok('anthropic wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
   r = await api('test_endpoint', { provider: 'cohere', api_key: 'bad', token: tokenLive });
   ok('cohere wire test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
+  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive });
+  ok('an unreachable endpoint is never blamed on your key', r.data.ok === false && r.data.verdict === 'unreachable' && /not a bad key|network limit/i.test(`${r.data.error} ${r.data.fix || ''}`), JSON.stringify(r.data).slice(0, 220));
+  r = await api('test_endpoint', { provider: 'localmock', api_key: 'revoked-key', token: tokenLive });
+  ok('a rejected key is called a rejected key', r.data.ok === false && r.data.verdict === 'key' && r.data.settings_link === '/settings', JSON.stringify(r.data).slice(0, 200));
   r = await api('test_endpoint', { token: tokenLive });
   ok('a probe with no endpoint is refused politely', r.status === 200 && r.data.ok === false && /endpoint required/i.test(r.data.error || ''));
   r = await api('sync_models', { provider: 'deepseek' });

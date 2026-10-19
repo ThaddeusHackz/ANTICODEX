@@ -173,7 +173,35 @@ list, and **Any model id** takes whatever you type, so a model released after th
 | `sync_models` | Live `/models` from the provider (10-min cache per provider+key), merged with curated labels |
 | `save_provider_key` | Global slot write — **admin only**, allowlisted env names, `persisted:false` when the disk is read-only |
 | `test_endpoint` | Reachability + wire-format probe — requires a signed-in session (it is an SSR-shaped relay) |
-| `chat` | `provider` + `model`; a `provider::default` ref is resolved to a real id before it is sent, and provider failures come back as `{ok:false, error, fix, settings_link}` so the UI can show the fix instead of an empty bubble |
+| `chat` | `provider` + `model`; a `provider::default` ref is resolved to a real id before it is sent, and provider failures come back as `{ok:false, error, fix, verdict, settings_link}` so the UI can show the fix instead of an empty bubble |
+
+### Proof, not promises
+
+A key that is stored is not a key that works, and a catalog that lists a model is not
+an endpoint that serves it. So:
+
+* **Saving a key probes it.** The provider card calls `/models` (and a 4-token test
+  completion) right after storing and reports one of four things: *key works — N
+  models listed and "x" answered*, *rejected this key*, *no model listed here — press
+  Sync*, or *this server could not reach the provider (network limit, not your key)*.
+  A gateway that answers **HTTP 200 with an error body** counts as a failure — that
+  specific trap is how a dead key kept looking "configured".
+* **Live ids outrank guesses.** After a Test or Sync, the endpoint's own `/models`
+  list becomes the source of truth for that provider: those ids are marked `live` (✓ in
+  the picker), catalog-only ids are flagged `unverified` (?) but stay selectable, and
+  the provider row says *"ids confirmed by the endpoint"* vs *"ids from the built-in
+  catalog"*.
+* **A wrong model id is recovered, not reported.** If the provider says it has no
+  model called X, ANTICODEX pulls (or reuses) that endpoint's live list, retries once
+  with the closest real id, and says so — `note`, `retried_with`, `asked_for`. When
+  there is nothing better to try, the reply carries `fallback` ids as one-click buttons
+  in the chat.
+
+```
+chat(provider, "default") → nvidia has no model "nvidia/nemotron-3.5-super-vl-120b-a12b"
+                          → sync /models → retry "deepseek-ai/deepseek-r1" → answer
+                          → note: '… answered with "deepseek-ai/deepseek-r1" from its live list instead.'
+```
 
 | Provider | Used for | Where |
 |---|---|---|
