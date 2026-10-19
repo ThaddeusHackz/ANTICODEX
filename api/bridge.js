@@ -1,5 +1,5 @@
 import { json, readBody } from '../lib/util.js';
-import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError } from '../lib/providers.js';
+import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
@@ -194,6 +194,9 @@ async function publicConfig(keys = {}, opts = {}) {
       id: p.id, name: p.name, configured: p.configured, kind: p.kind,
       key_env: p.key_env || null, model_count: (p.models || []).length,
       key_owner: opts.accountEnvs?.has(p.key_env) ? 'you' : (p.configured ? 'shared' : null),
+      // true once the endpoint itself listed these ids (test / sync), so the UI
+      // can promise a model works instead of hoping the catalog guessed right
+      verified: Boolean(p.models_verified),
       models: (p.models || []).slice(0, 60)
     })),
     // Which identity backend is wired up (a label, not a secret): the web UI
@@ -272,7 +275,7 @@ async function handleChat(body, res, req) {
         let out;
         try {
           out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
-        } catch (e) { return json(res, 200, friendlyChatError(e, provider, model)); }
+        } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
         while (out.tool_calls?.length && rounds < 4) {
@@ -293,7 +296,7 @@ async function handleChat(body, res, req) {
           let next;
           try {
             next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
-          } catch (e) { return json(res, 200, friendlyChatError(e, provider, model)); }
+          } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
           Object.assign(out, next);
           if (!next.tool_calls?.length) break;
         }
@@ -305,22 +308,58 @@ async function handleChat(body, res, req) {
     const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys });
     return json(res, 200, out);
   } catch (e) {
-    return json(res, 200, friendlyChatError(e, provider, model));
+    const { payload, retry_with } = await describeChatFailure(e, provider, model, keys);
+    if (retry_with) {
+      try {
+        const again = await chat({ messages: msgs, model: retry_with, system, temperature, max_tokens, provider, keys });
+        // Honest about what happened: the model you asked for does not exist
+        // there, so this answered instead — and the picker now knows the list.
+        return json(res, 200, {
+          ...again, model: retry_with, retried_with: retry_with, asked_for: payload.model,
+          note: `${provider || 'that provider'} has no model called "${payload.model}" — answered with "${retry_with}" from its live list instead.`
+        });
+      } catch (e2) {
+        const second = await describeChatFailure(e2, provider, retry_with, keys);
+        return json(res, 200, { ...second.payload, tried_models: [payload.model, retry_with] });
+      }
+    }
+    return json(res, 200, payload);
   }
 }
 
-/** Provider failures used to arrive as an unhandled throw (a bare 500 on
- *  Vercel) or a raw "NVIDIA NIM returned 400: {...}". Turn them into one
- *  sentence plus the place that fixes it. */
-function friendlyChatError(e, provider, model) {
+/** Provider failures used to arrive as an unhandled throw (a bare 500 on Vercel)
+ *  or a raw "NVIDIA NIM returned 400: {...}". Turn them into one sentence plus
+ *  the thing that fixes it — and when the *model* was the problem, look up an id
+ *  the endpoint actually serves and offer it (retrying once ourselves below),
+ *  because a catalog guess + a working key used to read as a broken key. */
+async function describeChatFailure(e, provider, model, keys) {
   const ref = provider ? `${provider}::${model}` : String(model || '');
-  const shown = ref.includes('::') ? ref.split('::').slice(1).join('::') : ref;
-  const { error, fix } = explainProviderError(e, provider || ref.split('::')[0] || 'the provider', shown);
-  return {
-    ok: false, error, fix, provider: provider || null, model: shown || null,
+  let shown = ref.includes('::') ? ref.split('::').slice(1).join('::') : ref;
+  const pid = provider || (ref.includes('::') ? ref.split('::')[0] : null);
+  // Name the id that was really sent, not the "default" the client asked with —
+  // otherwise the sentence and the retry both talk about the wrong model.
+  try {
+    const eff = resolveModelRef(ref, keys);
+    if (eff && eff.model && eff.model.id && eff.model.id !== shown) shown = eff.model.id;
+  } catch { /* resolution itself failed; the raw ref is the best we have */ }
+  const { error, fix, verdict } = explainProviderError(e, pid || 'the provider', shown);
+  const payload = {
+    ok: false, error, fix, verdict: verdict || fix, provider: pid || null, model: shown || null,
     ...(fix === 'key' || fix === 'endpoint' ? { settings_link: '/settings' } : {}),
     ...(fix === 'model' ? { model_picker: true } : {})
   };
+  let retry_with = null;
+  if (fix === 'model' && pid && pid !== 'demo') {
+    retry_with = pickLiveModel(pid, shown);
+    if (!retry_with) {
+      // Nothing cached for this provider — go ask it, then decide again.
+      const synced = await syncModels({ provider: pid, keys });
+      if (synced && synced.ok) retry_with = pickLiveModel(pid, shown);
+    }
+    const alts = liveAlternatives(pid, shown);
+    if (alts.length) payload.fallback = alts;
+  }
+  return { payload, retry_with };
 }
 
 // --- auth -------------------------------------------------------------------

@@ -16,13 +16,15 @@ import { Pill } from './ui.jsx';
 // endpoint rejects. That is why a fresh NVIDIA key "did not work").
 
 const INDEX_TTL = 10 * 60 * 1000;
+const INDEX_V = 2;                                // v1 cached a list without live/unverified flags
+const autoVerified = new Set();                   // one opportunistic sync per provider per page load
 const RECENT_MAX = 6;
 let memoryIndex = null;   // per page-load cache; localStorage handles longer life
 
 function readCachedIndex() {
   try {
     const raw = JSON.parse(localStorage.getItem('acx_model_index') || 'null');
-    if (raw && raw.at && Date.now() - raw.at < INDEX_TTL && Array.isArray(raw.providers)) return raw;
+    if (raw && raw.v === INDEX_V && raw.at && Date.now() - raw.at < INDEX_TTL && Array.isArray(raw.providers)) return raw;
   } catch { /* private mode */ }
   return null;
 }
@@ -70,19 +72,36 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
     setBusy('list');
     try {
       const r = await api.models();
-      const next = r.picker ? { at: Date.now(), providers: r.picker.providers, total: r.picker.total_models } : null;
+      const next = r.picker ? { v: INDEX_V, at: Date.now(), providers: r.picker.providers, total: r.picker.total_models } : null;
       if (next) { memoryIndex = next; try { localStorage.setItem('acx_model_index', JSON.stringify(next)); } catch { /* quota */ } setIndex(next); }
       else notify('Could not read the model list from this server');
     } catch (e) { notify(`Model list unavailable: ${e.message || e}`); } finally { setBusy(''); }
   };
 
   useEffect(() => { if (index) memoryIndex = index; }, [index]);
+  // Pull the index once on mount, not only on open: without it the top bar can
+  // only print the raw id ("deepseek-ai/deepseek-r1") instead of the model's
+  // name, and the first click has nothing to mark as current.
+  useEffect(() => { if (!index) load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
     if (!index) load(false);
     const t = setTimeout(() => searchRef.current?.focus(), 30);
     return () => clearTimeout(t);
   }, [open]);                                    // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A key that works should not still be showing guessed catalog ids: the first
+  // time you open the picker, the provider you are on (or your first configured
+  // one) gets its live list pulled in the background.
+  useEffect(() => {
+    if (!open || !index) return;
+    const wanted = String(model || '').split('::')[0];
+    const target = (index.providers || []).find((p) => p.id === wanted && p.configured && !p.verified)
+      || (index.providers || []).find((p) => p.configured && p.models_dynamic !== false && !p.verified && p.id !== 'demo');
+    if (!target || autoVerified.has(target.id)) return;
+    autoVerified.add(target.id);
+    syncProvider(target, { quiet: true });
+  }, [open, index, model]);                       // eslint-disable-line react-hooks/exhaustive-deps
 
   const providers = index?.providers || [];
   const configuredCount = providers.filter((p) => p.configured).length;
@@ -114,21 +133,28 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
     const ref = `${pid}::${m.id}`;
     const provider = providers.find((p) => p.id === pid);
     if (provider && !provider.configured) notify(`${provider.name} has no API key yet — add one in Settings and this model goes live.`);
+    else if (m.unverified) notify(`${provider?.name || pid} did not list "${m.id}" in its live model list — if it refuses, the model menu and Settings both have Sync models.`);
     setModel(ref);
     rememberModel(ref);
     setOpen(false);
   };
 
-  async function syncProvider(p) {
+  async function syncProvider(p, opts = {}) {
     setBusy(`sync:${p.id}`);
     try {
       const r = await api.syncModels({ provider: p.id, ...(p.endpoint ? { endpoint: p.endpoint } : {}) });
-      if (!r.ok) { notify(r.error || 'sync failed'); return; }
-      const merged = { ...index, providers: index.providers.map((x) => (x.id === p.id ? { ...x, models: r.models, synced: true } : x)) };
+      if (!r.ok) {
+        // background attempts stay silent; a clicked button always reports
+        if (!opts.quiet) notify(r.error || 'sync failed');
+        else autoVerified.delete(p.id);
+        return;
+      }
+      const merged = { ...index, v: INDEX_V, at: Date.now(), providers: index.providers.map((x) => (x.id === p.id ? { ...x, models: r.models, verified: true, synced: true } : x)) };
       setIndex(merged); memoryIndex = merged;
       try { localStorage.setItem('acx_model_index', JSON.stringify(merged)); } catch { /* quota */ }
-      notify(`${p.name}: ${r.models.length} models from the live endpoint`);
-    } catch (e) { notify(`Sync failed: ${e.message || e}`); } finally { setBusy(''); }
+      if (!opts.quiet) notify(`${p.name}: ${r.models.length} models from the live endpoint`);
+    } catch (e) { if (!opts.quiet) notify(`Sync failed: ${e.message || e}`); autoVerified.delete(p.id); }
+    finally { setBusy(''); }
   }
 
   function onKeyDown(e) {
@@ -209,7 +235,9 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
                   <div className="mp-ghead">
                     <span className="mp-gname">{g.name}</span>
                     <Pill kind={g.configured ? 'ok' : 'warn'}>{g.configured ? 'key ✓' : 'needs key'}</Pill>
-                    <span className="tiny">{(g.models || []).length}{g.models_note ? ' · live-syncable' : ''}</span>
+                    <span className="tiny">
+                      {(g.models || []).length}{g.verified ? ' · from this endpoint' : g.models_note ? ' · live-syncable' : ''}
+                    </span>
                     <div style={{ flex: 1 }} />
                     <button
                       className="btn small ghost" title="Ask this endpoint for its current /models list"
@@ -232,6 +260,8 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
                           {m.vision ? <i title="vision / images">◉</i> : null}
                           {m.reasoning ? <i title="reasoning">∞</i> : null}
                           {m.tools ? <i title="tool calling">⚙</i> : null}
+                          {m.live ? <i className="mp-live" title="this endpoint listed it — safe to call">✓</i> : null}
+                          {m.unverified ? <i className="mp-unver" title="in our catalog, but this endpoint did not list it">?</i> : null}
                         </span>
                         {tab !== 'recent' && <span className="mp-prov">{g.name}</span>}
                         <span className="mp-id">{m.id}</span>

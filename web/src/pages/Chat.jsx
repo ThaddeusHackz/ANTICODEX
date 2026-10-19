@@ -151,8 +151,13 @@ export default function ChatPage() {
         // The actionable part is UI, not prose: a real button to the key you are
         // missing, or the model menu that has the one that works.
         fix: problem ? out.fix : undefined,
+        verdict: problem ? out.verdict : undefined,
+        provider: out.provider || undefined,
         settings_link: problem ? out.settings_link : undefined,
-        model_picker: problem ? out.model_picker : undefined
+        model_picker: problem ? out.model_picker : undefined,
+        // ids this endpoint says it really serves → one click to switch
+        fallback: problem ? out.fallback : undefined,
+        note: out.note || undefined
       };
       const merged = [...next, reply];
       setMessages(merged);
@@ -186,6 +191,7 @@ export default function ChatPage() {
                 ) : (
                   <>
                     <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                    {m.note && !m.error ? <div className="tiny msg-note">{m.note}</div> : null}
                     {m.error ? (
                       <div className="msg-fix">
                         {m.settings_link
@@ -195,8 +201,24 @@ export default function ChatPage() {
                           ? <span className="tiny">Open the model menu above and pick one this endpoint serves.</span>
                           : null}
                         {m.fix === 'quota' ? <span className="tiny">Out of quota on that key — a different model usually answers.</span> : null}
+                        {(m.fallback || []).length ? (
+                          <span className="row" style={{ gap: 5, flexWrap: 'wrap' }}>
+                            <span className="tiny">This endpoint does serve:</span>
+                            {m.fallback.slice(0, 4).map((f) => (
+                              <button
+                                key={f.id} type="button" className="pill msg-fix-option"
+                                title={`Use ${f.id}`}
+                                onClick={() => {
+                                  const pid = m.provider || String(model || '').split('::')[0];
+                                  setModel(`${pid}::${f.id}`);
+                                  notify(`Now using ${f.label || f.id} — send it again and it will answer.`);
+                                }}
+                              >{f.label || f.id}</button>
+                            ))}
+                          </span>
+                        ) : null}
                         {m.fix === 'retry' ? <button className="btn small ghost" onClick={() => send()}>Try again</button> : null}
-                        {m.fix === 'endpoint' ? <span className="tiny">Base URL + key live in Settings → Providers.</span> : null}
+                        {m.fix === 'endpoint' ? <span className="tiny">Base URL + key live in Settings → Providers. A key you saved is never blamed for a server that simply cannot reach out.</span> : null}
                       </div>
                     ) : null}
                     {m.tool_calls?.map((tc, j) => (

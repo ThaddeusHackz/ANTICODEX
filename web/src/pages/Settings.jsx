@@ -4,22 +4,61 @@ import { models as modelsApi, testEndpoint, updateCheck, api, userKeys, storeKey
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
 
-function ProviderCard({ def, onSave, onTest, onSaved, onPickModel, notify }) {
+function ProviderCard({ def, onSave, onSaved, onPickModel, notify }) {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(def.endpoint);
   const [out, setOut] = useState('');
+  const [kind, setKind] = useState('');        // ok | bad | net — what the last probe proved
   const [models, setModels] = useState(def.models || []);
   const [busy, setBusy] = useState(false);
 
+  // "Key saved" used to be the last honest word you got, and then nothing worked.
+  // Saving now immediately asks the provider, so the card states a fact: the key
+  // was accepted (and here is what it serves), the key was rejected, or this
+  // server simply cannot reach that host.
+  async function save() {
+    if (!key) { setOut('Paste an API key first'); setKind('bad'); return; }
+    setBusy(true); setOut('storing your key…'); setKind('');
+    let r;
+    try { r = await onSave(def, key, endpoint); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+    if (!r || !r.ok) { setKind('bad'); setOut(`✗ ${r?.error || 'could not store that key'}`); setBusy(false); return; }
+    setOut('checking it against the provider…');
+    try {
+      // the key is already stored against the account, so the probe needs no key
+      const t = await testEndpoint({ provider: def.id, endpoint, type: def.protocol });
+      if (t?.ok) {
+        setKind('ok');
+        setOut(`✓ ${t.message || 'key accepted'}`);
+        if (t.models?.length) setModels(t.models.map((id) => ({ id, label: id, live: true })));
+        if (onSaved) onSaved();
+      } else if (t?.verdict === 'model') {
+        setKind('ok');   // authenticated fine; the probe model just is not served here
+        setOut('✓ key accepted — the test model was not listed, so press Sync models and pick one that exists');
+        if (onSaved) onSaved();
+      } else if (t?.verdict === 'unreachable') {
+        setKind('net');
+        setOut(`⚠ ${t.error || 'this server could not reach the provider'}`);
+      } else {
+        setKind('bad');
+        setOut(`✗ ${t?.error || 'the provider rejected this key'}${t?.settings_link ? ' (keys are per account — paste it again)' : ''}`);
+      }
+    } catch (e) { setKind('bad'); setOut(`✗ probe failed: ${e.message || e}`); }
+    finally { setBusy(false); }
+  }
+
   async function test() {
-    setBusy(true); setOut('Testing…');
+    setBusy(true); setOut('Testing…'); setKind('');
     try {
       const r = await testEndpoint({ provider: def.id, endpoint, api_key: key, type: def.protocol });
       if (r.ok) {
+        setKind('ok');
         setOut(`✓ ${r.message || 'OK'}`);
-        if (r.models?.length) setModels(r.models.map((id) => ({ id, label: id })));
-      } else setOut(`✗ ${r.error || r.status}`);
-    } catch (e) { setOut('✗ ' + e.message); }
+        if (r.models?.length) setModels(r.models.map((id) => ({ id, label: id, live: true })));
+      } else {
+        setKind(r.verdict === 'unreachable' ? 'net' : 'bad');
+        setOut(`✗ ${r.error || r.status}`);
+      }
+    } catch (e) { setKind('bad'); setOut('✗ ' + e.message); }
     finally { setBusy(false); }
   }
 
@@ -28,9 +67,16 @@ function ProviderCard({ def, onSave, onTest, onSaved, onPickModel, notify }) {
     try {
       // the typed key is sent only when present, so "sync before saving" works
       const r = await api('sync_models', { provider: def.id, endpoint, ...(key ? { api_key: key } : {}) });
-      if (r.ok) { setModels(r.models); setOut(`✓ ${r.models.length} live models${r.source === 'cache' ? ' (cached)' : ''}`); onSaved && onSaved(); }
-      else setOut(`✗ ${r.error || 'sync failed'}`);
-    } catch (e) { setOut('✗ ' + e.message); }
+      if (r.ok) {
+        setKind('ok');
+        setModels(r.models);
+        setOut(`✓ ${r.models.length} live models${r.source === 'cache' ? ' (cached)' : ''} — the model menu lists them all, click one to use it`);
+        if (onSaved) onSaved();
+      } else {
+        setKind(r.verdict === 'unreachable' ? 'net' : 'bad');
+        setOut(`✗ ${r.error || 'sync failed'}`);
+      }
+    } catch (e) { setKind('bad'); setOut('✗ ' + e.message); }
     finally { setBusy(false); }
   }
 
@@ -44,7 +90,9 @@ function ProviderCard({ def, onSave, onTest, onSaved, onPickModel, notify }) {
             <div className="tiny">{def.category} · {def.protocol}-wire · <span className="kbd">{def.key_env}</span></div>
           </div>
         </div>
-        <Pill kind={def.configured ? 'ok' : 'warn'}>{def.configured ? 'configured' : 'needs key'}</Pill>
+        <Pill kind={kind === 'ok' || def.configured ? 'ok' : 'warn'}>
+          {kind === 'ok' ? 'key works' : def.configured ? (def.models_verified ? 'configured · live' : 'configured') : 'needs key'}
+        </Pill>
       </div>
       {def.note && <div className="tiny" style={{ margin: '8px 0 0' }}>{def.note}</div>}
       <div style={{ marginTop: 10 }}>
@@ -54,13 +102,14 @@ function ProviderCard({ def, onSave, onTest, onSaved, onPickModel, notify }) {
         </Field>
       </div>
       <div className="row">
-        <button className="btn primary small" onClick={() => onSave(def, key, endpoint)}>Save key</button>
+        <button className="btn primary small" disabled={busy} onClick={save}>{busy ? '…' : 'Save key'}</button>
         <button className="btn small" disabled={busy} onClick={test}>{busy ? '…' : 'Test'}</button>
-        {(def.models_dynamic || def.id === 'nvidia' || def.id === 'openrouter') && (
-          <button className="btn small ghost" disabled={busy} onClick={sync}>Sync models</button>
+        <button className="btn small ghost" disabled={busy} onClick={sync} title="Ask this endpoint for the models your key can actually call">Sync models</button>
+        {def.configured && (
+          <span className="tiny pc-src">{def.models_verified ? 'ids confirmed by the endpoint' : 'ids from the built-in catalog'}</span>
         )}
       </div>
-      {out && <div className="tiny" style={{ marginTop: 8 }}>{out}</div>}
+      {out && <div className={`pc-verdict tiny ${kind}`} style={{ marginTop: 8 }}>{out}</div>}
       {models?.length > 0 && (
         <div className="row" style={{ marginTop: 10, gap: 5, maxHeight: 130, overflowY: 'auto' }}>
           {models.slice(0, 40).map((m) => (
@@ -71,7 +120,7 @@ function ProviderCard({ def, onSave, onTest, onSaved, onPickModel, notify }) {
                 if (onPickModel) { onPickModel(ref); notify(`Model set: ${m.label || m.id}`); }
               }}
             >
-              {m.label || m.id}{m.vision ? ' ◉' : ''}{m.reasoning ? ' ∞' : ''}
+              {m.label || m.id}{m.vision ? ' ◉' : ''}{m.reasoning ? ' ∞' : ''}{m.live ? ' ✓' : ''}
             </button>
           ))}
           {models.length > 40 && <span className="tiny">+{models.length - 40} more — the model menu lists them all</span>}
@@ -190,9 +239,10 @@ export default function SettingsPage() {
     // failing, and then reporting "key saved" anyway. That is why a pasted
     // NVIDIA key looked like nothing happened.
     const r = await storeKey(def.key_env, key);
-    if (!r.ok) return notify(r.error || 'Could not store that key');
+    if (!r.ok) { notify(r.error || 'Could not store that key'); return r; }
     notify(`Saved to ${r.scopes.join(' + ')} — ${def.name} is ready. Pick a model in the top bar.`);
     refresh();
+    return r;
     // the top-bar picker reads cfg.providers: re-pull config so the new key flips
     // "needs key" → "key ✓" without a reload
     api('config').then((c) => setCfg && setCfg(c)).catch(() => {});
