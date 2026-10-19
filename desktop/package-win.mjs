@@ -35,6 +35,15 @@ if (!fs.existsSync(path.join(__dirname, 'node_modules', 'electron-packager'))) {
 }
 
 console.log('→ packaging ANTICODEX win32-x64…');
+// Same single source of truth the app and the updater use: a stale hardcoded
+// --app-version is how a packaged .exe ends up "newer" than the release that
+// carries the actual fix.
+const appVersion = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
+
 const args = [
   path.join(__dirname, 'node_modules', 'electron-packager', 'bin', 'electron-packager.js'),
   __dirname,
@@ -44,7 +53,7 @@ const args = [
   `--out=${out}`,
   '--overwrite',
   '--asar',
-  '--app-version=0.1.7',
+  `--app-version=${appVersion}`,
   '--ignore=node_modules/electron($|/)',
   '--ignore=node_modules/electron-packager($|/)',
   '--extra-resource=' + path.join(root, 'web', 'dist'),
@@ -64,7 +73,7 @@ console.log(`\n✓ Windows app: ${appDir}`);
 console.log(`  Run with:    ${path.join(appDir, 'ANTICODEX.exe')}`);
 
 // Zip it as the portable release asset (tar: available and long-path-safe on win/mac/linux).
-const zipPath = path.join(out, 'ANTICODEX-0.1.7-win32-x64.zip');
+const zipPath = path.join(out, `ANTICODEX-${appVersion}-win32-x64.zip`);
 if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 const zip = spawnSync('tar', ['-a', '-c', '-f', zipPath, 'ANTICODEX-win32-x64'], { cwd: out, stdio: 'inherit', shell: process.platform === 'win32' });
 if (zip.status === 0) console.log(`✓ Portable zip: ${zipPath}`);

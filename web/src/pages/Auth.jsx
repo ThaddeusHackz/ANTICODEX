@@ -138,7 +138,18 @@ function GitHubButton({ notify, signIn, nav, onSetup }) {
           notify(r?.notice || 'Browser opened — finish GitHub sign-in there and this app links itself');
           if (r?.code && window.anticodexDesktop?.pairWait) {
             const done = await window.anticodexDesktop.pairWait(r.code);
-            if (done?.token) { signIn(done.token, done.user || {}); nav('/'); }
+            if (done?.token) {
+              signIn(done.token, done.user || {});
+              // Pairing copies this account's provider keys onto the machine, which
+              // is the part people assume and never see confirmed — so say what
+              // landed, and whether it is protected at rest.
+              if (done.synced_keys) {
+                notify(done.keys_encrypted
+                  ? `Paired · ${done.synced_keys} provider key${done.synced_keys === 1 ? '' : 's'} copied to this device (encrypted with ${done.keychain || 'the OS keyring'})`
+                  : `Paired · ${done.synced_keys} provider key${done.synced_keys === 1 ? '' : 's'} copied to this device — this OS gave the app no secure storage, so they are stored unprotected`);
+              }
+              nav('/');
+            }
             else if (done?.error) setError(done.error);
           }
           setBusy(false);

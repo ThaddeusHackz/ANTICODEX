@@ -1,5 +1,5 @@
 import { json, readBody } from '../lib/util.js';
-import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives } from '../lib/providers.js';
+import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
@@ -31,7 +31,11 @@ export default async function handler(req, res) {
       case 'health': return json(res, 200, { ok: true, version: VERSION, name: 'ANTICODEX', time: new Date().toISOString() });
       case 'config': {
         const keys = await mergedKeys(req, body);
-        return json(res, 200, await publicConfig(keys, { accountEnvs: new Set(await accountKeyEnvs(req, body)) }));
+        return json(res, 200, await publicConfig(keys, {
+          accountEnvs: new Set(await accountKeyEnvs(req, body)),
+          defsNote: defsNote(keys),
+          allowPrivate: isDesktopLocal(req)
+        }));
       }
       case 'models': {
         // Whose keys count: the account on this request, then any explicit keys
@@ -44,10 +48,19 @@ export default async function handler(req, res) {
           providers: listProviders(keys).map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind, key_env: p.key_env, key_owner: own(p), models: p.models })),
           directory: directoryWithStatus(keys),
           picker: modelIndex(keys),
-          catalog: CATALOG
+          catalog: CATALOG,
+          ...(defsNote(keys) ? { provider_defs_note: defsNote(keys) } : {})
         });
       }
-      case 'sync_models': return json(res, 200, await syncModels({ ...body, keys: await mergedKeys(req, body) }));
+      case 'sync_models': {
+        const keys = await mergedKeys(req, body);
+        // Same rule as test_endpoint: "ask this URL for its model list" is an open
+        // relay unless the address is one we can be told about. A browser may name a
+        // public gateway; only the desktop app on that same machine may name a
+        // private/LAN one (Ollama at 127.0.0.1, vLLM at 192.168.x.x).
+        if (body.endpoint && isPrivateGateway(body.endpoint) && !isDesktopLocal(req)) return privateEndpointRefusal(res);
+        return json(res, 200, await syncModels({ ...body, keys }));
+      }
       case 'save_provider_key': {
         // This writes SERVER-WIDE config, so it belongs to the admin console
         // only. Users put keys in Settings → Providers (per account), which is
@@ -67,12 +80,15 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true, key_env: body.key_env, persisted, message: persisted ? 'Saved to server config.' : 'This server is read-only, so the key lives in memory for now — restart and it is gone.' });
       }
       case 'test_endpoint': {
-        // An open "fetch this URL for me" endpoint is an SSRF relay; only
-        // signed-in accounts (and the paired desktop app) may drive it.
-        // Requires a session on purpose: no loopback exception, because
-        // TRUST_PROXY makes a forwarded "127.0.0.1" spoofable by any client.
+        // An open "fetch this URL for me" endpoint is an SSRF relay, so two things
+        // must be true: the caller is accountable (a signed-in account, or this
+        // machine's own desktop instance — a per-install secret that only a loopback
+        // peer can present, and any proxied request carries x-forwarded-for, so a
+        // forwarded "127.0.0.1" is never believed), and the address itself is not
+        // private unless the caller IS the machine behind that address.
         const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
-        if (!auth) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
+        if (!auth && !isDesktopLocal(req)) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
+        if (body.endpoint && isPrivateGateway(body.endpoint) && !isDesktopLocal(req)) return privateEndpointRefusal(res);
         return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body) }));
       }
       case 'chat': return await handleChat(body, res, req);
@@ -131,6 +147,18 @@ function requestOrigin(req) {
   const proto = String(Array.isArray(rawProto) ? rawProto[0] : (rawProto || '')).split(',')[0].trim();
   const local = /^(localhost|127\.0\.0\.1|\[::1\]|(\d+\.){3}\d+)$/.test(host.split(':')[0]);
   return `${proto || (local ? 'http' : 'https')}://${host}`;
+}
+
+/** The packaged .exe runs this same bridge in-process on 127.0.0.1 and mints a
+ *  per-install secret (memory only, never written to disk) to hand to it. That is
+ *  how an offline desktop — signed out, or signed in to a site it cannot reach —
+ *  can still test endpoints, sync model lists and use a gateway on its own LAN,
+ *  while a public deployment (which never sets this env var) keeps every gate. */
+function isDesktopLocal(req) {
+  const tok = process.env.ANTICODEX_LOCAL_TOKEN;
+  if (!tok || String(tok).length < 16) return false;
+  if (String(req?.headers?.['x-anticodex-local'] || '') !== String(tok)) return false;
+  return isLoopback(req);
 }
 
 function isLoopback(req) {
@@ -215,7 +243,10 @@ async function publicConfig(keys = {}, opts = {}) {
     minimax_configured: Boolean(getKey('MINIMAX_API_KEY')),
     // Key material never leaves the server — not even which optional
     // infrastructure is wired up; nothing in the client read these flags.
-    account_keys: (opts.accountEnvs && [...opts.accountEnvs]) || []
+    account_keys: (opts.accountEnvs && [...opts.accountEnvs]) || [],
+    ...(opts.defsNote ? { provider_defs_note: opts.defsNote } : {}),
+    // the desktop app reports whether this instance can use a gateway on the LAN
+    local_gateway_allowed: Boolean(opts.allowPrivate)
   };
 }
 
@@ -227,7 +258,33 @@ async function mergedKeys(req, body) {
   const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
   const user = auth ? await authx.findByToken(auth) : null;
   const uKeys = user ? await userKeyMap(user.email) : {};
-  return { ...uKeys, ...(body?.provider_keys || {}) };
+  const keys = { ...uKeys, ...(body?.provider_keys || {}) };
+  // Gateways this device knows about (Ollama/LM Studio/vLLM on the LAN). Private
+  // addresses are only honoured for the local desktop instance — see above.
+  const { defs, dropped, dropped_ids } = normalizeProviderDefs(body?.provider_defs, { allowPrivate: isDesktopLocal(req) });
+  if (defs.length) keys[PROVIDER_DEFS_KEY] = defs;
+  if (dropped) keys.__provider_defs_dropped__ = dropped;
+  // A gateway this device named but that had to be ignored must never be answered
+  // with a silent swap to the demo engine — "the model menu lists your gateway" and
+  // then Demo Core replies is exactly the betrayal this whole path exists to end.
+  if (dropped_ids?.length) keys.__provider_defs_dropped_ids__ = dropped_ids;
+  return keys;
+}
+
+function privateEndpointRefusal(res) {
+  return json(res, 403, {
+    ok: false, verdict: 'blocked',
+    error: 'That address is private or on a local network, so this server will not open a connection to it — a public multi-tenant host must not become a relay into someone\'s LAN or its cloud metadata service.',
+    fix: 'desktop',
+    hint: 'ANTICODEX Desktop runs the same bridge on your own machine and will happily dial 127.0.0.1 or your LAN: install it and add the gateway in Settings → Providers.'
+  });
+}
+
+/** One line of honesty for the UI when a device's own gateway had to be ignored. */
+function defsNote(keys) {
+  return keys?.__provider_defs_dropped__
+    ? `${keys.__provider_defs_dropped__} custom gateway(s) point at a private/LAN address, which this server will not dial for a browser. The desktop app can — install it for Ollama, LM Studio or a LAN box.`
+    : null;
 }
 
 // Which key slots the ACCOUNT itself supplied (as opposed to the shared
@@ -265,6 +322,14 @@ async function handleChat(body, res, req) {
   const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
+  if (provider && (keys.__provider_defs_dropped_ids__ || []).includes(provider)) {
+    return json(res, 200, {
+      ok: false, provider, model: model || null, verdict: 'blocked', fix: 'desktop',
+      error: `"${provider}" points at a private or local-network address, so this server will not connect to it — and it will not answer you with a different model behind your back.`,
+      hint: 'ANTICODEX Desktop runs this same bridge on your machine, where a gateway on 127.0.0.1 or your LAN is just your own server. Open Settings → Providers there and the same gateway works, keys and all.',
+      settings_link: '/settings'
+    });
+  }
 
   if (use_mcp !== false) {
     const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);

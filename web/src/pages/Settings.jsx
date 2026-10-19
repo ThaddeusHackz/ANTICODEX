@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { models as modelsApi, testEndpoint, updateCheck, api, userKeys, storeKey } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
+import ModelPicker from '../ModelPicker.jsx';
 
 function ProviderCard({ def, onSave, onSaved, onPickModel, notify }) {
   const [key, setKey] = useState('');
@@ -220,6 +221,8 @@ export default function SettingsPage() {
     try { return JSON.parse(localStorage.getItem('acx_custom_providers') || '[]'); } catch { return []; }
   });
   const [updateInfo, setUpdateInfo] = useState(null);
+  const [gatewayNote, setGatewayNote] = useState('');
+  const [keychain, setKeychain] = useState(null);
 
   const desktop = typeof window !== 'undefined' && window.anticodexDesktop;
 
@@ -227,9 +230,37 @@ export default function SettingsPage() {
     modelsApi().then((r) => {
       setDirectory(r.directory || []);
       setProviders(r.providers || []);
+      setGatewayNote(r.provider_defs_note || '');
     }).catch(() => {});
   }
   useEffect(refresh, []);
+
+  // Gateways belong to the machine they run on: the .exe keeps its own list and
+  // sends it with each request, so Ollama on 127.0.0.1 or a LAN vLLM box works
+  // from the desktop app while a public server refuses to dial those for a
+  // browser. Load that copy when this is the desktop app.
+  useEffect(() => {
+    if (desktop?.getCustoms) {
+      desktop.getCustoms()
+        .then((list) => {
+          if (Array.isArray(list) && list.length) {
+            setCustoms(list);
+            try { localStorage.setItem('acx_custom_providers', JSON.stringify(list)); } catch { /* private mode */ }
+          }
+        })
+        .catch(() => {});
+    }
+    if (desktop?.keychainStatus) desktop.keychainStatus().then(setKeychain).catch(() => {});
+  }, []);
+
+  /** One place writes the gateway list, so the browser copy and the .exe copy
+   *  cannot drift apart (drift is how a saved endpoint "disappears" after a
+   *  restart and the app starts saying unknown provider). */
+  function writeCustoms(next) {
+    setCustoms(next);
+    try { localStorage.setItem('acx_custom_providers', JSON.stringify(next)); } catch { /* private mode */ }
+    if (desktop?.saveCustoms) Promise.resolve(desktop.saveCustoms(next)).catch(() => {});
+  }
 
   async function saveKey(def, key, endpoint) {
     if (!key) return notify('Paste an API key first');
@@ -294,35 +325,84 @@ export default function SettingsPage() {
 
           <div className="card" style={{ marginTop: 16 }}>
             <h3>Custom endpoint (Claude-desktop Developer mode)</h3>
-            <p className="sub">Any OpenAI-/Anthropic-compatible gateway: endpoint + key + type, then test the models.</p>
-            <CustomProviderForm onSave={(v) => {
-              const next = [...customs, { id: `custom_${Date.now().toString(36)}`, ...v }];
-              setCustoms(next);
-              localStorage.setItem('acx_custom_providers', JSON.stringify(next));
-              notify('Custom provider saved');
+            <p className="sub">
+              Any OpenAI-/Anthropic-compatible gateway: endpoint + key + type, then test the models.
+              The key is stored with your account (and in the desktop keychain on this device) — never in
+              this row, because a list of endpoints is not a place for a secret.
+            </p>
+            {gatewayNote && <div className="pc-verdict tiny net" style={{ marginBottom: 10 }}>{gatewayNote}</div>}
+            <CustomProviderForm onSave={async (v) => {
+              const id = `custom_${Date.now().toString(36)}`;
+              // A stable env name is what lets this row resolve a key the same way
+              // every other provider does: account store → keychain → env.
+              const key_env = `${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_API_KEY`;
+              const row = { id, name: v.name, endpoint: v.endpoint, type: v.type, key_env };
+              writeCustoms([...customs, row]);
+              if (v.api_key) {
+                const r = await storeKey(key_env, v.api_key).catch(() => null);
+                notify(r?.ok
+                  ? `Gateway saved — key stored with ${r.scopes.join(' + ')}`
+                  : `Gateway saved — its key could not be stored (${r?.error || 'sign in first'}), so paste it into the card below`);
+              } else {
+                notify('Gateway saved — press Sync models on its card to list what it serves');
+              }
+              refresh();
+              api('config').then((c) => setCfg && setCfg(c)).catch(() => {});
             }} />
-            {customs.map((c) => (
-              <div className="perm-row" key={c.id}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 13 }}>{c.name}</div>
-                  <div className="tiny">{c.endpoint} · {c.type}</div>
-                </div>
-                <button className="btn small danger" onClick={() => {
-                  const next = customs.filter((x) => x.id !== c.id);
-                  setCustoms(next); localStorage.setItem('acx_custom_providers', JSON.stringify(next));
-                }}>Remove</button>
+            {customs.length > 0 && (
+              <div className="mcp-grid" style={{ marginTop: 14 }}>
+                {customs.map((c) => {
+                  // configured/models come from the server's view of THIS request,
+                  // so the card cannot claim a gateway is ready when no key resolved.
+                  const live = providers.find((p) => p.id === c.id) || {};
+                  const def = {
+                    id: c.id,
+                    name: c.name || c.id,
+                    category: desktop ? 'this device' : 'this browser',
+                    protocol: c.type || 'openai',
+                    endpoint: c.endpoint,
+                    key_env: c.key_env || '',
+                    placeholder: 'optional gateway key',
+                    note: live.models_note || 'Added on this device — its /models list is the source of truth',
+                    configured: Boolean(live.configured),
+                    models_verified: Boolean(live.models_verified),
+                    models: live.models?.length ? live.models : (c.default_model && c.default_model !== 'default' ? [{ id: c.default_model, label: c.default_model }] : [])
+                  };
+                  return (
+                    <div key={c.id} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <ProviderCard
+                        def={def} onSave={saveKey} notify={notify}
+                        onSaved={() => { refresh(); api('config').then((x) => setCfg && setCfg(x)).catch(() => {}); }}
+                        onPickModel={(ref) => { setModel(ref); notify(`Model set — ${ref.split('::').slice(1).join('::')}`); }}
+                      />
+                      <button className="btn small ghost" onClick={() => { writeCustoms(customs.filter((x) => x.id !== c.id)); notify('Gateway removed from this device'); }}>
+                        Remove gateway
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
+            )}
           </div>
 
           <div className="card">
             <h3>Default model</h3>
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="anticodex/demo-core">ANTICODEX Demo Core</option>
-              {providers.flatMap((p) => (p.models || []).map((m) => (
-                <option key={`${p.id}:${m.id}`} value={`${p.id}::${m.id}`}>{p.name} — {m.label || m.id}</option>
-              )))}
-            </select>
+            <p className="sub">
+              {model && model !== 'anticodex/demo-core'
+                ? `Currently ${model.split('::').slice(1).join('::') || model}`
+                : 'ANTICODEX Demo Core (built in, no key needed)'}
+              {' '}· a <code>✓</code> means that id was read back from the endpoint just now, a <code>?</code> means it came from the built-in catalog.
+            </p>
+            {/* This used to be a <select> over the catalog baked into the bundle:
+                a gateway's real ids never appeared, and a retired catalog id was
+                still listed as if it worked. Same picker as the top bar — search,
+                Sync models, and only live ids are picked without a warning. */}
+            <div className="row" style={{ marginTop: 10 }}>
+              <ModelPicker />
+              <button className="btn small ghost" onClick={() => { setModel('anticodex/demo-core'); notify('Default model set — ANTICODEX Demo Core'); }}>
+                Use Demo Core
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -439,9 +519,29 @@ export default function SettingsPage() {
           <div className="perm-row" style={{ marginTop: 12 }}>
             <div>
               <div style={{ fontWeight: 700, fontSize: 13 }}>Desktop keychain</div>
-              <div className="tiny">Provider keys saved in the desktop app are used for direct main-process calls (no CORS)</div>
+              <div className="tiny">
+                Keys you save in the app stay on this machine and are used for its own calls (no CORS).{' '}
+                {desktop
+                  ? keychain?.encrypted === false
+                    ? 'This OS gave the app no secure storage, so they are written to your user profile unprotected — that is a fact, not a setting.'
+                    : 'Protected by the OS (Windows DPAPI / macOS Keychain / libsecret), so the file is unreadable outside this user account.'
+                  : 'Install the desktop app to keep keys off a server entirely.'}
+              </div>
             </div>
-            <Pill kind={desktop ? 'ok' : 'warn'}>{desktop ? 'connected' : 'install desktop app'}</Pill>
+            <Pill kind={desktop ? (keychain && keychain.encrypted === false ? 'warn' : 'ok') : 'warn'}>
+              {desktop ? (keychain ? (keychain.encrypted ? 'encrypted' : 'plaintext') : 'connected') : 'install desktop app'}
+            </Pill>
+          </div>
+          <div className="perm-row">
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Local gateways &amp; offline checks</div>
+              <div className="tiny">
+                {desktop
+                  ? 'While offline or unpaired, this app still tests keys against the provider, syncs live model lists and reaches gateways on your own network (Ollama, LM Studio, a LAN vLLM box).'
+                  : 'The website will not dial a private/LAN address for a browser; the desktop app can, because it is your own machine.'}
+              </div>
+            </div>
+            <Pill kind={desktop ? 'ok' : 'warn'}>{desktop ? `${customs.length} gateway${customs.length === 1 ? '' : 's'}` : 'desktop app only'}</Pill>
           </div>
           <div className="perm-row">
             <div>
@@ -474,8 +574,11 @@ function CustomProviderForm({ onSave }) {
         <button className="btn primary small" onClick={() => v.name && v.endpoint && onSave(v)}>Save provider</button>
         <button className="btn small" onClick={async () => {
           setOut('Testing…');
-          const r = await testEndpoint({ endpoint: v.endpoint, api_key: v.api_key, type: v.type }).catch((e) => ({ ok: false, error: e.message }));
-          setOut(r.ok ? `✓ ${r.message || 'OK'} ${r.models?.length ? `· ${r.models.length} models` : ''}` : `✗ ${r.error || r.status}`);
+          const r = await testEndpoint({ endpoint: v.endpoint, api_key: v.api_key, type: v.type })
+            .catch((e) => ({ ok: false, error: e?.data?.error || e.message }));
+          setOut(r.ok
+            ? `✓ ${r.message || 'reachable'} ${r.models?.length ? `· ${r.models.length} models this key can list` : ''}`
+            : `✗ ${r.error || r.status}${r.verdict === 'unreachable' ? ' — this server cannot reach that address; a LAN endpoint needs the desktop app' : ''}`);
         }}>Test</button>
         {out && <span className="tiny">{out}</span>}
       </div>
