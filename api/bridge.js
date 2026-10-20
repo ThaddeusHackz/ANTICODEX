@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import { adminCredentials, issueAdminToken, verifyAdminToken } from '../lib/admin-auth.js';
 import { json, readBody } from '../lib/util.js';
 import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
@@ -87,7 +89,7 @@ export default async function handler(req, res) {
         // forwarded "127.0.0.1" is never believed), and the address itself is not
         // private unless the caller IS the machine behind that address.
         const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
-        if (!auth && !isDesktopLocal(req)) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
+        if (!await authx.findByToken(auth) && !isDesktopLocal(req)) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
         if (body.endpoint && isPrivateGateway(body.endpoint) && !isDesktopLocal(req)) return privateEndpointRefusal(res);
         return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body) }));
       }
@@ -180,9 +182,7 @@ async function safeAuth(run) {
 }
 
 async function isAdmin(req, body) {
-  const expected = `adm_${await sha256(`${getKey('ADMIN_USERNAME') || 'Thaddeusadmin'}:${getKey('ADMIN_PASSWORD') || 'Thaddeusk12'}:anticodex`)}`;
-  const sent = body?.token || (req?.headers?.['x-admin-token'] || '');
-  return Boolean(sent) && sent === expected;
+  return verifyAdminToken(body?.token || req?.headers?.['x-admin-token']);
 }
 
 async function handleLogout(req, body, res) {
@@ -442,7 +442,7 @@ function githubAuthUrl() {
 async function handleMe(req, body, res) {
   const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
   if (!auth) return json(res, 401, { error: 'not authenticated', sign_in: '/login' });
-  const user = await authx.findByToken(auth) || await findOne('users', (u) => u.id === auth);
+  const user = await authx.findByToken(auth);
   if (!user) return json(res, 401, { error: 'Your session expired — sign in again.', sign_in: '/login' });
   return json(res, 200, { user: authx.sanitizeUser(user), ok: true });
 }
@@ -456,7 +456,8 @@ async function handleThreads(req, body, res) {
   // signing out and back in. Rows saved by the old token-keyed version are
   // still matched.
   const owner = await authx.findByToken(auth);
-  const mine = (row) => row && (row.user_id === auth || (owner && (row.user_id === owner.id || row.user_email === owner.email)));
+  if (!owner) return json(res, 401, { error: 'Sign in to access threads' });
+  const mine = (row) => row && (row.user_id === owner.id || row.user_email === owner.email);
   if (op === 'list') {
     return json(res, 200, { threads: await find('threads', mine, 500) });
   }
@@ -610,19 +611,20 @@ async function handleMcp(body, res) {
 
 async function handleAdmin(body, res) {
   const op = body.op || 'login';
-  const expectedUser = getKey('ADMIN_USERNAME') || 'Thaddeusadmin';
-  const expectedPass = getKey('ADMIN_PASSWORD') || 'Thaddeusk12';
+  const credentials = adminCredentials();
+  if (!credentials) return json(res, 401, { error: 'Administrator access is not configured on this server.' });
+  const { username: expectedUser, password: expectedPass } = credentials;
 
   if (op === 'login') {
     const ok = timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
     if (!ok) return json(res, 401, { error: 'Invalid admin credentials' });
-    const token = `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
+    const token = issueAdminToken();
     await audit({ type: 'admin_login', ip: 'admin' });
     return json(res, 200, { ok: true, token });
   }
 
   const token = body.token || '';
-  const valid = token === `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
+  const valid = verifyAdminToken(token);
   if (!valid) return json(res, 401, { error: 'admin token required' });
 
   if (op === 'stats') {
@@ -687,50 +689,42 @@ async function handleAdmin(body, res) {
 async function handlePair(body, res, req) {
   const op = body.op || 'create';
   if (op === 'create') {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(crypto.randomInt(100000, 1000000));
+    const deviceSecret = crypto.randomBytes(32).toString('hex');
     await insert('sessions', {
-      id: uid('pair'), kind: 'desktop-pair', code, created_at: new Date().toISOString(),
+      id: 'pair_' + await sha256(deviceSecret), kind: 'desktop-pair', code,
+      created_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), used: false
     });
-    return json(res, 200, { code, expires_in: 600 });
+    return json(res, 200, { code, device_secret: deviceSecret, expires_in: 600 });
   }
   if (op === 'adopt') {
-    // The desktop app links a website-issued session into its own local ledger
-    // so /me, threads and per-user keys work offline. Loopback only.
-    if (!isLoopback(req)) return json(res, 403, { error: 'desktop-local op' });
-    const out = await authx.adoptSession({ token: body.token, user: body.user });
-    return json(res, 200, out);
+    if (!isDesktopLocal(req)) return json(res, 403, { error: 'desktop-local op' });
+    return json(res, 200, await authx.adoptSession({ token: body.token, user: body.user }));
   }
   if (op === 'claim') {
-    // Called by the website after the user signs in (email or GitHub).
+    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.user_token || body.token;
+    const user = await authx.findByToken(token);
+    if (!user) return json(res, 401, { error: 'Sign in before linking a desktop' });
     const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code && !x.used && new Date(x.expires_at) > new Date());
     if (!s) return json(res, 400, { error: 'Invalid or expired pairing code' });
-    await update('sessions', (x) => x.id === s.id, {
-      used: true, claimed_by: body.user_id || 'desktop',
-      linked_token: body.user_token || null, linked_user: body.user || null,
-      claimed_at: new Date().toISOString()
+    await update('sessions', (x) => x.id === s.id && !x.used, {
+      used: true, claimed_by: user.id, linked_token: token,
+      linked_user: authx.sanitizeUser(user), claimed_at: new Date().toISOString()
     });
-    return json(res, 200, { ok: true, token: body.user_token || `dsk_${s.id}` });
+    return json(res, 200, { ok: true });
   }
   if (op === 'status') {
-    // Desktop polls this until the website claims the code. Once claimed, the
-    // desktop receives the service keychain so it works identically to the site.
-    const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code);
-    if (!s) return json(res, 404, { error: 'unknown code' });
-    if (!s.used) return json(res, 200, { ok: true, claimed: false, expires_in: Math.max(0, Math.round((new Date(s.expires_at) - new Date()) / 1000)) });
-    // Only provider/media keys travel to the desktop. Admin, owner and
-    // service-level secrets (Supabase service role, OAuth secret, state
-    // signing key) stay on the server.
-    const NEVER_PAIR = /^(ADMIN_|OWNER_|BOOTSTRAP_|AUTH_STATE_SECRET$|SUPABASE_.*SERVICE.*$|.*SECRET$)/i;
-    const service_keys = {};
-    for (const k of allKeyEnvs()) {
-      const v = getKey(k);
-      if (v && !NEVER_PAIR.test(k) && !String(k).startsWith('ADMIN_')) service_keys[k] = v;
-    }
-    // The account's own keys replace the built-ins for this user.
-    const ownKeys = await userKeyMap(s.linked_user?.email);
-    Object.assign(service_keys, ownKeys);
-    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: s.linked_user, user_id: s.claimed_by, service_keys });
+    if (typeof body.device_secret !== 'string' || !/^[a-f0-9]{64}$/.test(body.device_secret)) return json(res, 403, { error: 'Device proof required. Restart desktop sign-in.' });
+    const id = 'pair_' + await sha256(body.device_secret);
+    const s = await findOne('sessions', (x) => x.id === id && x.kind === 'desktop-pair' && x.code === body.code && new Date(x.expires_at) > new Date());
+    if (!s) return json(res, 404, { error: 'Pairing expired or already collected' });
+    if (!s.used) return json(res, 200, { ok: true, claimed: false });
+    const user = await authx.findByToken(s.linked_token);
+    if (!user || user.id !== s.claimed_by) return json(res, 401, { error: 'Linked session expired' });
+    // Collect once; global server credentials must never leave the server.
+    await remove('sessions', (x) => x.id === s.id);
+    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: authx.sanitizeUser(user), user_id: user.id });
   }
   return json(res, 400, { error: 'unknown pair op' });
 }
