@@ -351,7 +351,23 @@ globalThis.__mount = (route) => {
     const order = bridgeCalls.map((c) => c.action);
     ok('saving a key immediately probes the provider', order.lastIndexOf('test_endpoint') > order.lastIndexOf('user_keys'), JSON.stringify(order));
     ok('the card reports a verdict, never a bare "saved"', Boolean(verdict) && !/key saved$/i.test(verdict.textContent || ''), verdict?.textContent || 'no .pc-verdict node');
-    ok('an unreachable provider is admitted as a network limit', /could not reach|network limit|not a bad key|rejected/i.test(verdict?.textContent || ''), (verdict?.textContent || '').slice(0, 180));
+    // What must hold is that the sentence matches the class — not which one it ends
+    // up being. A sandbox with no outbound access proves "this server could not
+    // reach the provider"; a runner with egress proves "the provider refused this
+    // key". Both are honest verdicts; "✓ key saved" with either, or a network
+    // problem dressed up as a bad key, is the bug. Pinning the wording instead of
+    // the agreement is how this assertion went red on CI for the right reason.
+    {
+      const cls = [...(verdict?.classList || [])].join(' ');
+      const txt = verdict?.textContent || '';
+      const networkLimit = /\bnet\b/.test(cls) && /could not reach|network limit|not a bad key/i.test(txt);
+      const keyRefused = /\bbad\b/.test(cls) && /rejected|authorization failed|invalid|incorrect api key|401|403/i.test(txt);
+      const keyWorks = /\bok\b/.test(cls) && /accepted|models|answered/i.test(txt);
+      ok('the verdict sentence and the verdict colour agree about what was proved',
+        Boolean(networkLimit || keyRefused || keyWorks), `class="${cls}" text=${txt.slice(0, 160)}`);
+      ok('and a verdict is never the bare "saved" the app used to print',
+        !/^(✓|✗)?\s*(key )?saved\b/i.test(txt.trim()) && !/storing your key|checking it against/i.test(txt), txt.slice(0, 120));
+    }
     ok('the verdict line is colour-coded by what it proved', /net|bad|ok/.test([...(verdict?.classList || [])].join(' ')), [...(verdict?.classList || [])].join(' '));
     // This line comes from the config re-pull that follows a successful save, not
     // from the probe itself — so it is its own condition, not a shared sleep.
