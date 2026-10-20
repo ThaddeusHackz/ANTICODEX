@@ -58,24 +58,57 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [api, auth, web-static, web-mount, desktop]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Install web deps and build the bundle
-        run: cd web && (npm ci || npm install) && npm run build
-      # One step per suite: when a suite fails only on a runner with real
-      # outbound access, a single combined step just says "exit 1" and the
-      # diagnosis becomes a log-download exercise. Named steps answer it in
-      # one click, and the red X points at the file to open.
-      - name: API suite
-        run: node tests/test-api.mjs
-      - name: Auth suite
-        run: node tests/test-auth.mjs
-      - name: Web static suite
-        run: node tests/test-web.mjs
-      - name: Web mount suite
-        run: node tests/test-web-mount.mjs
-      - name: Desktop suite
-        run: node tests/test-desktop.mjs
+        # --include=dev because the test harness needs devDependencies (esbuild,
+        # jsdom). An install that honours NODE_ENV=production would leave the mount
+        # suite unable to run at all, so it is pinned and then verified.
+        run: |
+          cd web
+          (npm ci --include=dev || npm install --include=dev)
+          npm run build
+          node -e "for (const m of ['esbuild','jsdom','react']) require.resolve(m); console.log('test toolchain ok')"
+      - name: Run ${{ matrix.suite }} suite
+        # fail-fast:false matters more than it looks: in one shared job the first red
+        # suite skips the rest, so "which of the five broke?" costs another CI round
+        # trip. A matrix runs them independently and the check name answers it.
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          case "$SUITE" in
+            api) f=tests/test-api.mjs ;;
+            auth) f=tests/test-auth.mjs ;;
+            web-static) f=tests/test-web.mjs ;;
+            web-mount) f=tests/test-web-mount.mjs ;;
+            desktop) f=tests/test-desktop.mjs ;;
+          esac
+          set +e
+          out=$(node "$f" 2>&1); rc=$?
+          echo "$out" | tail -120
+          # Actions' raw log endpoint is not always reachable (fork PRs, restricted
+          # tokens, expired artifacts). Assertions print a stable "  ✗ name — detail"
+          # line, so mirror those into check annotations: the failure is then
+          # readable straight from the API, with no log download at all.
+          if [ "$rc" -ne 0 ]; then
+            echo "$out" | grep -E '^ *✗' | head -12 | while IFS= read -r line; do
+              printf '::error::%s\n' "$(echo "$line" | sed 's/^ *//')"
+            done
+            echo "$out" | grep -E 'passed, [0-9]+ failed' | tail -1 | sed 's/^ */::error::/' || true
+            printf '::error::%s exited %s — if no ✗ lines are listed above, the suite threw before asserting\n' "$f" "$rc"
+            exit "$rc"
+          fi
+          # A suite that skips itself must never read as a pass.
+          if echo "$out" | grep -q 'Skipping\.'; then
+            printf '::error::%s skipped itself (missing dependencies?) — a skip is not a pass\n' "$f"
+            exit 1
+          fi

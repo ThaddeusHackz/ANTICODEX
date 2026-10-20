@@ -13,10 +13,41 @@ function ok(name, cond) {
 }
 
 console.log('\n— web bundle —');
-ok('dist/index.html exists', fs.existsSync(path.join(dist, 'index.html')));
+ok('dist/index.html exists', fs.existsSync(path.join(dist, 'index.html')),
+  ' → run `npm run build --prefix web` first: this suite asserts on what ships, not on the source');
 const assets = path.join(dist, 'assets');
-const js = fs.readdirSync(assets).filter((f) => f.endsWith('.js')).map((f) => fs.readFileSync(path.join(assets, f), 'utf8')).join('\n');
-const css = fs.readdirSync(assets).filter((f) => f.endsWith('.css')).map((f) => fs.readFileSync(path.join(assets, f), 'utf8')).join('\n');
+const readAll = (ext) => {
+  let files = [];
+  try { files = fs.readdirSync(assets).filter((f) => f.endsWith(ext)); } catch { return ''; }
+  return files.map((f) => fs.readFileSync(path.join(assets, f), 'utf8')).join('\n');
+};
+const js = readAll('.js');
+const css = readAll('.css');
+if (!js) {
+  ok('a built bundle is present to assert on', false, `no .js under ${assets} — run \`npm run build --prefix web\` and re-run`);
+  console.log('\n  (the remaining bundle checks need that build, so they are not run)');
+  process.exit(1);
+}
+// "I fixed it but the app did not change" is usually this: assertions passing
+// against a bundle that predates the source. The packager rebuilds for exactly
+// this reason; the test suite should refuse to grade a stale artifact too.
+const newestSrc = (() => {
+  let t = 0;
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (/\.(jsx?|css|html)$/.test(e.name)) t = Math.max(t, fs.statSync(p).mtimeMs);
+    }
+  };
+  for (const d of [path.join(root, 'web', 'src'), path.join(root, 'web')]) {
+    try { if (d.endsWith('src')) walk(d); else t = Math.max(t, fs.statSync(path.join(d, 'index.html')).mtimeMs, fs.statSync(path.join(d, 'vite.config.js')).mtimeMs); } catch { /* no config */ }
+  }
+  return t;
+})();
+const bundleAge = fs.statSync(path.join(dist, 'index.html')).mtimeMs;
+ok('the bundle being graded is not older than web/src', bundleAge >= newestSrc - 1000,
+  ' → web/dist predates the source; run `npm run build --prefix web`');
 
 for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer Use', 'NVIDIA', 'Tavily', 'Exa', 'Forgot', 'pairing']) {
   ok(`bundle contains "${needle}"`, js.includes(needle) || css.includes(needle));
