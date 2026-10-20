@@ -62,11 +62,24 @@ jobs:
       fail-fast: false
       matrix:
         suite: [api, auth, web-static, web-mount, desktop]
+        # Two Node versions on purpose. Vercel runs 22; the packaged .exe embeds
+        # Electron 31's Node, which is the 20 line — so `api/` + `lib/` have to work
+        # on both, and a runner pinned to one silently stops testing the other.
+        node: ['20', '22']
+        exclude:
+          # The mount harness needs jsdom, and jsdom@30 pulls undici@7, which throws
+          # on Node 20 (`undici/lib/interceptor/decompress.js: Cannot read
+          # properties of undefined (reading 'bind')`). That is a harness/toolchain
+          # limit, not an app defect — no shipping runtime uses it for rendering — so
+          # the renderer suite runs on 22 while every suite that touches the bridge
+          # runs on both.
+          - suite: web-mount
+            node: '20'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install web deps and build the bundle
@@ -78,7 +91,7 @@ jobs:
           (npm ci --include=dev || npm install --include=dev)
           npm run build
           node -e "for (const m of ['esbuild','jsdom','react']) require.resolve(m); console.log('test toolchain ok')"
-      - name: Run ${{ matrix.suite }} suite
+      - name: Run ${{ matrix.suite }} suite (node ${{ matrix.node }})
         # fail-fast:false matters more than it looks: in one shared job the first red
         # suite skips the rest, so "which of the five broke?" costs another CI round
         # trip. A matrix runs them independently and the check name answers it.
