@@ -45,11 +45,35 @@ const server = spawn(process.execPath, ['server.mjs'], {
 let stderr = '';
 server.stderr.on('data', (c) => { stderr += c.toString(); });
 
+/** Resolve a tool the harness itself needs from wherever npm actually put it.
+ *  Hardcoding `node_modules/<pkg>/lib/main.js` works until a lockfile-driven
+ *  `npm ci` nests the package differently than a fresh `npm install` does — and
+ *  then the suite dies with ERR_MODULE_NOT_FOUND and looks like an app bug. Each
+ *  package's own `main` is the truth; the guessed path is only a fallback. */
+function resolveDep(name, guess) {
+  for (const base of [path.join(web, 'node_modules'), path.join(root, 'node_modules')]) {
+    const dir = path.join(base, name);
+    try {
+      const pj = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const main = path.join(dir, pj.main || 'index.js');
+      if (fs.existsSync(main)) return main;
+    } catch { /* not here */ }
+    const direct = path.join(dir, guess);
+    if (fs.existsSync(direct)) return direct;
+  }
+  return null;
+}
+
+const MISSING = ['react', 'react-dom', 'esbuild', 'jsdom'].filter((n) => {
+  if (n === 'esbuild' || n === 'jsdom') return !resolveDep(n, 'index.js');
+  return !fs.existsSync(path.join(web, 'node_modules', n));
+});
+
 let entryPath = '';
 let bundlePath = '';
 try {
-  if (!fs.existsSync(path.join(web, 'node_modules', 'react'))) {
-    console.log('\n  ! web/node_modules missing — run `npm install` in web/ first. Skipping.');
+  if (MISSING.length) {
+    console.log(`\n  ! web/node_modules is missing ${MISSING.join(', ')} — run \`npm install\` in web/ (devDependencies included). Skipping.`);
     process.exit(0);
   }
   ok('server is up', await waitFor(BASE), stderr.slice(-200));
@@ -69,7 +93,8 @@ try {
   });
 
   // --- bundle the app for the jsdom realm -----------------------------------
-  const esbuild = await import(pathToFileURL(path.join(web, 'node_modules', 'esbuild', 'lib', 'main.js')).href);
+  const esbuildMain = resolveDep('esbuild', path.join('lib', 'main.js'));
+  const esbuild = await import(pathToFileURL(esbuildMain).href);
   entryPath = path.join(web, 'src', '__mount-entry.jsx');
   fs.writeFileSync(entryPath, `
 import React from 'react';
@@ -96,7 +121,7 @@ globalThis.__mount = (route) => {
   });
   const code = fs.readFileSync(bundlePath, 'utf8');
 
-  const { JSDOM } = await import(pathToFileURL(path.join(web, 'node_modules', 'jsdom', 'lib', 'api.js')).href);
+  const { JSDOM } = await import(pathToFileURL(resolveDep('jsdom', path.join('lib', 'api.js'))).href);
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: `${BASE}/`, runScripts: 'outside-only', pretendToBeVisual: true
   });
@@ -148,9 +173,38 @@ globalThis.__mount = (route) => {
   const consoleErrors = [];
   win.console.error = (...a) => consoleErrors.push(a.map(String).join(' '));
 
+  // A floor, not a guess. `ticks` keeps its original meaning (×25 ms), and if the
+  // DOM is still changing once that elapses the wait extends a little — because
+  // "the probe answered" takes as long as the endpoint takes, and a fixed sleep is
+  // a coin flip on a cold runner. Short floors are left alone: several callers
+  // deliberately assert on transient UI (a toast that auto-hides), and extending
+  // past that would assert on UI that has already vanished. (A 900ms-everywhere
+  // version of this helper did exactly that and turned 3 assertions red.)
   const settle = async (ticks = 12) => {
-    for (let i = 0; i < ticks; i++) await new Promise((r) => setTimeout(r, 25));
+    const floor = ticks * 25;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const t0 = Date.now();
+    while (Date.now() - t0 < floor) await wait(25);
+    if (floor < 300) return;
+    let last = -1; let busy = 0;
+    while (Date.now() - t0 < floor + 1500) {
+      const len = (win.document.getElementById('root')?.textContent || '').length;
+      if (len === last) { if (++busy >= 4) return; } else { busy = 0; last = len; }
+      await wait(25);
+    }
   };
+  /** Poll the condition the assertion is actually about — the only wait that is
+   *  right both when a provider answers in 40ms (a runner with egress) and when it
+   *  is refused instantly (this sandbox). */
+  const settleUntil = async (cond, maxMs = 20000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < maxMs) {
+      try { if (cond()) return true; } catch { /* not mounted yet */ }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    try { return Boolean(cond()); } catch { return false; }
+  };
+
   const mountAt = async (route, { token, user } = {}) => {
     win.eval('if (globalThis.__root) { try { globalThis.__root.unmount(); } catch (e) {} } document.getElementById("root").innerHTML = ""');
     for (const [k, v] of Object.entries({ acx_token: token, acx_user: user ? JSON.stringify(user) : null })) {
@@ -286,13 +340,38 @@ globalThis.__mount = (route) => {
     typeIn(nv.querySelector('input[type=password]'), 'nvapi-verification-key-999');
     await settle(2);
     click([...nv.querySelectorAll('button')].find((b) => /Save key/i.test(b.textContent)));
-    await settle(40);
-    const verdict = nv.querySelector('.pc-verdict');
+    // Wait for the probe to ANSWER, not for a number of milliseconds: whether the
+    // provider is reachable depends on where the test runs, and the in-flight text
+    // ("checking it against the provider…") is not a verdict. The line is queried
+    // through the card each poll — React creates the node, so holding a reference
+    // from before the click would pin a null forever.
+    const verdictLine = () => nv.querySelector('.pc-verdict');
+    await settleUntil(() => /[✓✗⚠]/.test(verdictLine()?.textContent || ''));
+    const verdict = verdictLine();
     const order = bridgeCalls.map((c) => c.action);
     ok('saving a key immediately probes the provider', order.lastIndexOf('test_endpoint') > order.lastIndexOf('user_keys'), JSON.stringify(order));
     ok('the card reports a verdict, never a bare "saved"', Boolean(verdict) && !/key saved$/i.test(verdict.textContent || ''), verdict?.textContent || 'no .pc-verdict node');
-    ok('an unreachable provider is admitted as a network limit', /could not reach|network limit|not a bad key|rejected/i.test(verdict?.textContent || ''), (verdict?.textContent || '').slice(0, 180));
+    // What must hold is that the sentence matches the class — not which one it ends
+    // up being. A sandbox with no outbound access proves "this server could not
+    // reach the provider"; a runner with egress proves "the provider refused this
+    // key". Both are honest verdicts; "✓ key saved" with either, or a network
+    // problem dressed up as a bad key, is the bug. Pinning the wording instead of
+    // the agreement is how this assertion went red on CI for the right reason.
+    {
+      const cls = [...(verdict?.classList || [])].join(' ');
+      const txt = verdict?.textContent || '';
+      const networkLimit = /\bnet\b/.test(cls) && /could not reach|network limit|not a bad key/i.test(txt);
+      const keyRefused = /\bbad\b/.test(cls) && /rejected|authorization failed|invalid|incorrect api key|401|403/i.test(txt);
+      const keyWorks = /\bok\b/.test(cls) && /accepted|models|answered/i.test(txt);
+      ok('the verdict sentence and the verdict colour agree about what was proved',
+        Boolean(networkLimit || keyRefused || keyWorks), `class="${cls}" text=${txt.slice(0, 160)}`);
+      ok('and a verdict is never the bare "saved" the app used to print',
+        !/^(✓|✗)?\s*(key )?saved\b/i.test(txt.trim()) && !/storing your key|checking it against/i.test(txt), txt.slice(0, 120));
+    }
     ok('the verdict line is colour-coded by what it proved', /net|bad|ok/.test([...(verdict?.classList || [])].join(' ')), [...(verdict?.classList || [])].join(' '));
+    // This line comes from the config re-pull that follows a successful save, not
+    // from the probe itself — so it is its own condition, not a shared sleep.
+    await settleUntil(() => /ids from the built-in catalog|ids confirmed by the endpoint/.test(nv.textContent));
     ok('and the card states where its model ids came from', /ids from the built-in catalog|ids confirmed by the endpoint/.test(nv.textContent), nv.textContent.slice(-200));
   }
 

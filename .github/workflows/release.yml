@@ -3,13 +3,22 @@ name: release
 on:
   push:
     tags: ['v*']
+    # The suites also run on main and on every PR. Without this, "is CI green?" is
+    # only answered whenever someone happens to publish a release — which is exactly
+    # how a renderer suite that had never run on a runner (and a version-dependent
+    # toolchain crash) stayed merged and unnoticed for several rounds.
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  # Building the .exe costs a Windows runner and 113 MB of artifact, so it belongs
+  # to a release, not to every pull request. The tests job has no such condition.
   windows:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +38,7 @@ jobs:
       # ends up with no installable asset: the updater then tells every installed
       # app "an update is available" and has nothing to hand them.
       - name: Verify the asset matches the tag
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/')   # a dispatch has no tag to match
         shell: pwsh
         run: |
           $v = (node -p "require('./desktop/package.json').version").Trim()
@@ -44,6 +53,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
       - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -58,16 +68,70 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [api, auth, web-static, web-mount, desktop]
+        # Two Node versions on purpose. Vercel runs 22; the packaged .exe embeds
+        # Electron 31's Node, which is the 20 line — so `api/` + `lib/` have to work
+        # on both, and a runner pinned to one silently stops testing the other.
+        node: ['20', '22']
+        exclude:
+          # The mount harness needs jsdom, and jsdom@30 pulls undici@7, which throws
+          # on Node 20 (`undici/lib/interceptor/decompress.js: Cannot read
+          # properties of undefined (reading 'bind')`). That is a harness/toolchain
+          # limit, not an app defect — no shipping runtime uses it for rendering — so
+          # the renderer suite runs on 22 while every suite that touches the bridge
+          # runs on both.
+          - suite: web-mount
+            node: '20'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - name: Install, build, test
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web deps and build the bundle
+        # --include=dev because the test harness needs devDependencies (esbuild,
+        # jsdom). An install that honours NODE_ENV=production would leave the mount
+        # suite unable to run at all, so it is pinned and then verified.
         run: |
-          cd web && npm ci || npm install && npm run build && cd ..
-          node tests/test-api.mjs
-          node tests/test-auth.mjs
-          node tests/test-web.mjs
-          node tests/test-web-mount.mjs
-          node tests/test-desktop.mjs
+          cd web
+          (npm ci --include=dev || npm install --include=dev)
+          npm run build
+          node -e "for (const m of ['esbuild','jsdom','react']) require.resolve(m); console.log('test toolchain ok')"
+      - name: Run ${{ matrix.suite }} suite (node ${{ matrix.node }})
+        # fail-fast:false matters more than it looks: in one shared job the first red
+        # suite skips the rest, so "which of the five broke?" costs another CI round
+        # trip. A matrix runs them independently and the check name answers it.
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          case "$SUITE" in
+            api) f=tests/test-api.mjs ;;
+            auth) f=tests/test-auth.mjs ;;
+            web-static) f=tests/test-web.mjs ;;
+            web-mount) f=tests/test-web-mount.mjs ;;
+            desktop) f=tests/test-desktop.mjs ;;
+          esac
+          set +e
+          out=$(node "$f" 2>&1); rc=$?
+          echo "$out" | tail -120
+          # Actions' raw log endpoint is not always reachable (fork PRs, restricted
+          # tokens, expired artifacts). Assertions print a stable "  ✗ name — detail"
+          # line, so mirror those into check annotations: the failure is then
+          # readable straight from the API, with no log download at all.
+          if [ "$rc" -ne 0 ]; then
+            echo "$out" | grep -E '^ *✗' | head -12 | while IFS= read -r line; do
+              printf '::error::%s\n' "$(echo "$line" | sed 's/^ *//')"
+            done
+            echo "$out" | grep -E 'passed, [0-9]+ failed' | tail -1 | sed 's/^ */::error::/' || true
+            printf '::error::%s exited %s — if no ✗ lines are listed above, the suite threw before asserting\n' "$f" "$rc"
+            exit "$rc"
+          fi
+          # A suite that skips itself must never read as a pass.
+          if echo "$out" | grep -q 'Skipping\.'; then
+            printf '::error::%s skipped itself (missing dependencies?) — a skip is not a pass\n' "$f"
+            exit 1
+          fi
