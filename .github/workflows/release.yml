@@ -3,13 +3,22 @@ name: release
 on:
   push:
     tags: ['v*']
+    # The suites also run on main and on every PR. Without this, "is CI green?" is
+    # only answered whenever someone happens to publish a release — which is exactly
+    # how a renderer suite that had never run on a runner (and a version-dependent
+    # toolchain crash) stayed merged and unnoticed for several rounds.
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  # Building the .exe costs a Windows runner and 113 MB of artifact, so it belongs
+  # to a release, not to every pull request. The tests job has no such condition.
   windows:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +38,7 @@ jobs:
       # ends up with no installable asset: the updater then tells every installed
       # app "an update is available" and has nothing to hand them.
       - name: Verify the asset matches the tag
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/')   # a dispatch has no tag to match
         shell: pwsh
         run: |
           $v = (node -p "require('./desktop/package.json').version").Trim()
@@ -44,6 +53,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
       - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
