@@ -91,7 +91,7 @@ async function main() {
   const server = spawn('node', ['server.mjs'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
-      ...process.env, PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true',
+      ...process.env, ADMIN_USERNAME: 'Thaddeusadmin', ADMIN_PASSWORD: 'test-only-password-123', OWNER_EMAIL: 'tthaddeus75@gmail.com', OWNER_PASSWORD: 'test-only-password-123', PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true',
       // A gateway we control, registered the same way a user's custom provider
       // would be: proves per-account keys, model sync and id substitution.
       CUSTOM_PROVIDERS: JSON.stringify([{
@@ -248,7 +248,7 @@ async function main() {
   console.log('— admin —');
   r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'wrong' });
   ok('admin wrong creds rejected', r.status === 401);
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'test-only-password-123' });
   ok('admin login', r.status === 200 && r.data.token);
   const at = r.data.token;
   r = await api('admin', { op: 'stats', token: at });
@@ -261,7 +261,7 @@ async function main() {
   ok('admin bad token rejected', r.status === 401);
 
   console.log('— owner account (second admin: app sign-in, not the console) —');
-  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner signs in to the app', r.status === 200 && r.data.ok && r.data.token);
   ok('owner is flagged admin', r.data.user?.role === 'admin' && r.data.role === 'admin');
   ok('owner display name', r.data.user?.name === 'Thaddeus');
@@ -269,7 +269,7 @@ async function main() {
   ok('owner account cannot be re-registered over', r.data.ok === false && /already exists/i.test(r.data.error || ''));
   r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'nope-nope-nope' });
   ok('owner password is still required', r.data.ok === false && /wrong email or password/i.test(r.data.error || ''));
-  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner email is NOT an admin-console login', r.status === 401);
   r = await api('admin', { op: 'ensure_owner', token: at });
   ok('admin can re-materialise the owner row', r.status === 200 && r.data.ok && r.data.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
@@ -402,11 +402,18 @@ async function main() {
   console.log('— pairing & updates —');
   r = await api('pair', { op: 'create' });
   ok('pair code', r.status === 200 && r.data.code?.length === 6);
-  const pairCode = r.data.code;
-  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u1', user_token: 'acx_linked', user: { name: 'Linked', email: 'l@x.com' } });
-  ok('pair claim', r.status === 200 && r.data.token === 'acx_linked');
+  const pairCode = r.data.code; const deviceSecret = r.data.device_secret;
+  r = await api('pair', { op: 'claim', code: pairCode, user_token: 'forged', user: { email: 'victim@example.com' } });
+  ok('unauthenticated pairing claim rejected', r.status === 401);
+  r = await api('pair', { op: 'claim', code: pairCode, user_token: tokenLive, user: { email: 'victim@example.com' } });
+  ok('authenticated pair claim succeeds', r.status === 200 && r.data.ok);
   r = await api('pair', { op: 'status', code: pairCode });
-  ok('pair status returns linked account', r.status === 200 && r.data.claimed === true && r.data.token === 'acx_linked' && r.data.user?.email === 'l@x.com');
+  ok('pair polling requires device proof', r.status === 403);
+  r = await api('pair', { op: 'status', code: pairCode, device_secret: deviceSecret });
+  ok('pair binds verified account, ignores forged profile', r.status === 200 && r.data.claimed && r.data.token === tokenLive && r.data.user?.email === email);
+  ok('pair never exports service keys', !('service_keys' in r.data));
+  r = await api('pair', { op: 'status', code: pairCode, device_secret: deviceSecret });
+  ok('pair collection is one-time', r.status === 404);
   r = await api('update_check');
   ok('update check runs', r.status === 200);
 
