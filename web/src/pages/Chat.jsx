@@ -36,6 +36,21 @@ function ToolChips({ active, setActive }) {
   );
 }
 
+// One sentence per phase, in the order the bridge emits them.
+const LIVE_PHASES = {
+  contacting: 'Contacting the provider…',
+  connected: 'Connected — waiting for tokens',
+  streaming: 'Streaming',
+  tools: 'Running a tool',
+  demo: 'Demo Core (offline)',
+  'non-streaming': 'Answering in one piece'
+};
+
+const formatElapsed = (ms) => {
+  const s = Math.round((ms || 0) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+};
+
 function MessageActions({ text, onRegen }) {
   const { notify } = useApp();
   const [speaking, setSpeaking] = useState(false);
@@ -68,6 +83,11 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // The live turn: what the model is doing right now. This is the answer to "I
+  // don't even know if they will respond" — a phase, a clock, and the tokens as
+  // they arrive, plus a cancel button that actually aborts the request.
+  const [live, setLive] = useState(null);
+  const abortRef = useRef(null);
   // The style picker: a document/deck/sheet template chosen for this turn. The
   // grid mirrors the ChatGPT app's artifact template picker, including the part
   // that matters — nothing is shown that failed validation on disk.
@@ -158,18 +178,35 @@ export default function ChatPage() {
     const next = [...messages, { role: 'user', content }];
     setMessages(next);
     setBusy(true);
+    const started = Date.now();
+    setLive({ phase: 'contacting', elapsed: 0, text: '', firstToken: null, chars: 0, tools: [] });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    // A clock that ticks even when nothing else does: silence for 20 seconds is
+    // information, and hiding it is what made a slow model look broken.
+    const tick = setInterval(() => {
+      setLive((l) => (l ? { ...l, elapsed: Date.now() - started } : l));
+    }, 250);
     try {
       let system = active.research
         ? 'You are ANTICODEX in Deep Research mode. Plan, use the search tool when available, and produce a structured, cited report.'
         : undefined;
       if (active.search) system = ((system ? system + '\n' : '') + 'Use web search results when the search tool is available; cite sources as [n].');
-      const out = await api.chat({
+      const out = await api.chatStream({
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
         system,
         template: template || undefined,
         use_mcp: active.mcp !== false
+      }, {
+        signal: controller.signal,
+        onEvent: (evt) => {
+          if (evt.type === 'phase') setLive((l) => (l ? { ...l, phase: evt.phase, detail: evt.detail || null, firstToken: evt.first_token_ms ?? l.firstToken } : l));
+          if (evt.type === 'heartbeat') setLive((l) => (l ? { ...l, elapsed: evt.elapsed_ms, waiting_on: evt.waiting_on } : l));
+          if (evt.type === 'delta') setLive((l) => (l ? { ...l, phase: 'streaming', text: (l.text + evt.text).slice(-20000), chars: (l.chars || 0) + evt.text.length } : l));
+          if (evt.type === 'tool') setLive((l) => (l ? { ...l, phase: 'tools', tools: [...(l.tools || []), { name: evt.name, status: evt.status }] } : l));
+        }
       });
       // A provider failure comes back as { ok:false, error, settings_link } on a
       // 200 — it used to render as a bare "(no response)" with no explanation,
@@ -177,7 +214,9 @@ export default function ChatPage() {
       const problem = out.ok === false || (out.error && !out.text);
       const reply = {
         role: 'assistant',
-        content: problem ? `⚠ ${out.error}` : (out.text || out.content || '(no response)'),
+        content: out.aborted
+          ? `${out.text || ''}${out.text ? '\n\n' : ''}_(stopped — you cancelled this answer)_`
+          : problem ? `⚠ ${out.error}` : (out.text || out.content || '(no response)'),
         tool_calls: out.tool_calls,
         model: out.model,
         error: problem || undefined,
@@ -190,16 +229,33 @@ export default function ChatPage() {
         model_picker: problem ? out.model_picker : undefined,
         // ids this endpoint says it really serves → one click to switch
         fallback: problem ? out.fallback : undefined,
-        note: out.note || undefined
+        note: out.note || undefined,
+        // So a thread remembers how slow this answer was.
+        first_token_ms: out.first_token_ms ?? null,
+        elapsed_ms: out.elapsed_ms ?? (Date.now() - started)
       };
       const merged = [...next, reply];
       setMessages(merged);
       persist(merged);
+      // A hidden model is a model the picker should stop offering: when the
+      // provider says "no such model", forget the cached index so the next open
+      // re-reads it with that id filtered out.
+      if (problem && (out.verdict === 'model' || out.fix === 'model')) {
+        try { localStorage.removeItem('acx_model_index'); } catch { /* private mode */ }
+      }
     } catch (e) {
-      const merged = [...next, { role: 'assistant', content: `⚠ ${e.message || e}` }];
-      setMessages(merged);
+      if (e?.name === 'AbortError' || controller.signal.aborted) {
+        const merged = [...next, { role: 'assistant', content: '_(stopped — you cancelled this answer)_', aborted: true }];
+        setMessages(merged);
+      } else {
+        const merged = [...next, { role: 'assistant', content: `⚠ ${e.message || e}` }];
+        setMessages(merged);
+      }
     } finally {
+      clearInterval(tick);
+      abortRef.current = null;
       setBusy(false);
+      setLive(null);
     }
   }
 
@@ -225,6 +281,12 @@ export default function ChatPage() {
                   <>
                     <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                     {m.note && !m.error ? <div className="tiny msg-note">{m.note}</div> : null}
+                    {m.elapsed_ms && !m.error ? (
+                      <div className="tiny msg-timing">
+                        {m.first_token_ms != null ? `first token ${formatElapsed(m.first_token_ms)} · ` : ''}
+                        answered in {formatElapsed(m.elapsed_ms)}{m.model ? ` · ${m.model}` : ''}
+                      </div>
+                    ) : null}
                     {m.error ? (
                       <div className="msg-fix">
                         {m.settings_link
@@ -269,6 +331,35 @@ export default function ChatPage() {
           </>
         )}
 
+        {live && (
+          <div className="msg-row assistant">
+            <div className="msg-name">ANTICODEX <span className="live-dot" /></div>
+            <div className="live-turn">
+              <div className="live-head">
+                <span className="live-phase">{LIVE_PHASES[live.phase] || live.phase}</span>
+                <span className="tiny">{formatElapsed(live.elapsed)}</span>
+                {live.firstToken != null && <span className="tiny">first token {formatElapsed(live.firstToken)}</span>}
+                {live.chars > 0 && <span className="tiny">{Math.round(live.chars / Math.max(0.001, live.elapsed / 1000))} chars/s</span>}
+                <div style={{ flex: 1 }} />
+                <button className="btn small ghost" onClick={() => abortRef.current?.abort()}>■ Stop</button>
+              </div>
+              {live.phase === 'contacting' || live.phase === 'waiting' ? (
+                <div className="tiny live-wait">
+                  {live.elapsed > 12000
+                    ? 'Still nothing back. Long prompts on a reasoning model can take a minute — Stop is there if you would rather not wait, and Settings → Model health can test this one in eight tokens.'
+                    : 'Sent. Waiting for the first byte…'}
+                </div>
+              ) : null}
+              {(live.tools || []).length > 0 && (
+                <div className="tiny live-tools">
+                  {live.tools.map((t, i) => <span key={i} className="live-tool">{t.status === 'running' ? '⏳' : t.status === 'ok' ? '✓' : '✗'} {t.name}</span>)}
+                </div>
+              )}
+              {live.text ? <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.text) }} /> : null}
+            </div>
+          </div>
+        )}
+
         <div className="composer" style={empty ? { marginTop: 18 } : {}}>
           {template && (
             <div className="row between" style={{ padding: '8px 10px 0' }}>
@@ -310,7 +401,12 @@ export default function ChatPage() {
             </label>
             <button className="icon-btn" title="Choose a document, deck or sheet template" onClick={() => openTemplates(template?.artifact_kind?.replace('google-', '') || 'document')}>▤</button>
             <ToolChips active={active} setActive={setActive} />
-            <button className="send-btn" disabled={!input.trim() || busy} onClick={() => send()}>
+            <button
+              className={`send-btn ${busy ? 'stop' : ''}`}
+              title={busy ? 'Stop this answer' : 'Send'}
+              disabled={busy ? false : !input.trim()}
+              onClick={() => { if (busy) abortRef.current?.abort(); else send(); }}
+            >
               {busy ? '■' : '↑'}
             </button>
           </div>

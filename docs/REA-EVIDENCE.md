@@ -638,3 +638,61 @@ Two conclusions worth keeping:
    (`skills/list`, `skills/manage`, `skills/config`, `skills/plugins`,
    `skills/changed`), so the `/skills` page built in §12.5 is the right shape for
    both surfaces rather than a desktop-only convenience.
+
+## 13. Pass 5 — streaming, model health, and REA as a surface
+
+Three complaints, three mechanisms, and one rule the three share: **never let the
+UI imply something it has not checked.**
+
+### 13.1 “They take sooo long, I don't even know if they will respond”
+
+`api/bridge.js` gained `chat_stream`: the same chat request answered as server-sent
+events. `lib/providers.js` gained `chatStream`, which speaks both wires properly
+(Anthropic `content_block_delta`, OpenAI `choices[].delta` with tool-call fragments
+reassembled by index) and emits, in order:
+
+| Event | When | Why it exists |
+|---|---|---|
+| `phase: contacting` | before the request | the clock starts before the network, not after |
+| `phase: connected` | when headers land | distinguishes “provider slow” from “we are slow” |
+| `heartbeat` | every 5 s while waiting | silence with a timer is information; silence alone is not |
+| `phase: streaming` + `delta` | first token, then each piece | the answer is readable as it is written |
+| `tool` | when a connected MCP tool runs | a tool round is not a hung model |
+| `done` | at the end | `first_token_ms`, `chars`, elapsed |
+| `error` / `aborted` | on failure / cancel | Stop aborts the upstream request, not just the view |
+
+The packaged app cannot stream from the renderer — it has neither the keychain keys
+nor the local token a LAN gateway needs — so `desktop/main.mjs` proxies the stream
+(`acx:api:stream`), forwards events on `acx:stream:event` tagged with a stream id,
+and `acx:api:stream:abort` really cancels.
+
+### 13.2 “…says there is nothing like this model available”
+
+That sentence is the provider's own `model_not_found`. `lib/model-health.js` records
+every real call as `{state, latency_ms, first_token_ms, last_error}` and classifies
+failures into `missing | key | quota | network | retry | error` — a 404 alone is not
+enough, the text has to be about the model. `modelIndex()` then hides two groups:
+
+* **rejected** — the provider said the id does not exist (12-hour TTL, revived by any
+  successful call, forgettable in Settings);
+* **unverified** — catalog guesses for a provider whose live `/models` answer we
+  already have. Offering a guess next to confirmed ids is how the rejected one got
+  picked in the first place.
+
+Nothing is deleted: `hidden` carries both groups with the provider's sentence, and
+`include_hidden: true` returns them marked `dead: true`. Because the website and the
+desktop app read the same index, one fix covers both.
+
+### 13.3 REA, installed by a human who saw the plan first
+
+`lib/rea.js` parses REA 6.7.0's real `setup --dry-run` output — a YAML header with a
+CSV table (`plannedActions[2]{id,kind,label,target,detail,external,operation}:`) —
+without a YAML dependency, and refuses to guess: if the table's declared row count
+does not match what was parsed, that is a `parse_error`, not “nothing to do”.
+
+`/rea` walks: Node check → **plan** → **apply** → **verify** → **register**. The gate
+is a fingerprint of `(id, kind, target, operation)` per action: `apply` re-runs the
+plan first and returns **409 with the new plan** if the fingerprint moved, so what is
+written is always what was shown. Verify is two independent proofs (the config file
+names the server **and** a real MCP handshake lists its tools) rather than a green
+tick from the thing that just did the writing.

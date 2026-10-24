@@ -11,6 +11,7 @@ import ImagesPage from './pages/Images.jsx';
 import VideoPage from './pages/Video.jsx';
 import McpPage from './pages/Mcp.jsx';
 import SkillsPage from './pages/Skills.jsx';
+import ReaPage from './pages/Rea.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
@@ -28,6 +29,7 @@ const NAV = [
   { to: '/mcp', icon: '⇄', label: 'Connectors' },
   { to: '/computer', icon: '▣', label: 'Computer Use' },
   { to: '/skills', icon: '✦', label: 'Skills' },
+  { to: '/rea', icon: '⟲', label: 'REA' },
   { to: '/setup', icon: '⇪', label: 'Bring your setup' }
 ];
 
@@ -203,6 +205,7 @@ export default function App() {
         <Route path="/images" element={<Shell><Guarded><ImagesPage /></Guarded></Shell>} />
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
         <Route path="/skills" element={<Shell><Guarded><SkillsPage /></Guarded></Shell>} />
+        <Route path="/rea" element={<Shell><Guarded><ReaPage /></Guarded></Shell>} />
         <Route path="/mcp" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />

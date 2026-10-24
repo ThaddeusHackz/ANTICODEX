@@ -135,9 +135,29 @@ globalThis.__mount = (route) => {
       hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: init.method || 'GET',
       headers: { 'Content-Type': 'application/json', ...(init.headers || {}) }
     }, (res) => {
-      let body = '';
-      res.on('data', (c) => { body += c; });
-      res.on('end', () => resolve({ ok: res.statusCode < 400, status: res.statusCode, json: async () => JSON.parse(body || '{}') }));
+      const chunks = [];
+      res.on('data', (c) => { chunks.push(c); });
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        // The real bridge answers `chat_stream` with server-sent events, so the
+        // harness has to hand the app a body reader as well as `json()` — otherwise
+        // every streamed reply would be tested through a shape no server sends.
+        const bytes = new TextEncoder().encode(body);
+        let sent = false;
+        resolve({
+          ok: res.statusCode < 400,
+          status: res.statusCode,
+          headers: { get: (k) => res.headers[String(k).toLowerCase()] ?? null },
+          json: async () => JSON.parse(body || '{}'),
+          text: async () => body,
+          body: {
+            getReader: () => ({
+              read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })),
+              cancel: async () => {}
+            })
+          }
+        });
+      });
     });
     req.on('error', reject);
     req.end(init.body ? String(init.body) : undefined);
@@ -150,12 +170,39 @@ globalThis.__mount = (route) => {
   // 200 with an error body, and a verified/live model list.
   let chatStub = null;
   let modelsStub = null;
+  // Chat is streamed now (server-sent events), so the stub has to answer in that
+  // shape — a JSON body with no `headers.get` is what a browser would never send.
+  const sseStub = (payload) => {
+    const frames = payload && payload.ok === false
+      ? [{ type: 'error', ...payload }]
+      : [
+          { type: 'phase', phase: 'connected' },
+          { type: 'delta', text: payload?.text || payload?.content || '' },
+          { type: 'done', model: payload?.model, chars: (payload?.text || '').length }
+        ];
+    const raw = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('');
+    const bytes = new TextEncoder().encode(raw);
+    let sent = false;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'text/event-stream; charset=utf-8' : null) },
+      json: async () => payload,
+      body: {
+        getReader: () => ({
+          read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })),
+          cancel: async () => {}
+        })
+      }
+    };
+  };
   const rawFetch = win.fetch;
   win.fetch = (input, init = {}) => {
     let parsed = null;
     if (init && init.body) { try { parsed = JSON.parse(String(init.body)); bridgeCalls.push(parsed); } catch { /* non-json */ } }
     const act = parsed && parsed.action;
-    if (act === 'chat' && chatStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(chatStub)) });
+    if (act === 'chat' && chatStub) return Promise.resolve({ ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => JSON.parse(JSON.stringify(chatStub)) });
+    if (act === 'chat_stream' && chatStub) return Promise.resolve(sseStub(JSON.parse(JSON.stringify(chatStub))));
     if (act === 'models' && modelsStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(modelsStub)) });
     return rawFetch(input, init);
   };

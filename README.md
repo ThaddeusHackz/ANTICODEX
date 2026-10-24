@@ -35,8 +35,10 @@ cd desktop && npm install && npm run package:win
 
 | Surface | What it does |
 |---|---|
-| **Chat** | Multi-model conversations (NVIDIA NIM catalog + custom endpoints), vision attachments, Tavily/Exa web search with source chips, thread history, streaming UX |
+| **Chat** | Multi-model conversations (NVIDIA NIM catalog + custom endpoints), vision attachments, Tavily/Exa web search with source chips, thread history. Answers **stream over server-sent events**: a phase (contacting → connected → streaming), a heartbeat every few seconds while the model is quiet, a running clock, first-token latency, and a Stop button that aborts the real request. Any answer that takes longer than 12 s says so instead of spinning. |
 | **Codex Workspace** | File tree, editor, sandbox terminal, agent thread, diff proposals, approval modes (suggest / auto-edit / auto-run) — modeled on the Codex desktop app architecture found in the forensic sweep |
+| **Model health** | Every model the app has actually called is recorded (`data/model-health.json`): latency, first-token time, and the verdict. A provider that answers *“there is nothing like this model”* gets that id **hidden from the picker** — on the website and in the desktop app — until a call succeeds, 12 hours pass, or you forget the verdict. Settings → Model health lists what is hidden, why, and can test any id in eight tokens. |
+| **REA** | Reverse Engineer Anything as a first-class surface (`/rea`): Node 22.19 check → **REA's own plan, shown before anything runs** (`npx rea-agents setup --dry-run`) → apply (the plan is fingerprinted; a plan that changed is refused) → verify (config file **and** a real MCP handshake listing its tools) → register it as the `rea` MCP server so chat and Codex can call all 207 tools. |
 | **Agent Studio** | Plans, persistent project memory (`ANTICODEX.md`), skills (REA + leanrea installed), live tool log — the Claude-Code/Claude-desktop agent pattern |
 | **Images** | Cloudflare Workers AI **Flux** (schnell/dev) |
 | **Video** | **MiniMax Hailuo (H3)** text-to-video, unlimited on your key |

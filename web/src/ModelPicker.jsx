@@ -16,7 +16,7 @@ import { Pill } from './ui.jsx';
 // endpoint rejects. That is why a fresh NVIDIA key "did not work").
 
 const INDEX_TTL = 10 * 60 * 1000;
-const INDEX_V = 2;                                // v1 cached a list without live/unverified flags
+const INDEX_V = 3;                                // v3 adds health + the hidden bucket
 const autoVerified = new Set();                   // one opportunistic sync per provider per page load
 const RECENT_MAX = 6;
 let memoryIndex = null;   // per page-load cache; localStorage handles longer life
@@ -72,7 +72,16 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
     setBusy('list');
     try {
       const r = await api.models();
-      const next = r.picker ? { v: INDEX_V, at: Date.now(), providers: r.picker.providers, total: r.picker.total_models } : null;
+      const next = r.picker
+        ? {
+            v: INDEX_V, at: Date.now(), providers: r.picker.providers,
+            total: r.picker.total_models,
+            // What was removed and why: the difference between a shorter list
+            // and a list that quietly lies about what exists.
+            hidden: r.picker.hidden || { count: 0, models: [] },
+            health: r.health || null
+          }
+        : null;
       if (next) { memoryIndex = next; try { localStorage.setItem('acx_model_index', JSON.stringify(next)); } catch { /* quota */ } setIndex(next); }
       else notify('Could not read the model list from this server');
     } catch (e) { notify(`Model list unavailable: ${e.message || e}`); } finally { setBusy(''); }
@@ -262,6 +271,14 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
                           {m.tools ? <i title="tool calling">⚙</i> : null}
                           {m.live ? <i className="mp-live" title="this endpoint listed it — safe to call">✓</i> : null}
                           {m.unverified ? <i className="mp-unver" title="in our catalog, but this endpoint did not list it">?</i> : null}
+                          {m.health?.latency_ms ? (
+                            <i
+                              className={`mp-speed ${m.health.latency_ms > 20000 ? 'slow' : m.health.latency_ms < 2500 ? 'fast' : ''}`}
+                              title={`last answer took ${(m.health.latency_ms / 1000).toFixed(1)}s${m.health.first_token_ms ? ` (first token ${(m.health.first_token_ms / 1000).toFixed(1)}s)` : ''}`}
+                            >
+                              {m.health.latency_ms >= 1000 ? `${(m.health.latency_ms / 1000).toFixed(0)}s` : `${m.health.latency_ms}ms`}
+                            </i>
+                          ) : null}
                         </span>
                         {tab !== 'recent' && <span className="mp-prov">{g.name}</span>}
                         <span className="mp-id">{m.id}</span>
@@ -270,6 +287,19 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
                   })}
                 </div>
               ))}
+              {index?.hidden?.count > 0 && (
+                <div className="mp-hidden">
+                  <div className="mp-ghead">
+                    <span className="mp-gname">Hidden models</span>
+                    <span className="tiny">{index.hidden.count} removed</span>
+                  </div>
+                  <div className="tiny" style={{ padding: '0 10px 6px', lineHeight: 1.5 }}>
+                    {index.hidden.rejected ? <><b>{index.hidden.rejected}</b> were rejected by their provider (“does not exist”) and are no longer offered. </> : null}
+                    {index.hidden.unverified ? <><b>{index.hidden.unverified}</b> are catalog guesses the endpoint did not list. </> : null}
+                    Nothing was deleted — Settings → Model health can show them and put any of them back.
+                  </div>
+                </div>
+              )}
               <div className="mp-custom">
                 <div className="mp-ghead"><span className="mp-gname">Any model id</span><span className="tiny">type it, we route it</span></div>
                 <div className="row" style={{ gap: 8, padding: '2px 8px 6px' }}>
@@ -295,6 +325,7 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
             <div className="mp-foot">
               <span className="tiny">↑↓ move · ⏎ use · Esc close</span>
               <div style={{ flex: 1 }} />
+              <button className="btn small ghost" onClick={() => { setOpen(false); nav('/settings?tab=models'); }}>Model health…</button>
               <button className="btn small ghost" onClick={() => { setOpen(false); nav('/settings'); }}>Provider keys…</button>
             </div>
           </div>

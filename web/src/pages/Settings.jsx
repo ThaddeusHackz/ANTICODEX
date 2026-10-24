@@ -4,6 +4,7 @@ import { models as modelsApi, testEndpoint, updateCheck, api, userKeys, storeKey
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
 import ModelPicker from '../ModelPicker.jsx';
+import ModelHealthPanel from './ModelHealth.jsx';
 
 function ProviderCard({ def, onSave, onSaved, onPickModel, notify }) {
   const [key, setKey] = useState('');
@@ -213,7 +214,12 @@ function githubNote(cfg) {
 export default function SettingsPage() {
   const { notify, cfg, setCfg, theme, setTheme, user, model, setModel, signOut } = useApp();
   const nav = useNavigate();
-  const [tab, setTab] = useState('providers');
+  // `/settings?tab=models` is a real entry point (the picker links to it when it
+  // hides a model), so the tab has to come from the URL, not always 'providers'.
+  const [tab, setTab] = useState(() => {
+    const wanted = new URLSearchParams(window.location.search).get('tab');
+    return ['mykeys', 'providers', 'models', 'search', 'media', 'account', 'desktop'].includes(wanted) ? wanted : 'providers';
+  });
   const [directory, setDirectory] = useState([]);
   const [providers, setProviders] = useState([]);
   const [filter, setFilter] = useState('');
@@ -294,15 +300,17 @@ export default function SettingsPage() {
           </p>
         </div>
         <div className="tabs">
-          {['mykeys', 'providers', 'search', 'media', 'account', 'desktop'].map((t) => (
+          {['mykeys', 'providers', 'models', 'search', 'media', 'account', 'desktop'].map((t) => (
             <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-              {t[0].toUpperCase() + t.slice(1)}
+              {t === 'models' ? 'Model health' : t[0].toUpperCase() + t.slice(1)}
             </button>
           ))}
         </div>
       </div>
 
       {tab === 'mykeys' && <MyKeysPanel />}
+
+      {tab === 'models' && <ModelHealthPanel notify={notify} />}
 
       {tab === 'providers' && (
         <>

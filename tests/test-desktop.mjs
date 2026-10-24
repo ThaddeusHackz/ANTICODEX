@@ -357,6 +357,36 @@ try {
     fs.rmSync(fixture, { recursive: true, force: true });
     ok('the picker is reachable from the chat composer', /api\.artifacts\.list/.test(read('web/src/pages/Chat.jsx')));
 
+    // --- streamed chat reaches the packaged app -----------------------------
+    // The renderer cannot stream by itself: it has neither the keychain keys nor
+    // the local token. The main process makes the request and forwards events.
+    const mainSrc = read('desktop/main.mjs');
+    const preloadSrc = read('desktop/preload.mjs');
+    ok('the desktop proxies a streamed chat', /acx:api:stream/.test(mainSrc));
+    ok('…with the keychain keys attached', /acx:api:stream[\s\S]{0,1600}provider_keys: getKeychain\(\)\.load\(\)\.keys/.test(mainSrc));
+    ok('…and the local token for gateways on this machine', /x-anticodex-local/.test(mainSrc.slice(mainSrc.indexOf('acx:api:stream'))));
+    ok('a cancel really aborts it', /acx:api:stream:abort/.test(mainSrc) && /streamControllers/.test(mainSrc));
+    ok('the preload exposes it as one call with a callback', /streamApi: \(action, payload, onEvent\)/.test(preloadSrc));
+    ok('…and filters events by stream id', /msg\?\.streamId !== streamId/.test(preloadSrc));
+    const apiSrc = read('web/src/lib/api.js');
+    ok('the web client uses it when the app is there', /hasDesktop\(\) && window\.anticodexDesktop\.streamApi/.test(apiSrc));
+    ok('…and plain HTTP everywhere else', /fetch\('\/api\/bridge'/.test(apiSrc));
+
+    // --- REA -----------------------------------------------------------------
+    ok('the desktop reports why it can run REA', /acx:reaEnv/.test(mainSrc) && /canSpawn: true/.test(mainSrc));
+    ok('the REA page exists and is routed', /path="\/rea"/.test(read('web/src/App.jsx')) && /ReaPage/.test(read('web/src/App.jsx')));
+    const reaPage = read('web/src/pages/Rea.jsx');
+    ok('…it shows the plan before applying', /Show the setup plan/.test(reaPage) && /Approve and apply/.test(reaPage));
+    ok('…it verifies with a handshake', /reaApi\.verify/.test(reaPage) && /MCP handshake/.test(reaPage));
+    ok('…and registers the connection last', /reaApi\.register/.test(reaPage));
+
+    // --- model health --------------------------------------------------------
+    const settings = read('web/src/pages/Settings.jsx');
+    ok('Model health is a Settings tab', /ModelHealthPanel/.test(settings) && /'models'/.test(settings));
+    ok('…reachable straight from the picker', /\/settings\?tab=models/.test(read('web/src/ModelPicker.jsx')));
+    ok('the picker shows a speed badge', /mp-speed/.test(read('web/src/ModelPicker.jsx')));
+    ok('the chat shows the live phase and a stop button', /LIVE_PHASES/.test(read('web/src/pages/Chat.jsx')) && /abortRef/.test(read('web/src/pages/Chat.jsx')));
+
     // The ChatGPT webview's skill channels (skills/list, skills/manage,
     // skills/config, skills/plugins) are one page here, and both of its data
     // sources have to be the real endpoints.
