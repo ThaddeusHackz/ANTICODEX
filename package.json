@@ -10,7 +10,7 @@
     "build": "npm run build --prefix web",
     "build:web": "npm run build --prefix web",
     "start": "node server.mjs",
-    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs && node tests/test-import-config.mjs && node tests/test-mcp-stdio.mjs && node tests/test-workspace.mjs && node tests/test-skills.mjs && node tests/test-egress.mjs && node tests/test-artifacts.mjs && node tests/test-streaming.mjs && node tests/test-rea.mjs && node tests/test-fast.mjs && node tests/test-sandbox.mjs && node tests/test-desktop.mjs",
+    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs && node tests/test-import-config.mjs && node tests/test-mcp-stdio.mjs && node tests/test-workspace.mjs && node tests/test-skills.mjs && node tests/test-egress.mjs && node tests/test-artifacts.mjs && node tests/test-streaming.mjs && node tests/test-rea.mjs && node tests/test-fast.mjs && node tests/test-sandbox.mjs && node tests/test-desktop.mjs && node tests/test-qoder.mjs",
     "test:desktop": "node tests/test-desktop.mjs",
     "test:api": "node tests/test-api.mjs",
     "package:win": "node desktop/package-win.mjs",
@@ -25,7 +25,8 @@
     "test:egress": "node tests/test-egress.mjs",
     "test:artifacts": "node tests/test-artifacts.mjs",
     "test:streaming": "node tests/test-streaming.mjs",
-    "test:rea": "node tests/test-rea.mjs"
+    "test:rea": "node tests/test-rea.mjs",
+    "test:qoder": "node tests/test-qoder.mjs"
   },
   "engines": {
     "node": ">=20"

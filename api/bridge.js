@@ -20,6 +20,20 @@ import {
   planFingerprint,
   runRea
 } from '../lib/rea.js';
+import {
+  QODER_PAT_ENVS,
+  QCA_BASE,
+  createAcpClient,
+  explainAcpError,
+  qcaEvents,
+  qcaPage,
+  qcaRequest,
+  qcaUrl,
+  qoderActionWorkflow,
+  qoderCliStatus,
+  qoderStatus
+} from '../lib/qoder.js';
+import { QODER_REPOS, atlasTally as qoderAtlasTally } from '../lib/qoder-repos.js';
 import { webSearch } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
@@ -166,6 +180,7 @@ export default async function handler(req, res) {
       case 'chat_stream': return await handleChatStream(req, res, body);
       case 'model_health': return await handleModelHealth(req, body, res);
       case 'rea': return await handleRea(req, body, res);
+      case 'qoder': return await handleQoder(req, body, res);
       case 'sandbox': return await handleSandbox(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
@@ -1218,6 +1233,237 @@ async function handleRea(req, body, res) {
   }
 
   return json(res, 400, { ok: false, error: 'unknown rea op' });
+}
+
+// --- Qoder -----------------------------------------------------------------
+//
+// Two integrations behind one action, because they answer the same question —
+// "what of Qoder can this app actually do?":
+//
+//   cloud.*   the Cloud Agents APIs (Forward + Managed), driven from the server
+//             with the user's own QODER_PAT so the browser never holds a token;
+//   acp.*     the local `qodercli --acp` agent, which only exists on a machine
+//             that can spawn processes, so it is loopback-only.
+//
+// Neither is a proxy for arbitrary URLs: paths are built from constants plus
+// validated ids, so a request cannot address a host of its choosing.
+
+const QODER_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+function qoderId(value, field) {
+  if (typeof value !== 'string' || !QODER_ID.test(value)) {
+    const e = new Error(`${field} is not a valid Qoder id`);
+    e.status = 400;
+    throw e;
+  }
+  return encodeURIComponent(value);
+}
+
+/** A signed-in user's own key, falling back to the deployment's. */
+async function qoderKeyGetter(req, body) {
+  const user = await currentUser(req, body).catch(() => null);
+  const own = user?.email ? await userKeyMap(user.email).catch(() => ({})) : {};
+  return { user, get: (name) => (own && own[name]) || getKey(name) };
+}
+
+async function handleQoder(req, body, res) {
+  const op = body.op || 'status';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const { user, get } = await qoderKeyGetter(req, body);
+
+  // Cloud Agents act on somebody's Qoder account: a signed-in user or a local
+  // install, never an anonymous remote caller.
+  if (String(op).startsWith('cloud.') && !user && !local) {
+    return json(res, 401, { ok: false, error: 'Sign in to use Qoder Cloud Agents.', sign_in: '/login' });
+  }
+
+  if (op === 'status') {
+    const cli = await qoderCliStatus().catch((e) => ({ found: false, error: String(e.message || e) }));
+    return json(res, 200, {
+      ok: true,
+      local,
+      ...qoderStatus(get),
+      cli,
+      atlas: qoderAtlasTally(),
+      cloud: { forwards: Object.keys(QCA_BASE), key_envs: QODER_PAT_ENVS, base: QCA_BASE.forward.replace('/api/v1/forward', '') },
+      ascp_hint: cli.found ? null : 'Install qodercli to use the local ACP agent: npm i -g @qoder-ai/qodercli'
+    });
+  }
+
+  if (op === 'repos') return json(res, 200, { ok: true, repos: QODER_REPOS, tally: qoderAtlasTally(), owner: 'qoderAI' });
+
+  if (op === 'action.workflow') {
+    const yaml = qoderActionWorkflow({
+      prompt: typeof body.prompt === 'string' && body.prompt.trim() ? body.prompt.slice(0, 2000) : undefined,
+      version: typeof body.version === 'string' && /^\d+\.\d+\.\d+$/.test(body.version) ? body.version : undefined,
+      mcp: body.mcp !== false,
+      flags: typeof body.flags === 'string' ? body.flags.slice(0, 200) : '',
+      trigger: ['pull_request', 'issue_comment', 'workflow_dispatch'].includes(body.trigger) ? body.trigger : 'pull_request'
+    });
+    return json(res, 200, { ok: true, path: '.github/workflows/qoder.yml', yaml, source: 'https://github.com/qoderAI/qoder-action' });
+  }
+
+  // --- local ACP agent ------------------------------------------------------
+  if (op === 'acp.probe') {
+    if (!local) return needsLocal(res, 'qodercli is a local process — open the desktop app or run this server on your machine.');
+    const started = Date.now();
+    const client = createAcpClient({ cwd: os.tmpdir(), allowTools: false });
+    try {
+      const init = await client.initialize();
+      return json(res, 200, {
+        ok: true,
+        ms: Date.now() - started,
+        agent: init?.agentInfo || null,
+        protocol: init?.protocolVersion ?? null,
+        auth_methods: init?.authMethods || [],
+        capabilities: init?.agentCapabilities || null,
+        signed_in: !(init?.authMethods || []).length
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, ms: Date.now() - started, code: e.code ?? null, error: explainAcpError(e), stderr: client.state.stderr.slice(-800) });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+
+  if (op === 'acp.prompt') {
+    if (!local) return needsLocal(res, 'qodercli is a local process — open the desktop app or run this server on your machine.');
+    const text = String(body.text || '').trim();
+    if (!text) return json(res, 400, { ok: false, error: 'text is required' });
+    const allowTools = body.allow_tools === true;
+    const updates = [];
+    const sessionCwd = typeof body.cwd === 'string' && path.isAbsolute(body.cwd) ? body.cwd : os.tmpdir();
+    const client = createAcpClient({
+      cwd: sessionCwd,
+      allowTools,
+      clientVersion: VERSION,
+      onUpdate: (params) => {
+        // Bounded: an agent can emit thousands of chunks and this is a preview.
+        if (updates.length < 500) updates.push(params?.update || params);
+      }
+    });
+    const started = Date.now();
+    try {
+      const init = await client.initialize();
+      let session;
+      try {
+        session = await client.newSession({ cwd: sessionCwd });
+      } catch (e) {
+        return json(res, 200, {
+          ok: false, ms: Date.now() - started, auth_required: /auth/i.test(String(e.message || '')),
+          agent: init?.agentInfo || null, error: explainAcpError(e), stderr: client.state.stderr.slice(-800)
+        });
+      }
+      const result = await client.prompt({ text, sessionId: session?.sessionId });
+      const answer = updates
+        .filter((u) => u?.sessionUpdate === 'agent_message_chunk')
+        .map((u) => (u.content?.text || ''))
+        .join('');
+      return json(res, 200, {
+        ok: true,
+        ms: Date.now() - started,
+        session_id: session?.sessionId || null,
+        stop_reason: result?.stopReason ?? null,
+        text: answer,
+        updates: updates.slice(0, 200),
+        chunks: updates.length,
+        tools_requested: updates.filter((u) => u?.sessionUpdate === 'tool_call').length,
+        allow_tools: allowTools,
+        stderr: client.state.stderr ? client.state.stderr.slice(-800) : undefined
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, ms: Date.now() - started, code: e.code ?? null, error: explainAcpError(e), stderr: client.state.stderr.slice(-800) });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+
+  // --- Cloud Agents ---------------------------------------------------------
+  const pat = get('QODER_PAT') || get('QODER_ACCESS_TOKEN');
+  const call = (mode, p, options = {}) => qcaRequest(mode, p, { token: pat, ...options });
+
+  if (op === 'cloud.whoami') {
+    const r = await call('forward', 'templates', { query: { limit: 1 } });
+    return json(res, 200, { ...r, key_source: pat ? 'server' : null, error: r.ok ? undefined : r.error });
+  }
+
+  if (op === 'cloud.identities') {
+    if (body.method === 'create') {
+      const externalId = String(body.external_id || '').trim();
+      if (!externalId) return json(res, 400, { ok: false, error: 'external_id is required' });
+      const r = await call('forward', 'identities', { method: 'POST', body: { external_id: externalId.slice(0, 128), name: body.name ? String(body.name).slice(0, 128) : undefined } });
+      return json(res, 200, { ...r, data: r.ok ? r.data : undefined });
+    }
+    const r = await call('forward', 'identities', { query: { limit: Number(body.limit) || 20 } });
+    return json(res, 200, r.ok ? { ...r, ...qcaPage(r.data) } : r);
+  }
+
+  if (op === 'cloud.templates') {
+    const r = await call('forward', 'templates', { query: { limit: Number(body.limit) || 20 } });
+    return json(res, 200, r.ok ? { ...r, ...qcaPage(r.data) } : r);
+  }
+
+  if (op === 'cloud.sessions') {
+    if (body.method === 'create') {
+      const identityId = qoderId(body.identity_id, 'identity_id');
+      const templateId = qoderId(body.template_id, 'template_id');
+      const r = await call('forward', 'sessions', {
+        method: 'POST',
+        body: { identity_id: decodeURIComponent(identityId), template_id: decodeURIComponent(templateId), title: body.title ? String(body.title).slice(0, 200) : undefined }
+      });
+      return json(res, 200, r.ok ? { ok: true, session: r.data } : r);
+    }
+    const r = await call('forward', 'sessions', { query: { limit: Number(body.limit) || 20 } });
+    return json(res, 200, r.ok ? { ...r, ...qcaPage(r.data) } : r);
+  }
+
+  if (op === 'cloud.session') {
+    const r = await call('forward', `sessions/${qoderId(body.session_id, 'session_id')}`);
+    return json(res, 200, r.ok ? { ok: true, session: r.data } : r);
+  }
+
+  if (op === 'cloud.events') {
+    const r = await call('forward', `sessions/${qoderId(body.session_id, 'session_id')}/events`, { query: { limit: Number(body.limit) || 50, order: body.order === 'desc' ? 'desc' : 'asc' } });
+    return json(res, 200, r.ok ? { ...r, ...qcaPage(r.data) } : r);
+  }
+
+  if (op === 'cloud.send') {
+    const text = String(body.text || '').trim();
+    if (!text) return json(res, 400, { ok: false, error: 'text is required' });
+    const r = await call('forward', `sessions/${qoderId(body.session_id, 'session_id')}/events`, {
+      method: 'POST',
+      body: { events: [{ type: 'user.message', content: [{ type: 'text', text: text.slice(0, 20000) }] }] }
+    });
+    return json(res, 200, r.ok ? { ok: true, accepted: r.data } : r);
+  }
+
+  if (op === 'cloud.stream') {
+    // Collect a bounded window of the SSE feed instead of holding a socket open
+    // through the bridge: the page polls this, so a reload cannot leak a stream.
+    const controller = new AbortController();
+    const budget = Math.min(Math.max(Number(body.ms) || 8000, 1000), 20000);
+    const timer = setTimeout(() => controller.abort(), budget);
+    try {
+      const res2 = await fetch(qcaUrl('forward', `sessions/${qoderId(body.session_id, 'session_id')}/events/stream`), {
+        headers: { Authorization: `Bearer ${pat}`, Accept: 'text/event-stream' },
+        signal: controller.signal
+      });
+      if (!res2.ok) return json(res, 200, { ok: false, status: res2.status, error: `Qoder returned ${res2.status}` });
+      const collected = [];
+      for await (const event of qcaEvents(res2, { signal: controller.signal })) {
+        collected.push(event);
+        if (collected.length >= 200) break;
+      }
+      return json(res, 200, { ok: true, events: collected, ms: budget });
+    } catch (e) {
+      if (e?.name === 'AbortError') return json(res, 200, { ok: true, events: [], ms: budget, note: 'No new events in the window.' });
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return json(res, 400, { ok: false, error: `unknown qoder op: ${op}` });
 }
 
 // --- egress ---------------------------------------------------------------

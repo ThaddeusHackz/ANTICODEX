@@ -530,6 +530,15 @@ globalThis.__mount = (route) => {
     ok('…and what it will not do', /not a container|only for the person sitting/i.test(text), text.slice(-200));
   }
 
+  console.log('\n— the Qoder page —');
+  {
+    const text = await mountAt('/qoder', { token: reg.token, user: reg.user });
+    ok('the page renders', /Qoder/.test(text) && /49 repositories/i.test(text), text.slice(0, 140));
+    ok('it says where the key goes, not the key itself', /QODER_PAT/.test(text) && !/qpat_/.test(text), text.slice(0, 200));
+    ok('the atlas is on screen', /integrated/.test(text) && /better-harness/.test(text), text.slice(-260));
+    ok('the local agent panel explains ACP', /qodercli --acp/.test(text), text.slice(-260));
+  }
+
   console.log('\n— signed out —');
   win.eval('localStorage.clear()');
   const loginText = await mountAt('/login');
