@@ -1,0 +1,22 @@
+[
+  {
+    "label": "chatgpt-win",
+    "url": "https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix",
+    "note": "ChatGPT for Windows, the package the Drive copy came from (26.1013 → 26.1021)"
+  },
+  {
+    "label": "claude-win",
+    "url": "https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix",
+    "note": "Claude Desktop for Windows 2.42304.2 (Drive copy was 2.42304.0)"
+  },
+  {
+    "label": "claude-code",
+    "url": "https://downloads.claude.ai/claude-code-releases/2.1.302/win32-x64/claude.exe",
+    "note": "Claude Code CLI 2.1.302 — a single PE, the 245 MB native carrier"
+  },
+  {
+    "label": "codex-cli",
+    "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip",
+    "note": "Codex CLI 0.161.0 for Windows"
+  }
+]

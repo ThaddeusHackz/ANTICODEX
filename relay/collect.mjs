@@ -18,7 +18,10 @@ const WORK = 'relay/work';
 fs.mkdirSync(OUT, { recursive: true });
 fs.mkdirSync(WORK, { recursive: true });
 
-const only = (process.env.RELAY_ONLY || '').split(',').filter(Boolean);
+function readIf(file) { try { return fs.readFileSync(file, 'utf8').trim(); } catch { return ''; } }
+// A run's stage list can come from the dispatch input, the environment, or a
+// tracked one-liner — the tracked file is how a plain push selects a stage.
+const only = (process.env.RELAY_ONLY || readIf('relay/only.txt') || '').split(',').filter(Boolean);
 const wants = (k) => only.length === 0 || only.includes(k);
 const say = (...a) => console.log('[relay]', ...a);
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
@@ -104,7 +107,9 @@ function factsFromTree(root) {
   const textFiles = files.filter((f) => TEXT_EXT.has(path.extname(f.path).toLowerCase()) && f.size <= MAX_FILE);
   for (const [label] of PATTERNS) { hits[label] = []; counts[label] = {}; }
   let scanned = 0;
+  const SCAN_CAP = 320 * 1024 * 1024;
   for (const f of textFiles) {
+    if (scanned > SCAN_CAP) break;
     let body;
     try { body = fs.readFileSync(f.path, 'utf8'); } catch { continue; }
     if (body.includes('\u0000')) continue;
@@ -241,10 +246,25 @@ async function siteFacts(label, urls) {
     if (r.status === 200 && r.buf.length > 2000 && /<html|<script|__NEXT_DATA__|root/i.test(r.text)) { html = r; break; }
   }
   if (!html) return { label, attempts, html: null };
-  const scripts = [...new Set([
-    ...[...html.text.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]),
-    ...[...html.text.matchAll(/"(\/_next\/static\/[^"]+\.js)"/g)].map((m) => m[1])
-  ])].map((s) => (s.startsWith('http') ? s : new URL(s, html.url).href));
+  // Next/vite/rollup shells name their bundles in several places: plain <script
+  // src>, modulepreload links, escaped JSON payloads, and a /cdn/… path style.
+  const rawScripts = new Set();
+  for (const re of [
+    /<script[^>]+src=["']([^"']+)["']/g,
+    /<link[^>]+rel=["'](?:modulepreload|preload)["'][^>]+href=["']([^"']+\.js)["']/g,
+    /["'](\/[^"'\s]+\.js)["']/g,
+    /["'](https:\/\/[^"'\s]+\.js)["']/g,
+    /["'](\/_next\/static\/[^"'\s]+)["']/g
+  ]) {
+    for (const m of html.text.matchAll(re)) {
+      const v = m[1].replace(/\\u002F/g, '/');
+      if (v && !v.startsWith('data:')) rawScripts.add(v);
+    }
+  }
+  const scripts = [...rawScripts]
+    .filter((x) => /\.js(\?|$)/.test(x))
+    .slice(0, 60)
+    .map((x) => (x.startsWith('http') ? x : new URL(x, html.url).href));
   const base = new URL(html.url);
   const dir = path.join(WORK, `web-${label}`);
   fs.mkdirSync(dir, { recursive: true });
@@ -257,8 +277,31 @@ async function siteFacts(label, urls) {
     fs.writeFileSync(path.join(dir, name), r.buf);
     fetched.push({ src, status: r.status, bytes: r.buf.length, saved: name });
   }
+  // A second wave: the first bundle usually names its own lazy chunks.
+  const more = new Set();
+  for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    let body = '';
+    try { body = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }
+    for (const m of body.matchAll(/["']([\w./-]+\.js)["']/g)) {
+      if (m[1].length < 120) more.add(m[1]);
+    }
+  }
+  const secondWave = [...more]
+    .filter((m) => !fetched.some((f) => f.src.endsWith(m.split('/').pop())))
+    .slice(0, 16)
+    .map((m) => (m.startsWith('http') ? m : new URL(m.replace(/^\.\//, ''), html.url).href));
+  for (const src of secondWave) {
+    const r = await tryGet(src);
+    if (r.status !== 200 || r.buf.length > 8 * 1024 * 1024) { fetched.push({ src, status: r.status, bytes: r.buf.length, wave: 2 }); continue; }
+    const name = `w2-${(src.split('/').pop().split('?')[0].replace(/[^\w.-]/g, '_') || fetched.length + '.js')}`;
+    fs.writeFileSync(path.join(dir, name), r.buf);
+    fetched.push({ src, status: r.status, bytes: r.buf.length, saved: name, wave: 2 });
+  }
   const facts = factsFromTree(dir);
-  return { label, origin: base.origin, attempts, html_bytes: html.buf.length, scripts: fetched, facts, meta: extractMeta(html.text) };
+  return {
+    label, origin: base.origin, attempts, html_bytes: html.buf.length, scripts: fetched, facts,
+    meta: extractMeta(html.text), head_sample: html.text.slice(0, 4000), dir
+  };
 }
 
 function extractMeta(html) {
@@ -275,6 +318,28 @@ function extractMeta(html) {
   }
   m.hosts = [...new Set([...html.matchAll(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)].map((x) => x[1]))].slice(0, 40);
   return m;
+}
+
+// ---------------------------------------------------------------------------
+// REA, run where the files are
+// ---------------------------------------------------------------------------
+
+function reaEvidence(dir, label) {
+  // `--filter-output` keeps the answer small: evidence id, subject digest, the
+  // summary counters and the declared limitations — no source, no graph.
+  const args = [
+    '-y', 'rea-agents@latest', 'analyze-javascript-application', dir,
+    '--format', 'json',
+    '--filter-output', 'evidence_id,subject,limitations,normalized_result.summary,normalized_result.statistics'
+  ];
+  try {
+    const out = execFileSync('npx', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 45 * 60 * 1000 });
+    const parsed = JSON.parse(out);
+    say('rea', label, parsed.evidence_id);
+    return parsed;
+  } catch (e) {
+    return { error: String(e.message || e).slice(0, 600) };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,9 +388,15 @@ async function acquire(url, label) {
   const meta = await download(url, file);
   say(label, 'downloaded', name, meta.bytes, 'B');
 
+  const magic = fs.readFileSync(file).subarray(0, 2).toString('latin1');
   const extracted = path.join(rawDir, 'x');
   let listing = [];
-  if (/\.(msix|appx|zip)$/i.test(name)) listing = unzip(file, extracted);
+  if (magic === 'MZ') {
+    // A bare executable: nothing to unpack, it is the artifact.
+    fs.mkdirSync(extracted, { recursive: true });
+    listing = [{ path: file, size: meta.bytes }];
+    say(label, 'is a PE image, no extraction needed');
+  } else if (/\.(msix|appx|zip)$/i.test(name)) listing = unzip(file, extracted);
   else if (/\.(msixbundle|appxbundle)$/i.test(name)) {
     const first = unzip(file, path.join(rawDir, 'bundle'));
     const inner = first.filter((f) => /\.(msix|appx)$/i.test(f.path)).sort((a, b) => b.size - a.size);
@@ -366,13 +437,16 @@ if (wants('web')) {
     ]
   })) {
     say('site', label);
-    report.targets[`web-${label}`] = await siteFacts(label, urls);
+    const got = await siteFacts(label, urls);
+    if (got.dir) { got.rea = reaEvidence(got.dir, `web-${label}`); delete got.dir; }
+    report.targets[`web-${label}`] = got;
   }
   writeOut('web.json', report.targets);
 }
 
 if (wants('assets')) {
-  const plan = JSON.parse(fs.readFileSync(process.env.RELAY_PLAN || path.join(OUT, 'plan.json'), 'utf8'));
+  const planFile = process.env.RELAY_PLAN || (fs.existsSync('relay/plan.json') ? 'relay/plan.json' : path.join(OUT, 'plan.json'));
+  const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
   for (const job of plan) {
     say('asset', job.label, job.url);
     try {
@@ -386,12 +460,13 @@ if (wants('assets')) {
         const dir = path.join(WORK, `${job.label}-asar`);
         entry.asar = { file: path.basename(target.path), size: target.size, ...unpackAsar(target.path, dir) };
         entry.asar_facts = factsFromTree(dir);
+        entry.asar_rea = reaEvidence(dir, `${job.label}-asar`);
         fs.rmSync(dir, { recursive: true, force: true });
       }
       entry.pe = exes
-        .filter((f) => f.size > 100 * 1024 && f.size < 120 * 1024 * 1024)
+        .filter((f) => f.size > 60 * 1024 && f.size < 400 * 1024 * 1024)
         .sort((a, b) => b.size - a.size)
-        .slice(0, 8)
+        .slice(0, 10)
         .map((f) => peReport(f.path));
       entry.other_large = got.listing.filter((f) => f.size > 5 * 1024 * 1024).sort((a, b) => b.size - a.size).slice(0, 25).map((f) => ({ path: path.relative(got.extracted, f.path), size: f.size }));
       report.targets[job.label] = entry;

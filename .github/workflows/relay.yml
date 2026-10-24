@@ -61,7 +61,7 @@ jobs:
 
       - name: collect
         env:
-          RELAY_ONLY: ${{ github.event.inputs.only || 'resolve,web' }}
+          RELAY_ONLY: ${{ github.event.inputs.only || '' }}
         run: node relay/collect.mjs 2>&1 | tee relay/out.log
 
       - uses: actions/upload-artifact@v4
