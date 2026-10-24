@@ -17,3 +17,6 @@ coverage/
 *.zip
 *.exe
 *.blockmap
+
+# local reverse-engineering workdir (downloaded evidence, never shipped)
+.rea-work/

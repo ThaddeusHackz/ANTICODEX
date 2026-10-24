@@ -122,6 +122,14 @@ export const pairing = {
   status: (code) => api('pair', { op: 'status', code })
 };
 
+/** Adopt the config this machine already has (Codex config.toml, Claude settings). */
+export const importConfig = (payload) => api('import_config', payload);
+
+export const policy = {
+  get: () => api('policy', { op: 'get' }),
+  set: (patch) => api('policy', { op: 'set', patch })
+};
+
 export const extras = (payload) => api('extras', payload);
 
 /**

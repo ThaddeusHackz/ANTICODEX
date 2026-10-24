@@ -13,6 +13,7 @@ import McpPage from './pages/Mcp.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
+import SetupPage from './pages/Setup.jsx';
 import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler } from './pages/Auth.jsx';
 
 // Sidebar nav mirrors the reverse-engineered ChatGPT desktop rail (new chat,
@@ -24,7 +25,8 @@ const NAV = [
   { to: '/images', icon: '▦', label: 'Images' },
   { to: '/video', icon: '▶', label: 'Video' },
   { to: '/mcp', icon: '⇄', label: 'Connectors' },
-  { to: '/computer', icon: '▣', label: 'Computer Use' }
+  { to: '/computer', icon: '▣', label: 'Computer Use' },
+  { to: '/setup', icon: '⇪', label: 'Bring your setup' }
 ];
 
 function groupThreads(list) {
@@ -201,6 +203,7 @@ export default function App() {
         <Route path="/mcp" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />
+        <Route path="/setup" element={<Shell><Guarded><SetupPage /></Guarded></Shell>} />
         <Route path="/settings" element={<Shell><Guarded><SettingsPage /></Guarded></Shell>} />
         <Route path="/admin" element={<Shell><AdminPage /></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />

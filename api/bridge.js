@@ -8,7 +8,9 @@ import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
-import { MCP_CATALOG, McpClient, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
+import { buildImportPlan, planToRows } from '../lib/configimport.js';
+import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows } from '../lib/policy.js';
+import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
@@ -118,7 +120,9 @@ export default async function handler(req, res) {
         redirect_to: body.redirect_to, origin
       })));
       case 'threads': return await handleThreads(req, body, res);
-      case 'mcp': return await handleMcp(body, res);
+      case 'mcp': return await handleMcp(body, res, req);
+      case 'policy': return await handlePolicy(req, body, res);
+      case 'import_config': return await handleImportConfig(req, body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
@@ -480,7 +484,59 @@ async function handleThreads(req, body, res) {
 
 // --- MCP (real Model Context Protocol) --------------------------------------
 
-async function handleMcp(body, res) {
+// A local MCP server (REA) is a child process. Serverless deployments cannot
+// spawn one, and pretending otherwise is how a connector ends up looking
+// "connected" while every tool call fails. Say so instead.
+function canSpawnLocalMcp() {
+  return !process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME && !process.env.NETLIFY;
+}
+
+/** An MCP connection that would spawn a process on this machine. */
+function isSpawnable(conn) {
+  return isLocalMcp(conn?.url) || (conn?.stdio && /^(stdio|local):/.test(conn.url || ''));
+}
+
+/** Loopback + a process-capable host. An imported command from a user config is
+ *  only ever run for the machine it came from, never for a remote caller. */
+function localSpawnAllowed(req, conn) {
+  if (!canSpawnLocalMcp()) return false;
+  if (!isLoopback(req)) return false;
+  if (conn && !stdioSpec(conn.url) && !conn.stdio) return false;
+  return true;
+}
+
+async function currentUser(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  return auth ? authx.findByToken(auth) : null;
+}
+
+function noLocalMcpServer(why) {
+  if (why === 'policy') {
+    return {
+      ok: false, error: 'Local MCP servers are turned off by your policy.',
+      fix: 'Settings → Policy → turn on “Local MCP servers”, then connect again.',
+      local_capable: true, blocked_by: 'policy'
+    };
+  }
+  return {
+    ok: false,
+    error: 'This MCP server runs on your machine, so it needs the ANTICODEX desktop app (or a self-hosted `npm start`) — a serverless deployment cannot spawn a local process, and a remote caller is never allowed to run your commands.',
+    fix: 'Open ANTICODEX desktop, or run the app locally, then connect REA again.',
+    local_capable: false, blocked_by: 'environment'
+  };
+}
+
+/** null = allowed, otherwise the refusal body to send. */
+async function localRefusal(req, conn) {
+  if (!canSpawnLocalMcp()) return 'environment';
+  if (!isLoopback(req)) return 'environment';
+  if (conn && !stdioSpec(conn.url) && !conn.stdio) return 'environment';
+  const user = await currentUser(req, {});
+  if (user && !policyAllows(await getPolicy(user.email), 'allow_local_mcp')) return 'policy';
+  return null;
+}
+
+async function handleMcp(body, res, req) {
   const op = body.op || 'list';
   if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
 
@@ -501,6 +557,10 @@ async function handleMcp(body, res) {
 
   if (op === 'probe') {
     // Live handshake — initialize + tools/list against the real server.
+    if (isLocalMcp(body.url)) {
+      const why = await localRefusal(req);
+      if (why) return json(res, 200, noLocalMcpServer(why));
+    }
     try {
       const result = await probeServer(body.url, body.token);
       return json(res, 200, result);
@@ -515,6 +575,31 @@ async function handleMcp(body, res) {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     const url = body.url || conn?.url;
     if (!url) return json(res, 400, { error: 'url or connection_id required' });
+
+    // Local (stdio) servers have no authorization server: connect = handshake.
+    if (isLocalMcp(url)) {
+      const why = await localRefusal(req);
+      if (why) return json(res, 200, noLocalMcpServer(why));
+      try {
+        const probe = await probeServer(url);
+        const spec = stdioSpec(url);
+        const row = {
+          id: body.connection_id || spec.id, name: probe.server?.name || spec.name || url,
+          url, status: 'connected', enabled: true, local: true,
+          tools: probe.tools, prompts: probe.prompts,
+          server_version: probe.server?.version || null,
+          protocol_version: probe.protocolVersion || null,
+          connected_at: Date.now()
+        };
+        const existing = await findOne('mcp_connections', (x) => x.id === row.id);
+        if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+        else await insert('mcp_connections', row);
+        return json(res, 200, { ok: true, connected: true, connection: row });
+      } catch (e) {
+        return json(res, 200, { ok: false, error: String(e.message || e), local: true });
+      }
+    }
+
     const meta = await discoverAuth(url);
     const redirectUri = body.redirect_uri || `${getKey('SITE_URL') || 'http://localhost:8787'}/mcp/callback`;
     const state = uid('st');
@@ -579,6 +664,10 @@ async function handleMcp(body, res) {
   if (op === 'test') {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     if (!conn) return json(res, 404, { error: 'connection not found' });
+    if (isSpawnable(conn)) {
+      const why = await localRefusal(req, conn);
+      if (why) return json(res, 200, noLocalMcpServer(why));
+    }
     try {
       const probe = await probeServer(conn.url, conn.access_token || conn.token);
       await update('mcp_connections', (x) => x.id === conn.id, { tools: probe.tools, last_test: Date.now(), last_error: null });
@@ -593,10 +682,18 @@ async function handleMcp(body, res) {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     if (!conn) return json(res, 404, { error: 'connection not found' });
     try {
-      const client = new McpClient(conn.url, { token: conn.access_token || conn.token });
-      await client.initialize();
-      const result = await client.callTool(body.tool, body.args || {});
-      await client.close();
+      if (isSpawnable(conn)) {
+        const why = await localRefusal(req, conn);
+        if (why) return json(res, 200, noLocalMcpServer(why));
+      }
+      const client = createClient(conn);
+      try {
+        await client.initialize();
+        const result = await client.callTool(body.tool, body.args || {});
+        return json(res, 200, { ok: true, tool: body.tool, result });
+      } finally {
+        await client.close().catch(() => {});
+      }
       return json(res, 200, { ok: true, tool: body.tool, result });
     } catch (e) {
       return json(res, 200, { ok: false, error: String(e.message || e) });
@@ -604,6 +701,102 @@ async function handleMcp(body, res) {
   }
 
   return json(res, 400, { error: 'unknown mcp op' });
+}
+
+// --- policy ----------------------------------------------------------------
+
+async function handlePolicy(req, body, res) {
+  const user = await currentUser(req, body);
+  const op = body.op || 'get';
+  if (op === 'get') {
+    const policy = await getPolicy(user?.email);
+    return json(res, 200, {
+      ok: true,
+      signed_in: Boolean(user),
+      policy,
+      flags: POLICY_FLAGS,
+      note: user ? null : 'Showing the defaults — sign in to save your own policy.'
+    });
+  }
+  if (op === 'set') {
+    if (!user) return json(res, 401, { error: 'sign in to change policy' });
+    const saved = await savePolicy(user.email, normalizePolicy(body.patch || body.policy || {}));
+    return json(res, 200, { ok: true, ...saved, flags: POLICY_FLAGS });
+  }
+  return json(res, 400, { error: 'unknown policy op' });
+}
+
+// --- bring your own setup (Codex config.toml / Claude settings) -------------
+
+/**
+ * Dry-run by default. `apply:true` stores what is safe to store and returns the
+ * rest for the client (custom providers and model aliases are a per-device
+ * choice in this product, so they are not written into the account ledger).
+ *
+ * Secrets: a `.claude/settings.json` env token is reported as a boolean
+ * (`has_token`) and never echoed back or persisted.
+ */
+async function handleImportConfig(req, body, res) {
+  const plan = buildImportPlan({
+    codex_toml: body.codex_toml,
+    claude_settings: body.claude_settings,
+    claude_policy: body.claude_policy
+  });
+  if (!plan.ok) return json(res, 400, plan);
+
+  const rows = planToRows(plan);
+  const out = {
+    ok: true,
+    mode: body.apply ? 'applied' : 'plan',
+    summary: plan.summary,
+    warnings: plan.warnings,
+    providers: rows.providers,
+    connections: rows.connections.map((c) => ({
+      id: c.id, name: c.name, url: c.url, transport: c.stdio ? 'stdio' : 'http',
+      ...(c.stdio ? { command: [c.stdio.command, ...(c.stdio.args || [])].join(' '), env_vars: c.env_vars } : {}),
+      needs_local: Boolean(c.stdio)
+    })),
+    aliases: rows.aliases,
+    flags: rows.flags,
+    behaviour: plan.codex?.behaviour || null,
+    migrations: plan.codex?.migrations || [],
+    sandbox: plan.codex?.sandbox || null,
+    notify_hook: plan.codex?.notify_hook || null
+  };
+
+  if (!body.apply) {
+    out.note = 'Nothing was written. Approve to connect these servers and apply these flags.';
+    return json(res, 200, out);
+  }
+
+  const user = await currentUser(req, body);
+  if (!user) return json(res, 401, { error: 'sign in to apply an import' });
+
+  const applied = [];
+  const skipped = [];
+  for (const c of rows.connections) {
+    const spawnable = Boolean(c.stdio);
+    if (spawnable && (await localRefusal(req, c))) {
+      skipped.push({ id: c.id, reason: 'this server needs a command to run on your machine — open ANTICODEX desktop to use it' });
+      continue;
+    }
+    const existing = await findOne('mcp_connections', (x) => x.id === c.id);
+    const row = { ...c, status: 'disconnected', enabled: true, imported_at: new Date().toISOString() };
+    if (existing) await update('mcp_connections', (x) => x.id === c.id, row);
+    else await insert('mcp_connections', row);
+    applied.push({ kind: 'mcp', id: c.id, name: c.name, transport: row.stdio ? 'stdio' : 'http' });
+  }
+
+  if (rows.flags.length) {
+    const patch = { flags: Object.fromEntries(rows.flags.map((f) => [f.key, f.allowed])) };
+    const saved = await savePolicy(user.email, normalizePolicy({ ...(await getPolicy(user.email)), ...patch }));
+    applied.push({ kind: 'policy', flags: rows.flags.length, persisted: saved.persisted });
+  }
+
+  return json(res, 200, {
+    ...out, mode: 'applied', applied, skipped,
+    note: 'Providers and model aliases are returned for this device to add — they are not stored on your account.'
+  });
 }
 
 // --- admin ------------------------------------------------------------------
