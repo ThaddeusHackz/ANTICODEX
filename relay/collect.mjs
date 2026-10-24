@@ -181,12 +181,35 @@ function unpackAsar(file, dest) {
     let files = 0;
     let bytes = 0;
     const skipped = [];
+    const unpacked = [];
+    const invalid = [];
+    // Files marked `unpacked` in the header live beside the archive in
+    // `app.asar.unpacked/` and carry no offset — the ChatGPT app has plenty of
+    // them, and treating a missing offset as a number is what produced
+    // `position ... Received NaN` and lost the whole target.
+    const unpackedRoot = `${file}.unpacked`;
     const walkNode = (node, dir) => {
       for (const [name, entry] of Object.entries(node.files || {})) {
         const p = path.join(dir, name);
         if (entry.files) { fs.mkdirSync(p, { recursive: true }); walkNode(entry, p); continue; }
         if (entry.link) continue;
-        const size = Number(entry.size) || 0;
+        const size = Number(entry.size);
+        if (entry.unpacked || !Number.isFinite(Number(entry.offset))) {
+          const rel = path.relative(dest, p);
+          const source = path.join(unpackedRoot, rel);
+          if (fs.existsSync(source) && fs.statSync(source).size <= 12 * 1024 * 1024) {
+            fs.mkdirSync(path.dirname(p), { recursive: true });
+            fs.copyFileSync(source, p);
+            files += 1;
+            bytes += fs.statSync(p).size;
+            unpacked.push({ path: rel, size: fs.statSync(p).size });
+          } else if (entry.unpacked) {
+            unpacked.push({ path: rel, size: Number.isFinite(size) ? size : null, copied: false });
+          } else {
+            invalid.push({ path: rel, offset: entry.offset ?? null });
+          }
+          continue;
+        }
         if (size > 12 * 1024 * 1024) { skipped.push({ path: path.relative(dest, p), size }); continue; }
         fs.mkdirSync(path.dirname(p), { recursive: true });
         const buf = Buffer.alloc(size);
@@ -213,6 +236,9 @@ function unpackAsar(file, dest) {
       files,
       bytes,
       skipped_large: skipped,
+      unpacked_files: unpacked.slice(0, 40),
+      unpacked_count: unpacked.length,
+      invalid_entries: invalid.slice(0, 10),
       archive_bytes: pos,
       archive_sha256: hash.digest('hex')
     };

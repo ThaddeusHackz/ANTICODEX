@@ -1,1 +1,1 @@
-trigger 6 — streamed asar unpack, visible log, crash guard
+trigger 7 — unpacked asar entries are files beside the archive, not NaN offsets
