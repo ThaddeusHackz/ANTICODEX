@@ -357,6 +357,50 @@ try {
     fs.rmSync(fixture, { recursive: true, force: true });
     ok('the picker is reachable from the chat composer', /api\.artifacts\.list/.test(read('web/src/pages/Chat.jsx')));
 
+    // --- streamed chat reaches the packaged app -----------------------------
+    // The renderer cannot stream by itself: it has neither the keychain keys nor
+    // the local token. The main process makes the request and forwards events.
+    const mainSrc = read('desktop/main.mjs');
+    const preloadSrc = read('desktop/preload.mjs');
+    ok('the desktop proxies a streamed chat', /acx:api:stream/.test(mainSrc));
+    ok('…with the keychain keys attached', /acx:api:stream[\s\S]{0,1600}provider_keys: getKeychain\(\)\.load\(\)\.keys/.test(mainSrc));
+    ok('…and the local token for gateways on this machine', /x-anticodex-local/.test(mainSrc.slice(mainSrc.indexOf('acx:api:stream'))));
+    ok('a cancel really aborts it', /acx:api:stream:abort/.test(mainSrc) && /streamControllers/.test(mainSrc));
+    ok('the preload exposes it as one call with a callback', /streamApi: \(action, payload, onEvent, streamId\)/.test(preloadSrc));
+    ok('…filters events by stream id', /msg\?\.streamId !== id/.test(preloadSrc));
+    // A Stop that only hides the typing dots is the bug this pins: the renderer
+    // has to name the stream it started, or the abort has no controller to reach.
+    ok('…and the caller names the stream, so Stop can reach that controller',
+      /const id = String\(streamId \|\|/.test(preloadSrc) && /acx:api:stream', action, payload, id/.test(preloadSrc));
+    ok('every event is forwarded, heartbeats included', /\n\s+send\(evt\);\n/.test(mainSrc) && !/\|\| true/.test(mainSrc));
+    const apiSrc = read('web/src/lib/api.js');
+    ok('the web client uses it when the app is there', /hasDesktop\(\) && window\.anticodexDesktop\.streamApi/.test(apiSrc));
+    ok('…aborts the main process by the same id when the view stops', /abortStream\?\.\(streamId\)/.test(apiSrc) && /addEventListener\('abort', cancel/.test(apiSrc));
+    ok('…and plain HTTP everywhere else', /fetch\('\/api\/bridge'/.test(apiSrc));
+
+    // --- speed, thinking, and the sandbox (desktop parity) -------------------
+    ok('the app does not re-spawn MCP servers on every message', /toolsFor\(conns\)/.test(read('api/bridge.js')) && !/collectTools\(conns\)\)\.filter/.test(read('api/bridge.js')));
+    ok('the speed dial is in the topbar of the packaged app too', /EffortPicker/.test(read('web/src/App.jsx')) && /effort-btn/.test(read('web/src/EffortPicker.jsx')));
+    ok('the message carries the chosen effort', /effort,/.test(read('web/src/pages/Chat.jsx')) && /const \{ messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort \} = body/.test(read('api/bridge.js')));
+    ok('the reasoning is shown, not dropped', /ThinkingBlock/.test(read('web/src/pages/Chat.jsx')) && /reasoning_chars/.test(read('lib/providers.js')));
+    ok('the Sandbox page ships in the app', /path="\/sandbox"/.test(read('web/src/App.jsx')) && /export const sandbox = \{/.test(read('web/src/lib/api.js')));
+    ok('…and the desktop server it talks to can run code locally', /case 'sandbox':/.test(read('api/bridge.js')) && /isLoopback\(req\)/.test(read('api/bridge.js')));
+
+    // --- REA -----------------------------------------------------------------
+    ok('the desktop reports why it can run REA', /acx:reaEnv/.test(mainSrc) && /canSpawn: true/.test(mainSrc));
+    ok('the REA page exists and is routed', /path="\/rea"/.test(read('web/src/App.jsx')) && /ReaPage/.test(read('web/src/App.jsx')));
+    const reaPage = read('web/src/pages/Rea.jsx');
+    ok('…it shows the plan before applying', /Show the setup plan/.test(reaPage) && /Approve and apply/.test(reaPage));
+    ok('…it verifies with a handshake', /reaApi\.verify/.test(reaPage) && /MCP handshake/.test(reaPage));
+    ok('…and registers the connection last', /reaApi\.register/.test(reaPage));
+
+    // --- model health --------------------------------------------------------
+    const settings = read('web/src/pages/Settings.jsx');
+    ok('Model health is a Settings tab', /ModelHealthPanel/.test(settings) && /'models'/.test(settings));
+    ok('…reachable straight from the picker', /\/settings\?tab=models/.test(read('web/src/ModelPicker.jsx')));
+    ok('the picker shows a speed badge', /mp-speed/.test(read('web/src/ModelPicker.jsx')));
+    ok('the chat shows the live phase and a stop button', /LIVE_PHASES/.test(read('web/src/pages/Chat.jsx')) && /abortRef/.test(read('web/src/pages/Chat.jsx')));
+
     // The ChatGPT webview's skill channels (skills/list, skills/manage,
     // skills/config, skills/plugins) are one page here, and both of its data
     // sources have to be the real endpoints.

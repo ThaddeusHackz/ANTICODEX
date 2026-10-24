@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { chat as chatApi, workspace as workspaceApi, egress as egressApi } from '../lib/api.js';
+import { chat as chatApi, workspace as workspaceApi, egress as egressApi, mcp as mcpApi, rea as reaApi } from '../lib/api.js';
+import { Link } from 'react-router-dom';
 import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -47,6 +48,10 @@ export default function CodexPage() {
   // gives the sandbox its own user-mode stack; this is the same boundary at the
   // layer available here).
   const [egress, setEgress] = useState({ running: false, local: true, allowed: 0, denied: 0 });
+  // What the agent can actually reach from here. REA is the interesting one: 207
+  // reverse-engineering tools, but only when it is installed on this machine —
+  // showing "0 tools" with a link is more honest than hiding the section.
+  const [agentTools, setAgentTools] = useState({ loading: true, connections: [], rea: null });
   const [agents, setAgents] = useState(null);
   const [cwd, setCwd] = useState(() => localStorage.getItem('acx_workspace_cwd') || '');
   const [showAgents, setShowAgents] = useState(false);
@@ -70,6 +75,18 @@ export default function CodexPage() {
 
   useEffect(() => {
     egressApi.status().then((r) => { setEgress(r); if (r.running) setNet(true); }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let gone = false;
+    Promise.all([
+      mcpApi.list().catch(() => ({ connections: [] })),
+      reaApi.status().catch(() => null)
+    ]).then(([list, rea]) => {
+      if (gone) return;
+      setAgentTools({ loading: false, connections: list.connections || [], rea });
+    });
+    return () => { gone = true; };
   }, []);
 
   async function toggleNet(on) {
@@ -188,6 +205,25 @@ export default function CodexPage() {
             : egress.local === false
               ? 'egress needs the desktop app or a local start'
               : 'off — spawned work gets no proxy'}
+        </div>
+        <div className="nav-section">Agent tools</div>
+        <div className="tiny" style={{ padding: '2px 10px 8px', lineHeight: 1.6 }}>
+          {agentTools.loading ? 'Reading connectors…' : (
+            <>
+              {agentTools.connections.filter((c) => c.status === 'connected').map((c) => (
+                <div key={c.id} className="row between" style={{ gap: 6 }}>
+                  <span className="kbd">{c.id}</span>
+                  <span style={{ opacity: 0.7 }}>{(c.tools || []).length} tools</span>
+                </div>
+              ))}
+              {!agentTools.connections.some((c) => c.status === 'connected') && <div style={{ opacity: 0.7 }}>No connectors yet.</div>}
+              <div style={{ marginTop: 6 }}>
+                {agentTools.rea?.registered
+                  ? <span style={{ color: '#6ee7a8' }}>REA installed · {agentTools.rea.probe?.tools || 207} tools</span>
+                  : <Link to="/rea" style={{ color: 'var(--accent, #7c5cff)' }}>Install REA →</Link>}
+              </div>
+            </>
+          )}
         </div>
         <div className="nav-section">AGENTS.md</div>
         <input value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder="workspace path (blank = app dir)"

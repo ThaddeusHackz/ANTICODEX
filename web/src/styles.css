@@ -551,3 +551,97 @@ h3 { font-size: 16px; }
 
 /* Inline monospace (paths, env var names, commands). */
 .mono { font-family: var(--mono); font-size: .95em; }
+
+/* --- live turn (streamed answers) --------------------------------------- */
+/* The point of these rules is that waiting is visible: a phase, a clock, and a
+   blinking dot that keeps moving even when the model has not said anything. */
+.live-turn { border-left: 2px solid var(--accent, #7c5cff); padding: 2px 0 2px 12px; margin-top: 4px; min-height: 24px; }
+.live-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.live-phase { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.live-wait { margin-top: 4px; max-width: 62ch; line-height: 1.5; }
+.live-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.live-tool { border: 1px solid var(--border-soft); border-radius: 999px; padding: 1px 8px; font-family: var(--mono); font-size: 11px; }
+.live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #7c5cff); margin-left: 6px; animation: live-pulse 1.1s ease-in-out infinite; }
+@keyframes live-pulse { 0%, 100% { opacity: 0.25; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; opacity: 1; } }
+.msg-timing { opacity: 0.55; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.send-btn.stop { background: #b4231f; color: #fff; }
+
+/* model picker: speed + hidden-model explanation */
+.mp-speed { font-style: normal; font-family: var(--mono); font-size: 10px; opacity: 0.7; border: 1px solid var(--border-soft); border-radius: 6px; padding: 0 4px; }
+.mp-speed.fast { color: #6ee7a8; border-color: rgba(110, 231, 168, 0.4); }
+.mp-speed.slow { color: #fca5a5; border-color: rgba(252, 165, 165, 0.4); }
+.mp-hidden { border-top: 1px solid var(--border-soft); margin-top: 6px; padding-top: 8px; }
+
+/* --- REA setup ----------------------------------------------------------- */
+.rea-steps { display: flex; gap: 6px; flex-wrap: wrap; }
+.rea-step { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border-soft); border-radius: 999px; padding: 4px 10px; font-size: 12px; color: var(--muted); }
+.rea-step-n { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 10px; background: var(--bg-soft); }
+.rea-step.done { color: var(--text); border-color: rgba(110, 231, 168, 0.45); }
+.rea-step.done .rea-step-n { background: rgba(110, 231, 168, 0.2); color: #6ee7a8; }
+.rea-step.ready { color: var(--text); border-color: var(--border); }
+.rea-step.blocked { color: #fca5a5; border-color: rgba(252, 165, 165, 0.4); }
+.rea-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.rea-actions { margin: 10px 0 0; padding-left: 20px; }
+.rea-actions li { margin-bottom: 10px; }
+.rea-action-summary { font-size: 13px; }
+.rea-action-meta { margin-top: 2px; opacity: 0.75; }
+.rea-action-detail { margin-top: 3px; opacity: 0.6; max-width: 90ch; line-height: 1.5; }
+.rea-log { background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px; font-size: 11.5px; max-height: 320px; overflow: auto; white-space: pre-wrap; margin-top: 8px; }
+.rea-checks { margin-top: 8px; display: grid; gap: 4px; }
+.rea-check { font-size: 12.5px; }
+.rea-check.ok { color: #6ee7a8; }
+.rea-check.warn { color: #fca5a5; }
+.rea-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; margin-top: 10px; max-height: 340px; overflow: auto; }
+.rea-tool { text-align: left; background: var(--bg-soft); border: 1px solid transparent; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: grid; gap: 2px; }
+.rea-tool:hover { border-color: var(--border); }
+.rea-tool.active { border-color: var(--accent, #7c5cff); }
+.rea-tool-name { font-family: var(--mono); font-size: 12px; }
+.rea-tool-desc { opacity: 0.65; }
+.rea-args { width: 100%; min-height: 90px; font-family: var(--mono); font-size: 12px; background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px; }
+
+/* --- model health (Settings → Model health) ------------------------------ */
+.mh-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; }
+.mh-row.cur { background: rgba(124, 92, 255, 0.07); }
+.mh-row:last-child { border-bottom: 0; }
+.mh-ref { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.mh-time { font-variant-numeric: tabular-nums; opacity: 0.75; min-width: 46px; }
+.mh-checks { opacity: 0.45; }
+.mh-why { opacity: 0.7; overflow-wrap: anywhere; }
+.mh-hidden { margin-top: 8px; max-height: 260px; overflow: auto; }
+
+/* --- how hard the model should think (topbar) ----------------------------- */
+.effort { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 10px; background: var(--bg-soft); border: 1px solid var(--border-soft); }
+.effort-label { font-size: 12px; opacity: 0.55; padding: 0 4px; }
+.effort-btn { border: 0; background: transparent; color: var(--text); opacity: 0.62; font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 7px; cursor: pointer; }
+.effort-btn:hover { opacity: 0.9; }
+.effort-btn.on { background: rgba(124, 92, 255, 0.22); color: #cdbdff; opacity: 1; }
+.effort.compact .effort-label { display: none; }
+
+/* --- the model's deliberation, streamed ----------------------------------- */
+.think { margin: 6px 0 8px; border-left: 2px solid rgba(124, 92, 255, 0.45); padding-left: 10px; }
+.think-head { display: flex; align-items: center; gap: 8px; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; opacity: 0.72; }
+.think-head:hover { opacity: 1; }
+.think-count { font-size: 11.5px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.think-body { margin: 6px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; line-height: 1.5; opacity: 0.72; }
+.live-think { margin: 0 0 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; line-height: 1.5; opacity: 0.65; }
+
+/* --- sandbox -------------------------------------------------------------- */
+.sb-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+@media (max-width: 1000px) { .sb-grid { grid-template-columns: minmax(0, 1fr); } }
+.sb-pane { display: flex; flex-direction: column; gap: 8px; min-height: 320px; }
+.sb-pane-head { align-items: center; gap: 8px; flex-wrap: wrap; }
+.sb-select { background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 12px; }
+.sb-code { flex: 1; min-height: 240px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; tab-size: 2; background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px; }
+.sb-gen { gap: 8px; align-items: center; }
+.sb-input { flex: 1; background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 12.5px; }
+.sb-out { margin: 0; padding: 10px 12px; background: var(--bg-soft); border-radius: 8px; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow: auto; max-height: 280px; }
+.sb-err { color: #fca5a5; }
+.sb-files, .sb-meta { gap: 6px; flex-wrap: wrap; align-items: center; }
+.sb-file { font-family: var(--mono); font-size: 11.5px; cursor: pointer; }
+.sb-view { display: grid; gap: 6px; }
+.sb-runid { font-family: var(--mono); opacity: 0.5; }
+.sb-lang { font-size: 11.5px; opacity: 0.5; }
+.sb-lang.on { opacity: 0.85; }
+.sb-blocked { border-color: rgba(250, 165, 165, 0.4); display: grid; gap: 6px; }
+.sb-note { margin-top: 12px; display: grid; gap: 6px; opacity: 0.85; }

@@ -67,11 +67,112 @@ export async function api(action, payload = {}) {
 }
 
 export const chat = (payload) => api('chat', payload);
+
+/**
+ * Streamed chat.
+ *
+ * The request is the same shape as `chat`; the answer arrives as server-sent
+ * events so the UI can show what is happening (contacting → connected →
+ * streaming) instead of a spinner that might mean anything. Events are:
+ * `phase`, `heartbeat`, `delta`, `tool`, `done`, `error`, `aborted`.
+ *
+ * Returns the same promise shape either way: `{ ok, text, model, ... }`, so a
+ * caller that does not care about streaming can await it and ignore `onEvent`.
+ */
+export async function chatStream(payload, { onEvent, signal } = {}) {
+  // In the packaged app the main process makes the request: it is the only place
+  // that has this machine's keychain keys and the local token a LAN gateway
+  // needs. It forwards the same events over IPC.
+  if (hasDesktop() && window.anticodexDesktop.streamApi) {
+    try {
+      // The main process cancels by stream id, so the id has to be ours: the
+      // Stop button aborts `signal`, and that has to reach the fetch the main
+      // process is holding — otherwise it only hides the typing dots.
+      const streamId = globalThis.crypto?.randomUUID
+        ? `s_${globalThis.crypto.randomUUID()}`
+        : `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const cancel = () => { try { window.anticodexDesktop.abortStream?.(streamId); } catch { /* window gone */ } };
+      if (signal) {
+        if (signal.aborted) cancel();
+        else signal.addEventListener('abort', cancel, { once: true });
+      }
+      try {
+        return await window.anticodexDesktop.streamApi('chat_stream', payload, (evt) => {
+          try { onEvent?.(evt); } catch { /* view error */ }
+        }, streamId);
+      } finally {
+        try { signal?.removeEventListener('abort', cancel); } catch { /* no signal */ }
+      }
+    } catch (e) {
+      // Fall through to the HTTP path; the bundled server serves it too.
+      if (e?.name === 'AbortError') return { ok: true, aborted: true, text: '' };
+    }
+  }
+  const body = { action: 'chat_stream', ...payload };
+  const token = localStorage.getItem('acx_token');
+  if (token) body.token = token;
+  if (!body.provider_defs) {
+    const defs = localGateways();
+    if (defs.length) body.provider_defs = defs;
+  }
+  const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  // The desktop app runs the same bridge on loopback, so a relative URL is
+  // correct in both places; there is no second code path to keep in sync.
+  const res = await fetch('/api/bridge', { method: 'POST', headers, body: JSON.stringify(body), signal });
+  if (!res.ok || !String(res.headers.get('content-type') || '').includes('text/event-stream')) {
+    // A bridge without the stream action (an older deployment) still answers
+    // JSON — fall back rather than showing an empty bubble.
+    const data = await res.json().catch(() => ({}));
+    if (data.text || data.error || data.ok === false) return data;
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let text = '';
+  let reasoning = '';
+  let final = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const data = block.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+      if (!data) continue;
+      let evt;
+      try { evt = JSON.parse(data); } catch { continue; }
+      if (evt.type === 'delta') text += evt.text || '';
+      if (evt.type === 'thinking') reasoning += evt.text || '';
+      if (evt.type === 'done') final = evt;
+      if (evt.type === 'error') final = { ...evt, type: 'error' };
+      if (evt.type === 'aborted') final = { ...evt, aborted: true };
+      try { onEvent?.(evt); } catch { /* the view must not break the stream */ }
+    }
+  }
+  if (final?.type === 'error') return { ok: false, error: final.error, verdict: final.verdict, fix: final.fix, ...final };
+  return {
+    ok: true,
+    text,
+    content: text,
+    ...(reasoning ? { reasoning } : {}),
+    model: final?.model,
+    first_token_ms: final?.first_token_ms,
+    thinking_ms: final?.thinking_ms,
+    elapsed_ms: final?.elapsed_ms,
+    aborted: Boolean(final?.aborted)
+  };
+}
 export const search = (payload) => api('search', payload);
 export const image = (payload) => api('image', payload);
 export const videoStart = (payload) => api('video_start', payload);
 export const videoStatus = (id) => api('video_status', { id });
-export const models = () => api('models');
+export const models = (opts) => api('models', opts || {});
 export const syncModels = (payload) => api('sync_models', payload);
 export const config = () => api('config');
 export const testEndpoint = (payload) => api('test_endpoint', payload);
@@ -143,6 +244,51 @@ export const artifacts = {
   roots: () => api('artifacts', { op: 'roots' }),
   list: (artifactKind, request) => api('artifacts', { op: 'list', artifact_kind: artifactKind, request: request || undefined }),
   choose: (artifactKind, selection) => api('artifacts', { op: 'choose', artifact_kind: artifactKind, selection })
+};
+
+// What the picker knows about a model after someone used it: latency, and which
+// ids a provider has rejected (those are the ones that answered "there is
+// nothing like this model available" and are now hidden by default).
+// The Sandbox runs code on the machine that owns the bridge (the desktop app, or
+// a server you run yourself) — the whole point is that the code the model wrote
+// is executed and its real output is shown, not described.
+export const sandbox = {
+  status: () => api('sandbox', { op: 'status' }),
+  run: (payload) => api('sandbox', { op: 'run', ...payload }),
+  read: (runId, name) => api('sandbox', { op: 'read', run_id: runId, name }),
+  clear: (runId) => api('sandbox', { op: 'clear', run_id: runId }),
+  // Ask the model for a snippet and hand back the first fenced code block: the
+  // "code gen" half of the page, kept separate from running it.
+  async generate({ prompt, language = 'node', model, provider, effort }) {
+    const out = await chatStream({
+      messages: [
+        { role: 'system', content: `You write one runnable ${language} program. Reply with the code in a single fenced block and nothing else.` },
+        { role: 'user', content: prompt }
+      ],
+      model, provider, effort, use_mcp: false
+    });
+    const text = out.text || out.content || '';
+    const fence = text.match(/```[\w-]*\n([\s\S]*?)```/);
+    return { ok: Boolean(out.ok && (fence || text)), code: (fence ? fence[1] : text).trim(), raw: text, model: out.model };
+  }
+};
+
+export const modelHealth = {
+  list: () => api('model_health', { op: 'list' }),
+  clear: (ref) => api('model_health', { op: 'clear', ref }),
+  probe: (models, opts = {}) => api('model_health', { op: 'probe', models, ...opts })
+};
+
+// REA — Reverse Engineer Anything. `plan` runs REA's own `setup --dry-run`, the
+// UI shows it, and `apply` only runs the plan whose id was approved.
+export const rea = {
+  status: (client) => api('rea', { op: 'status', client }),
+  plan: (p = {}) => api('rea', { op: 'plan', ...p }),
+  apply: (planId, p = {}) => api('rea', { op: 'apply', plan_id: planId, approve: true, ...p }),
+  verify: (p = {}) => api('rea', { op: 'verify', ...p }),
+  register: () => api('rea', { op: 'register' }),
+  tools: () => api('rea', { op: 'tools' }),
+  run: (tool, args) => api('rea', { op: 'run', tool, args })
 };
 
 export const skills = {

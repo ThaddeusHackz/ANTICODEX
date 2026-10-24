@@ -4,6 +4,7 @@ import { useApp, loadThreads, mergeThreads } from './lib/state.jsx';
 import * as api from './lib/api.js';
 import { Brand, Toast } from './ui.jsx';
 import ModelPicker from './ModelPicker.jsx';
+import EffortPicker from './EffortPicker.jsx';
 import ChatPage from './pages/Chat.jsx';
 import CodexPage from './pages/Codex.jsx';
 import ClaudePage from './pages/Claude.jsx';
@@ -11,6 +12,8 @@ import ImagesPage from './pages/Images.jsx';
 import VideoPage from './pages/Video.jsx';
 import McpPage from './pages/Mcp.jsx';
 import SkillsPage from './pages/Skills.jsx';
+import ReaPage from './pages/Rea.jsx';
+import SandboxPage from './pages/Sandbox.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
@@ -23,11 +26,13 @@ const NAV = [
   { to: '/', icon: '⌗', label: 'Chat', end: true, main: true },
   { to: '/codex', icon: '⌘', label: 'Codex', main: true },
   { to: '/claude', icon: '✳', label: 'Agent Studio', main: true },
+  { to: '/sandbox', icon: '⌥', label: 'Sandbox' },
   { to: '/images', icon: '▦', label: 'Images' },
   { to: '/video', icon: '▶', label: 'Video' },
   { to: '/mcp', icon: '⇄', label: 'Connectors' },
   { to: '/computer', icon: '▣', label: 'Computer Use' },
   { to: '/skills', icon: '✦', label: 'Skills' },
+  { to: '/rea', icon: '⟲', label: 'REA' },
   { to: '/setup', icon: '⇪', label: 'Bring your setup' }
 ];
 
@@ -160,6 +165,7 @@ function Topbar() {
         </>
       )}
       <ModelPicker />
+      <EffortPicker />
       <div className="spacer" />
       <button className="chip-toggle" onClick={() => { window.location.pathname = '/mcp'; }}>⇄ Connect</button>
       <button className="icon-btn" title="Settings" onClick={() => { window.location.pathname = '/settings'; }}>⚙</button>
@@ -200,9 +206,11 @@ export default function App() {
         <Route path="/" element={<Shell><Guarded><ChatPage /></Guarded></Shell>} />
         <Route path="/codex" element={<Shell><Guarded><CodexPage /></Guarded></Shell>} />
         <Route path="/claude" element={<Shell><Guarded><ClaudePage /></Guarded></Shell>} />
+        <Route path="/sandbox" element={<Shell><Guarded><SandboxPage /></Guarded></Shell>} />
         <Route path="/images" element={<Shell><Guarded><ImagesPage /></Guarded></Shell>} />
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
         <Route path="/skills" element={<Shell><Guarded><SkillsPage /></Guarded></Shell>} />
+        <Route path="/rea" element={<Shell><Guarded><ReaPage /></Guarded></Shell>} />
         <Route path="/mcp" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />

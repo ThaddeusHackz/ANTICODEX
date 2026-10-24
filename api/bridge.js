@@ -3,7 +3,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { json, readBody } from '../lib/util.js';
-import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
+import { listProviders, chat, chatStream, probeModel, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
+import { allHealth, clearHealth, summary as healthSummary, modelRef } from '../lib/model-health.js';
+import {
+  REA_CLIENTS,
+  REA_SERVER_NAME,
+  buildArgs as reaArgs,
+  checkRegistration,
+  describeAction as describeReaAction,
+  nodeStatus as reaNodeStatus,
+  parseSetupOutput,
+  planFingerprint,
+  runRea
+} from '../lib/rea.js';
 import { webSearch } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
@@ -28,6 +40,8 @@ import {
 import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
 import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
+import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
+import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
@@ -66,7 +80,8 @@ export default async function handler(req, res) {
         return json(res, 200, {
           providers: listProviders(keys).map((p) => ({ id: p.id, name: p.name, configured: p.configured, kind: p.kind, key_env: p.key_env, key_owner: own(p), models: p.models })),
           directory: directoryWithStatus(keys),
-          picker: modelIndex(keys),
+          picker: modelIndex(keys, { includeHidden: body.include_hidden === true, strictLive: body.strict_live !== false }),
+          health: healthSummary(),
           catalog: CATALOG,
           ...(defsNote(keys) ? { provider_defs_note: defsNote(keys) } : {})
         });
@@ -144,6 +159,10 @@ export default async function handler(req, res) {
       case 'skills': return await handleSkills(req, body, res);
       case 'egress': return await handleEgress(req, body, res);
       case 'artifacts': return await handleArtifacts(req, body, res);
+      case 'chat_stream': return await handleChatStream(req, res, body);
+      case 'model_health': return await handleModelHealth(req, body, res);
+      case 'rea': return await handleRea(req, body, res);
+      case 'sandbox': return await handleSandbox(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
@@ -368,7 +387,7 @@ function withTemplate(system, template) {
 }
 
 async function handleChat(body, res, req) {
-  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
+  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort } = body;
   const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
@@ -385,11 +404,13 @@ async function handleChat(body, res, req) {
     const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
     const builtins = builtinTools();
     if (conns.length || builtins.length) {
-      const tools = [...builtins, ...(await collectTools(conns)).filter((t) => !t._error)].slice(0, 40);
+      // Cached schemas, and never on the critical path: see lib/tool-cache.js.
+      const listed = conns.length ? await toolsFor(conns) : { tools: [] };
+      const tools = [...builtins, ...listed.tools].slice(0, 40);
       if (tools.length) {
         let out;
         try {
-          out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
+          out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools, effort });
         } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
@@ -586,18 +607,21 @@ async function handleMcp(body, res, req) {
   const op = body.op || 'list';
   if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
 
-  if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500) });
+  if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500), tool_cache: toolCacheSummary() });
 
   if (op === 'save') {
     const c = { ...body.connection, id: body.connection?.id || uid('mcp'), updated_at: new Date().toISOString() };
     const existing = await findOne('mcp_connections', (x) => x.id === c.id);
     if (existing) await update('mcp_connections', (x) => x.id === c.id, c);
     else await insert('mcp_connections', { status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c });
+    // Its tool list may have changed with it; the next chat re-reads once.
+    forgetTools();
     return json(res, 200, { ok: true, connection: c });
   }
 
   if (op === 'delete') {
     await remove('mcp_connections', (x) => x.id === body.id);
+    forgetTools();
     return json(res, 200, { ok: true });
   }
 
@@ -751,6 +775,412 @@ async function handleMcp(body, res, req) {
 
 // --- policy ----------------------------------------------------------------
 
+
+
+// --- streamed chat ------------------------------------------------------------
+//
+// The old chat call answered once, at the end: nothing on screen for a minute,
+// and no way to tell a slow model from a dead one. This is the same request with
+// server-sent events: phases, a heartbeat every few seconds, then deltas.
+//
+// Events (one JSON object per `data:` line):
+//   {type:'phase', phase}        contacting → connected → streaming
+//   {type:'heartbeat', elapsed_ms, waiting_on}
+//   {type:'delta', text}
+//   {type:'tool', name, ok}      only when a connected MCP server is driven
+//   {type:'done', elapsed_ms, first_token_ms, chars, model}
+//   {type:'error', error, state} or {type:'aborted'}
+
+function sse(res) {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  let closed = false;
+  res.on('close', () => { closed = true; });
+  return {
+    send(obj) {
+      if (closed) return;
+      try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { closed = true; }
+    },
+    end() { if (!closed) { try { res.end(); } catch { /* gone */ } closed = true; } },
+    get closed() { return closed; }
+  };
+}
+
+async function handleChatStream(req, res, body) {
+  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort } = body;
+  const stream = sse(res);
+  const controller = new AbortController();
+  // The client hanging up is the cancel button; stop paying for tokens.
+  req.on('close', () => controller.abort());
+
+  let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
+  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
+  let keys;
+  try { keys = await mergedKeys(req, body); } catch (e) {
+    stream.send({ type: 'error', error: String(e.message || e), state: 'auth' });
+    return stream.end();
+  }
+
+  if (provider && (keys.__provider_defs_dropped_ids__ || []).includes(provider)) {
+    stream.send({ type: 'error', state: 'endpoint', error: `"${provider}" points at a private or local-network address, so this server will not connect to it.` });
+    return stream.end();
+  }
+
+  // Tools, if the user has connected any. Streaming with tools means the first
+  // leg can end in tool calls: those are emitted as events, run here, and the
+  // answer is streamed on the next leg.
+  let tools = [];
+  let conns = [];
+  if (use_mcp !== false) {
+    try {
+      conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
+      const builtins = builtinTools();
+      if (conns.length || builtins.length) {
+        const listed = conns.length ? await toolsFor(conns) : { tools: [] };
+        tools = [...builtins, ...listed.tools].slice(0, 40);
+        // Cold cache: say so once, so "why did the tool not run this time" has an
+        // answer that is not a guess.
+        if (listed.warming) stream.send({ type: 'phase', phase: 'tools-warming', detail: 'reading MCP tool lists in the background — this answer goes without them' });
+      }
+    } catch { tools = []; }
+  }
+
+  try {
+    let out = await chatStream(
+      { messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, effort, tools: tools.length ? tools : undefined },
+      { onEvent: (evt) => stream.send(evt), signal: controller.signal }
+    );
+    if (out?.aborted) return stream.end();
+
+    let rounds = 0;
+    while (out?.tool_calls?.length && rounds < 4 && !controller.signal.aborted) {
+      rounds += 1;
+      stream.send({ type: 'phase', phase: 'tools', round: rounds, count: out.tool_calls.length });
+      msgs = [...msgs, { role: 'assistant', content: out.content || '', tool_calls: out.tool_calls }];
+      for (const tc of out.tool_calls) {
+        let args = {};
+        try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { /* empty */ }
+        const name = tc.function?.name || '';
+        stream.send({ type: 'tool', name, status: 'running' });
+        let result;
+        try {
+          result = tools.some((b) => (b.function?.name || b.name) === name) && builtinTools().some((b) => b.function.name === name)
+            ? await runBuiltin(name, args)
+            : await executeTool(conns, name, args);
+          stream.send({ type: 'tool', name, status: 'ok' });
+        } catch (e) {
+          result = { error: String(e.message || e) };
+          stream.send({ type: 'tool', name, status: 'error', error: String(e.message || e) });
+        }
+        msgs.push({ role: 'tool', tool_call_id: tc.id, name, content: JSON.stringify(result).slice(0, 12000) });
+      }
+      out = await chat(
+        { messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools },
+        // no signal here: this leg is not streamed, and an abort between legs is
+        // checked above before the next one starts.
+      );
+      if (!out?.tool_calls?.length) {
+        if (out?.text) stream.send({ type: 'delta', text: out.text });
+        stream.send({ type: 'done', elapsed_ms: null, chars: (out?.text || '').length, model: out?.model, after_tools: true });
+        return stream.end();
+      }
+    }
+    return stream.end();
+  } catch (e) {
+    if (controller.signal.aborted) {
+      stream.send({ type: 'aborted' });
+      return stream.end();
+    }
+    const { payload } = await describeChatFailure(e, provider, model, keys);
+    stream.send({ type: 'error', ...payload });
+    return stream.end();
+  }
+}
+
+// --- sandbox -----------------------------------------------------------------
+
+/** Code that runs is code that runs *somewhere*: this is the machine the bridge
+ *  is on, so a remote caller does not get to do it. The desktop app's bridge is
+ *  loopback by construction, which is why the feature exists there first. */
+function sandboxAllowed(req) {
+  if (String(process.env.ANTICODEX_SANDBOX || '').toLowerCase() === 'remote') return true;
+  return isLoopback(req);
+}
+
+async function handleSandbox(req, body, res) {
+  if (!sandboxAllowed(req)) {
+    return json(res, 403, {
+      ok: false, fix: 'desktop', verdict: 'blocked',
+      error: 'Running generated code happens on the machine that owns it, so a remote request cannot do it here.',
+      hint: 'Install ANTICODEX Desktop (or run this server yourself) — the same Sandbox page then compiles and runs on your own machine, with your own Node and Python.',
+      settings_link: '/sandbox'
+    });
+  }
+  const op = body.op || 'status';
+  if (op === 'status') return json(res, 200, { ok: true, ...sandboxStatus(), runs: listRuns() });
+  if (op === 'run') {
+    const out = await runSandbox({
+      language: body.language, code: body.code, timeout_ms: body.timeout_ms,
+      files: body.files, stdin: body.stdin
+    });
+    await audit({
+      type: 'sandbox.run', language: out.language || body.language, ok: Boolean(out.ok),
+      exit_code: out.exit_code ?? null, timed_out: Boolean(out.timed_out), duration_ms: out.duration_ms ?? null,
+      ip: clientIp(req)
+    }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'read') return json(res, 200, readSandboxFile(body.run_id, body.name));
+  if (op === 'clear') return json(res, 200, clearSandbox(body.run_id));
+  return json(res, 400, { ok: false, error: `Unknown sandbox op "${op}".` });
+}
+
+// --- model health -------------------------------------------------------------
+
+async function handleModelHealth(req, body, res) {
+  const op = body.op || 'list';
+  if (op === 'list') {
+    return json(res, 200, {
+      ok: true,
+      summary: healthSummary(),
+      models: allHealth().slice(0, 400),
+      // What the picker is doing with them right now, so the page and the picker
+      // cannot disagree about how many ids were removed.
+      policy: { hide_rejected: true, hide_unverified_when_live: body.strict_live !== false }
+    });
+  }
+  if (op === 'clear') {
+    if (body.ref && !isLoopback(req) && !isDesktopLocal(req)) {
+      return json(res, 403, { ok: false, error: 'Only this machine can forget a model verdict for a single id.' });
+    }
+    clearHealth(body.ref || null);
+    return json(res, 200, { ok: true, cleared: body.ref || 'all', summary: healthSummary() });
+  }
+  if (op === 'probe') {
+    // A real eight-token call per model — the only honest answer to "does this
+    // one work?". Bounded: at most eight models per request.
+    if (!canSpawnLocalMcp() && !process.env.ALLOW_REMOTE_PROBE) {
+      return json(res, 200, { ok: false, error: 'Probing models spends tokens, so it only runs on the desktop app or a local server.' });
+    }
+    const keys = await mergedKeys(req, body);
+    const wanted = Array.isArray(body.models) ? body.models.slice(0, 8) : [];
+    if (!wanted.length) return json(res, 400, { ok: false, error: 'models[] required' });
+    const results = await Promise.all(wanted.map((m) => probeModel({
+      model: m.model || m.id, provider: m.provider, keys, timeoutMs: Number(body.timeout_ms) || 20000
+    })));
+    return json(res, 200, { ok: true, results, summary: healthSummary() });
+  }
+  return json(res, 400, { ok: false, error: 'unknown model_health op' });
+}
+
+// --- REA (Reverse Engineer Anything) -------------------------------------------
+//
+// REA registers itself with an agent CLI (`setup`) and serves its 207 tools over
+// MCP (`mcp`). Both are local processes, so everything here is loopback-only and
+// a hosted deployment answers `needs_local`.
+//
+// The approval gate is the point: `plan` runs `setup --dry-run`, the UI shows the
+// resolved actions, and `apply` will only run a plan whose fingerprint matches the
+// one that was shown. A plan that changes between preview and apply is refused
+// rather than silently executed.
+
+const reaPlans = new Map();   // fingerprint -> { at, plan }
+
+async function handleRea(req, body, res) {
+  const op = body.op || 'status';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const client = REA_CLIENTS.includes(body.client) ? body.client : 'codex';
+
+  const connection = await findOne('mcp_connections', (c) => c.id === REA_SERVER_NAME || c.url === `stdio:${REA_SERVER_NAME}`);
+
+  if (op === 'status') {
+    let probe = null;
+    if (local && connection?.status === 'connected') {
+      probe = {
+        tools: (connection.tools || []).length,
+        server: connection.server_version || null,
+        connected_at: connection.connected_at || null
+      };
+    }
+    return json(res, 200, {
+      ok: true,
+      local,
+      node: reaNodeStatus(),
+      client,
+      server_name: REA_SERVER_NAME,
+      registered: Boolean(connection),
+      connection: connection
+        ? { id: connection.id, name: connection.name, status: connection.status, enabled: connection.enabled !== false, url: connection.url }
+        : null,
+      probe,
+      registration: local ? checkRegistration(client) : null,
+      plans: reaPlans.size,
+      note: local ? null : 'REA runs on your machine: setup spawns npx and the MCP server is a local process. Open the desktop app or run `npm start` locally.'
+    });
+  }
+
+  if (!local) return needsLocal(res, 'REA setup and its MCP server are local processes — open the desktop app or run this server on your own machine.');
+
+  if (op === 'plan') {
+    const node = reaNodeStatus();
+    if (!node.ok) return json(res, 200, { ok: false, node, error: node.message });
+    const args = reaArgs('plan', { client, skill: body.skill !== false });
+    const run = await runRea(args, { timeoutMs: Number(body.timeout_ms) || 180000 });
+    const parsed = parseSetupOutput(run.stdout || run.stderr);
+    if (!run.ok && !parsed.status) {
+      return json(res, 200, {
+        ok: false, node, command: run.command, ms: run.ms, timed_out: Boolean(run.timed_out),
+        error: `REA setup --dry-run did not produce a plan (${run.spawn_error || (run.stderr || '').slice(-400) || `exit ${run.code}`})`,
+        stdout_tail: (run.stdout || '').slice(-1500), stderr_tail: (run.stderr || '').slice(-1500)
+      });
+    }
+    const planId = planFingerprint(parsed);
+    reaPlans.set(planId, { at: Date.now(), plan: parsed, client });
+    // Keep this bounded; it is a preview cache, not a history.
+    if (reaPlans.size > 8) reaPlans.delete([...reaPlans.keys()][0]);
+    return json(res, 200, {
+      ok: true,
+      node,
+      client,
+      command: run.command,
+      ms: run.ms,
+      plan_id: planId,
+      status: parsed.status,
+      actions: parsed.planned.map((a) => ({ ...a, summary: describeReaAction(a) })),
+      doctor: parsed.doctor,
+      parse_error: parsed.parse_error,
+      nothing_to_do: parsed.planned.length === 0,
+      requires_approval: parsed.planned.length > 0,
+      stderr_tail: (run.stderr || '').slice(-1200) || null
+    });
+  }
+
+  if (op === 'apply') {
+    if (body.approve !== true) {
+      return json(res, 403, { ok: false, error: 'Setup must be approved: send { approve: true } after showing the plan.' });
+    }
+    const cached = reaPlans.get(String(body.plan_id || ''));
+    if (!cached) {
+      return json(res, 409, { ok: false, error: 'Unknown or expired plan — fetch the plan again and show it before applying.' });
+    }
+    if (Date.now() - cached.at > 30 * 60 * 1000) {
+      reaPlans.delete(String(body.plan_id));
+      return json(res, 409, { ok: false, error: 'That plan is more than 30 minutes old — fetch it again so you approve what is on disk now.' });
+    }
+    // Re-plan first: the fingerprint must still match what the user approved.
+    const fresh = await runRea(reaArgs('plan', { client: cached.client, skill: true }), { timeoutMs: 120000 });
+    const freshPlan = parseSetupOutput(fresh.stdout || fresh.stderr);
+    const freshId = planFingerprint(freshPlan);
+    if (freshId !== String(body.plan_id)) {
+      return json(res, 409, {
+        ok: false, changed: true, plan_id: freshId,
+        error: 'The plan changed since it was shown — nothing was written. Review the new plan and approve it again.',
+        actions: freshPlan.planned.map((a) => ({ ...a, summary: describeReaAction(a) }))
+      });
+    }
+    const run = await runRea(reaArgs('apply', { client: cached.client, skill: true }), { timeoutMs: 300000 });
+    const applied = parseSetupOutput(run.stdout || run.stderr);
+    return json(res, run.ok ? 200 : 500, {
+      ok: run.ok,
+      plan_id: freshId,
+      command: run.command,
+      ms: run.ms,
+      applied: applied.applied.map((a) => ({ ...a, summary: describeReaAction(a) })),
+      status: applied.status,
+      doctor: applied.doctor,
+      error: run.ok ? null : (run.spawn_error || (run.stderr || '').slice(-600) || `exit ${run.code}`),
+      stdout_tail: (run.stdout || '').slice(-2000),
+      stderr_tail: (run.stderr || '').slice(-2000)
+    });
+  }
+
+  if (op === 'verify') {
+    // Two independent proofs: REA's own config file has the registration, and a
+    // real MCP handshake with the local server lists its tools.
+    const registration = checkRegistration(client);
+    let handshake;
+    try {
+      const probe = await probeServer(`stdio:${REA_SERVER_NAME}`);
+      handshake = {
+        ok: true,
+        server: probe.server,
+        protocol: probe.protocolVersion,
+        tools: (probe.tools || []).length,
+        sample_tools: (probe.tools || []).slice(0, 12).map((t) => t.name)
+      };
+    } catch (e) {
+      handshake = { ok: false, error: String(e.message || e) };
+    }
+    return json(res, 200, {
+      ok: Boolean(handshake.ok && (registration.present !== false)),
+      node: reaNodeStatus(),
+      registration,
+      handshake,
+      registered: Boolean(connection)
+    });
+  }
+
+  if (op === 'register') {
+    // Register (or refresh) the connection row this app uses to call REA.
+    const why = await localRefusal(req);
+    if (why) return json(res, 200, noLocalMcpServer(why));
+    try {
+      const probe = await probeServer(`stdio:${REA_SERVER_NAME}`);
+      const row = {
+        id: REA_SERVER_NAME,
+        name: REA_SERVER_NAME,
+        url: `stdio:${REA_SERVER_NAME}`,
+        status: 'connected',
+        enabled: true,
+        local: true,
+        tools: probe.tools,
+        server_version: probe.server?.version || null,
+        protocol_version: probe.protocolVersion || null,
+        connected_at: Date.now()
+      };
+      const existing = await findOne('mcp_connections', (x) => x.id === row.id);
+      if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: false } });
+      forgetTools();
+      await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
+      return json(res, 200, { ok: true, connection: row, tools: (probe.tools || []).length });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (op === 'tools') {
+    const conn = connection || { id: REA_SERVER_NAME, url: `stdio:${REA_SERVER_NAME}`, enabled: true };
+    try {
+      const probe = await probeServer(conn.url);
+      return json(res, 200, { ok: true, tools: probe.tools, server: probe.server, count: (probe.tools || []).length });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (op === 'run') {
+    // One tool, called the way chat would call it.
+    if (typeof body.tool !== 'string' || !/^[a-z0-9_]+$/i.test(body.tool)) {
+      return json(res, 400, { ok: false, error: 'tool name required' });
+    }
+    const conn = connection || { id: REA_SERVER_NAME, url: `stdio:${REA_SERVER_NAME}`, enabled: true };
+    const started = Date.now();
+    try {
+      const result = await executeTool([conn], `mcp__${REA_SERVER_NAME}__${body.tool}`, body.args || {});
+      return json(res, 200, { ok: true, tool: body.tool, ms: Date.now() - started, result });
+    } catch (e) {
+      return json(res, 200, { ok: false, tool: body.tool, ms: Date.now() - started, error: String(e.message || e) });
+    }
+  }
+
+  return json(res, 400, { ok: false, error: 'unknown rea op' });
+}
 
 // --- egress ---------------------------------------------------------------
 //

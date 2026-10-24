@@ -246,6 +246,94 @@ ipcMain.handle('acx:api', async (_e, action, payload) => {
   try { return JSON.parse(text); } catch { return { ok: false, error: `bridge answered HTTP ${res.status}: ${text.slice(0, 200)}` }; }
 });
 
+// --- streamed chat -----------------------------------------------------------
+// The renderer cannot call /api/bridge itself for a streamed answer: it would
+// arrive without this machine's keychain keys and without the local token that
+// lets a loopback request reach a LAN gateway. So the main process makes the
+// request exactly like `acx:api` does and forwards the events as they arrive.
+//
+// Events go to the window that asked, tagged with an id, so two streams (or a
+// stream and a stale one) can never interleave.
+const streamControllers = new Map();
+
+ipcMain.handle('acx:api:stream', async (event, action, payload, streamId) => {
+  const state = loadState();
+  const base = state.apiBase || apiBase || 'http://127.0.0.1:8787';
+  const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+  if (state.desktopToken) headers.Authorization = `Bearer ${state.desktopToken}`;
+  if (apiBase && base === apiBase) headers['x-anticodex-local'] = process.env.ANTICODEX_LOCAL_TOKEN || '';
+  const body = {
+    action,
+    ...payload,
+    token: payload?.token || state.desktopToken || undefined,
+    provider_keys: getKeychain().load().keys,
+    _desktop: true
+  };
+  if (Array.isArray(state.customProviders) && state.customProviders.length) body.provider_defs = state.customProviders;
+
+  const controller = new AbortController();
+  streamControllers.set(streamId, controller);
+  const send = (evt) => {
+    try { if (!event.sender.isDestroyed()) event.sender.send('acx:stream:event', { streamId, evt }); } catch { /* window gone */ }
+  };
+  try {
+    const res = await fetch(`${base}/api/bridge`, {
+      method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal
+    });
+    if (!res.ok || !String(res.headers.get('content-type') || '').includes('text/event-stream')) {
+      const text = await res.text();
+      try { return JSON.parse(text); } catch { return { ok: false, error: `bridge answered HTTP ${res.status}: ${text.slice(0, 200)}` }; }
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let text = '';
+    let final = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const data = block.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+        if (!data) continue;
+        let evt;
+        try { evt = JSON.parse(data); } catch { continue; }
+        if (evt.type === 'delta') text += evt.text || '';
+        send(evt);
+        if (evt.type === 'done' || evt.type === 'error' || evt.type === 'aborted') final = evt;
+      }
+    }
+    if (final?.type === 'error') return { ok: false, ...final };
+    return { ok: true, text, content: text, model: final?.model, first_token_ms: final?.first_token_ms, elapsed_ms: final?.elapsed_ms, aborted: final?.type === 'aborted' };
+  } catch (e) {
+    if (controller.signal.aborted) return { ok: true, aborted: true, text: '' };
+    return { ok: false, error: String(e?.message || e) };
+  } finally {
+    streamControllers.delete(streamId);
+  }
+});
+
+ipcMain.handle('acx:api:stream:abort', (_e, streamId) => {
+  const c = streamControllers.get(streamId);
+  if (!c) return { ok: false };
+  c.abort();
+  streamControllers.delete(streamId);
+  return { ok: true };
+});
+
+// Why the desktop can run REA: the setup command and the MCP server are local
+// processes, and the app is the thing that owns them. This is only a fact the
+// UI shows next to the Node version.
+ipcMain.handle('acx:reaEnv', () => ({
+  node: process.version,
+  platform: process.platform,
+  canSpawn: true,
+  codexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+}));
+
 ipcMain.handle('acx:computer', async (_e, cmd, args) => {
   switch (cmd) {
     case 'screenshot': {

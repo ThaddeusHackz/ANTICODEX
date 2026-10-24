@@ -135,9 +135,29 @@ globalThis.__mount = (route) => {
       hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: init.method || 'GET',
       headers: { 'Content-Type': 'application/json', ...(init.headers || {}) }
     }, (res) => {
-      let body = '';
-      res.on('data', (c) => { body += c; });
-      res.on('end', () => resolve({ ok: res.statusCode < 400, status: res.statusCode, json: async () => JSON.parse(body || '{}') }));
+      const chunks = [];
+      res.on('data', (c) => { chunks.push(c); });
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        // The real bridge answers `chat_stream` with server-sent events, so the
+        // harness has to hand the app a body reader as well as `json()` — otherwise
+        // every streamed reply would be tested through a shape no server sends.
+        const bytes = new TextEncoder().encode(body);
+        let sent = false;
+        resolve({
+          ok: res.statusCode < 400,
+          status: res.statusCode,
+          headers: { get: (k) => res.headers[String(k).toLowerCase()] ?? null },
+          json: async () => JSON.parse(body || '{}'),
+          text: async () => body,
+          body: {
+            getReader: () => ({
+              read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })),
+              cancel: async () => {}
+            })
+          }
+        });
+      });
     });
     req.on('error', reject);
     req.end(init.body ? String(init.body) : undefined);
@@ -150,12 +170,40 @@ globalThis.__mount = (route) => {
   // 200 with an error body, and a verified/live model list.
   let chatStub = null;
   let modelsStub = null;
+  // Chat is streamed now (server-sent events), so the stub has to answer in that
+  // shape — a JSON body with no `headers.get` is what a browser would never send.
+  const sseStub = (payload) => {
+    const frames = payload && payload.ok === false
+      ? [{ type: 'error', ...payload }]
+      : [
+          { type: 'phase', phase: 'connected' },
+          ...(payload?.reasoning ? [{ type: 'thinking', text: payload.reasoning }] : []),
+          { type: 'delta', text: payload?.text || payload?.content || '' },
+          { type: 'done', model: payload?.model, chars: (payload?.text || '').length, ...(payload?.thinking_ms ? { thinking_ms: payload.thinking_ms } : {}) }
+        ];
+    const raw = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('');
+    const bytes = new TextEncoder().encode(raw);
+    let sent = false;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (k) => (String(k).toLowerCase() === 'content-type' ? 'text/event-stream; charset=utf-8' : null) },
+      json: async () => payload,
+      body: {
+        getReader: () => ({
+          read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes })),
+          cancel: async () => {}
+        })
+      }
+    };
+  };
   const rawFetch = win.fetch;
   win.fetch = (input, init = {}) => {
     let parsed = null;
     if (init && init.body) { try { parsed = JSON.parse(String(init.body)); bridgeCalls.push(parsed); } catch { /* non-json */ } }
     const act = parsed && parsed.action;
-    if (act === 'chat' && chatStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(chatStub)) });
+    if (act === 'chat' && chatStub) return Promise.resolve({ ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => JSON.parse(JSON.stringify(chatStub)) });
+    if (act === 'chat_stream' && chatStub) return Promise.resolve(sseStub(JSON.parse(JSON.stringify(chatStub))));
     if (act === 'models' && modelsStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(modelsStub)) });
     return rawFetch(input, init);
   };
@@ -420,7 +468,67 @@ globalThis.__mount = (route) => {
   await settle(8);
   ok('one click switches to a real model', String(win.eval('localStorage.getItem("acx_model")')) === 'nvidia::deepseek-ai/deepseek-r1', String(win.eval('localStorage.getItem("acx_model")')));
   ok('the trigger follows the switch', /DeepSeek R1/.test(triggerText()), triggerText());
+  // The index is a cache the app throws away on purpose (a rejected id clears it
+  // so the menu re-reads). Losing it must not rename the model back to its raw id
+  // in the top bar — the reply already said what this id is called.
+  ok('the name it was given is remembered, not only the id',
+    /DeepSeek R1/.test(String(win.eval('localStorage.getItem("acx_model_labels")||""'))),
+    String(win.eval('localStorage.getItem("acx_model_labels")||""')).slice(0, 120));
+  win.eval('localStorage.removeItem("acx_model_index")');
+  await mountAt('/', { token: reg.token, user: reg.user });
+  ok('and survives the index cache being dropped', /DeepSeek R1/.test(triggerText()), triggerText());
   chatStub = null;
+
+  console.log('\n— model output cannot become markup —');
+  {
+    const { renderMarkdown } = await import('../web/src/lib/markdown.js');
+    const html = (md) => renderMarkdown(md);
+    ok('an injected img keeps nothing but a dead src', /src="#"/.test(html('<img src=x onerror=alert(1)>')), html('<img src=x onerror=alert(1)>'));
+    ok('…and no event handler survives it', !/onerror=/i.test(html('<img src=x onerror=alert(1)>')));
+    ok('…an onclick on a real link is dropped', !/onclick/i.test(html('<a href="https://ok.example" onclick="x()">ok</a>')));
+    ok('a script tag is escaped', !/<script/i.test(html('<script>alert(1)</script>')));
+    ok('an svg payload is escaped too', !/<svg/i.test(html('<svg onload=alert(1)>')));
+    ok('a javascript: link goes nowhere', /href="#"/.test(html('[click](javascript:alert(1))')), html('[click](javascript:alert(1))'));
+    ok('a data: image goes nowhere', !/src="data:/i.test(html('![x](data:text/html;base64,AAA)')));
+    ok('real markdown still renders', /<strong>bold<\/strong>/.test(html('**bold**')) && /<blockquote>/.test(html('> quoted')));
+    ok('a code block keeps its angle brackets as text', /&lt;div&gt;/.test(html('```\n<div>\n```')), html('```\n<div>\n```'));
+  }
+
+  console.log('\n— the speed dial, and what the model thought —');
+  {
+    bridgeCalls.length = 0;
+    chatStub = { ok: true, text: 'The answer.', model: 'nvidia/deepseek-r1', reasoning: 'First I read the question, then I answered it.', thinking_ms: 1200 };
+    await mountAt('/', { token: reg.token, user: reg.user });
+    const dial = qa('#root .effort-btn');
+    ok('the topbar offers three speeds', dial.length === 3, `${dial.length} buttons`);
+    ok('…and starts on Balanced', dial.find((b) => b.getAttribute('aria-pressed') === 'true')?.textContent === 'Balanced', dial.map((b) => b.textContent).join(','));
+    click(dial.find((b) => b.textContent === 'Max'));
+    await settle(2);
+    ok('choosing one is remembered', String(win.eval('localStorage.getItem("acx_effort")')) === 'max', String(win.eval('localStorage.getItem("acx_effort")')));
+
+    typeIn(q('#root .composer textarea'), 'think about this');
+    await settle(2);
+    click(q('#root .send-btn'));
+    await settle(24);
+    const sent = bridgeCalls.filter((c) => c.action === 'chat_stream').at(-1);
+    ok('the choice goes out with the message', sent?.effort === 'max', JSON.stringify(sent?.effort));
+    const think = q('#root .think');
+    ok('the reasoning is kept with the answer', Boolean(think) && /Thought for/.test(think.textContent), think?.textContent || 'no .think block');
+    ok('…and the answer itself is unchanged', /The answer\./.test(q('#root .msg-row.assistant .msg-text')?.textContent || ''));
+    click(think.querySelector('.think-head'));
+    await settle(3);
+    ok('expanding it shows what it actually thought', /First I read the question/.test(q('#root .think-body')?.textContent || ''), q('#root .think-body')?.textContent || 'no body');
+    win.eval('localStorage.setItem("acx_effort", "balanced")');
+    chatStub = null;
+  }
+
+  console.log('\n— the sandbox page —');
+  {
+    const text = await mountAt('/sandbox', { token: reg.token, user: reg.user });
+    ok('the page renders', /Sandbox/.test(text) && /Run/.test(text), text.slice(0, 120));
+    ok('it says what it will run', /JavaScript/.test(text) && /Python/.test(text));
+    ok('…and what it will not do', /not a container|only for the person sitting/i.test(text), text.slice(-200));
+  }
 
   console.log('\n— signed out —');
   win.eval('localStorage.clear()');
