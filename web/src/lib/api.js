@@ -288,6 +288,7 @@ export const rea = {
   verify: (p = {}) => api('rea', { op: 'verify', ...p }),
   register: () => api('rea', { op: 'register' }),
   tools: () => api('rea', { op: 'tools' }),
+  engines: () => api('rea', { op: 'engines' }),
   run: (tool, args) => api('rea', { op: 'run', tool, args })
 };
 

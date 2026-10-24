@@ -6,12 +6,16 @@ import { json, readBody } from '../lib/util.js';
 import { listProviders, chat, chatStream, probeModel, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { allHealth, clearHealth, summary as healthSummary, modelRef } from '../lib/model-health.js';
 import {
+  ENGINE_HELP,
   REA_CLIENTS,
   REA_SERVER_NAME,
   buildArgs as reaArgs,
+  buildDoctorArgs as reaDoctorArgs,
   checkRegistration,
   describeAction as describeReaAction,
+  missingEngines,
   nodeStatus as reaNodeStatus,
+  parseDoctorOutput,
   parseSetupOutput,
   planFingerprint,
   runRea
@@ -1021,6 +1025,40 @@ async function handleRea(req, body, res) {
       registration: local ? checkRegistration(client) : null,
       plans: reaPlans.size,
       note: local ? null : 'REA runs on your machine: setup spawns npx and the MCP server is a local process. Open the desktop app or run `npm start` locally.'
+    });
+  }
+
+  if (op === 'engines') {
+    // REA ships no decompiler. `doctor` is the honest answer to "will it actually
+    // take a binary apart?", so it is asked directly instead of being guessed at
+    // from the plan — the plan says nothing about engines.
+    if (!local) return needsLocal(res, 'Engine checks run REA on this machine — open the desktop app or run this server locally.');
+    const run = await runRea(reaDoctorArgs(), { timeoutMs: Number(body.timeout_ms) || 120000 });
+    const report = parseDoctorOutput(run.stdout || run.stderr);
+    const missing = missingEngines(report);
+    if (report.parse_error && !report.checks.length) {
+      return json(res, 200, {
+        ok: false, command: run.command, ms: run.ms,
+        error: `Could not read REA's doctor output (${run.spawn_error || (run.stderr || '').slice(-300) || `exit ${run.code}`})`,
+        stdout_tail: (run.stdout || '').slice(-1500), stderr_tail: (run.stderr || '').slice(-1500)
+      });
+    }
+    return json(res, 200, {
+      ok: true,
+      command: run.command,
+      ms: run.ms,
+      healthy: report.healthy,
+      environment_healthy: report.environment_healthy,
+      host: report.host,
+      checks: report.checks,
+      missing,
+      // The answer to "so how do I fix it?": every engine REA knows about, with
+      // the variable it reads. Shown even when all of them are configured.
+      help: ENGINE_HELP,
+      note: missing.length
+        ? `${missing.length} analysis engine${missing.length === 1 ? '' : 's'} not configured — REA's file inspectors still work, but it cannot decompile without one.`
+        : 'Every analysis engine REA knows about is configured on this machine.',
+      parse_error: report.parse_error
     });
   }
 

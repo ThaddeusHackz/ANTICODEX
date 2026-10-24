@@ -409,6 +409,10 @@ try {
     ok('…it shows the plan before applying', /Show the setup plan/.test(reaPage) && /Approve and apply/.test(reaPage));
     ok('…it verifies with a handshake', /reaApi\.verify/.test(reaPage) && /MCP handshake/.test(reaPage));
     ok('…and registers the connection last', /reaApi\.register/.test(reaPage));
+    // Setup succeeding is not the same as being able to decompile: REA ships no
+    // engine, so the page asks doctor and names what is missing.
+    ok('…asks REA which analysis engines this machine has', /reaApi\.engines\(\)/.test(reaPage) && /op === 'engines'/.test(read('api/bridge.js')));
+    ok('…and says what to install when one is missing', /Analysis engines/.test(reaPage) && /Copy steps/.test(reaPage) && /Variable:/.test(reaPage));
 
     // --- model health --------------------------------------------------------
     const settings = read('web/src/pages/Settings.jsx');
