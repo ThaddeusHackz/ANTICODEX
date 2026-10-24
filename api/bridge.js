@@ -25,6 +25,7 @@ import {
   QODER_PAT_ENVS,
   QCA_BASE,
   createAcpClient,
+  agentPrompt,
   explainAcpError,
   isAgentRef,
   qcaEvents,
@@ -867,8 +868,7 @@ async function handleChatStream(req, res, body) {
       });
       return stream.end();
     }
-    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-    const promptText = [systemPrompt, lastUser?.content].filter((x) => x && String(x).trim()).join('\n\n');
+    const promptText = agentPrompt({ system: systemPrompt, messages: msgs });
     if (!promptText) {
       stream.send({ type: 'error', state: 'input', error: 'Nothing to send: the message is empty.' });
       return stream.end();

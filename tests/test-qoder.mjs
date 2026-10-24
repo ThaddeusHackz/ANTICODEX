@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ACP_PROTOCOL_VERSION, QCA_BASE, QODER_AGENT_REF, agentProviderDef, createAcpClient,
+  ACP_PROTOCOL_VERSION, QCA_BASE, QODER_AGENT_REF, agentPrompt, agentProviderDef, createAcpClient,
   createSseParser, explainAcpError, isAgentRef, qcaPage, qcaRequest, qcaUrl,
   qoderActionWorkflow, qoderStatus, resolveQoderToken, streamAcpAnswer
 } from '../lib/qoder.js';
@@ -252,6 +252,23 @@ section('the agent is a model you can pick, and it streams as chat events');
       } else if (msg.method === 'session/close') send({ jsonrpc: '2.0', id: msg.id, result: {} });
     });
   `);
+
+  // The agent is a fresh process each turn, so history has to ride along.
+  ok('an empty conversation asks nothing', agentPrompt({ messages: [] }) === '');
+  ok('…as does one with no user turn', agentPrompt({ messages: [{ role: 'assistant', content: 'hi' }] }) === '');
+  ok('a single question is sent verbatim, after the system prompt', agentPrompt({ system: 'be brief', messages: [{ role: 'user', content: 'why?' }] }) === 'be brief\n\nwhy?');
+  const chat = agentPrompt({ messages: [
+    { role: 'user', content: 'first' },
+    { role: 'assistant', content: 'answer' },
+    { role: 'user', content: 'second' }
+  ] });
+  ok('a follow-up carries the earlier turns', chat.includes('User: first') && chat.includes('Assistant: answer') && chat.endsWith('Reply to the last User message.'));
+  ok('…old turns fall off the front, not the back', !agentPrompt({
+    messages: Array.from({ length: 20 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `t${i}` })), maxTurns: 4
+  }).includes('t14'), 't16');
+  ok('a huge turn is clipped and says so', /earlier characters omitted/.test(agentPrompt({
+    system: 's', messages: [{ role: 'user', content: 'x'.repeat(9000) }], maxCharsPerTurn: 100
+  })));
 
   const collected = [];
   for await (const evt of streamAcpAnswer({ text: 'hi', command: process.execPath, args: [fixture], cwd: os.tmpdir() })) {

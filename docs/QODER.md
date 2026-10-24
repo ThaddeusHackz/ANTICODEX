@@ -125,10 +125,13 @@ Rules that do not bend:
 * **honest failures.** Not installed → the `npm i -g @qoder-ai/qodercli` line.
   Installed but signed out → *"run `qodercli login`"*. Both arrive as an `error`
   event with a `fix`, not as an empty answer.
-* **one turn, one process.** Each message starts a fresh `qodercli`, sends the
-  system prompt plus the latest user message, and closes the session. Prior
-  turns are not replayed into the agent yet — that is the next step, and it is
-  called out here rather than implied.
+* **one turn, one process — with the conversation carried in.** Each message
+  starts a fresh `qodercli` and closes it afterwards, so the earlier turns are
+  folded into the prompt: a single question is sent verbatim, a longer thread
+  becomes a `User:` / `Assistant:` transcript (last 12 turns, oldest dropped
+  first, any turn over 8 000 characters clipped with a marker saying how much
+  was cut). `agentPrompt()` in `lib/qoder.js` owns that rule and is unit-tested,
+  including the "no user turn means nothing to send" case.
 
 Verified end to end on this machine (`qodercli` 1.1.78, not signed in):
 

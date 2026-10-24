@@ -250,6 +250,7 @@ export default function ChatPage() {
         // The actionable part is UI, not prose: a real button to the key you are
         // missing, or the model menu that has the one that works.
         fix: problem ? out.fix : undefined,
+        state: problem ? out.state : undefined,
         verdict: problem ? out.verdict : undefined,
         provider: out.provider || undefined,
         settings_link: problem ? out.settings_link : undefined,
@@ -345,6 +346,10 @@ export default function ChatPage() {
                             ))}
                           </span>
                         ) : null}
+                        {/* A local agent answers with a sentence, not a token — show it as the instruction it is. */}
+                        {typeof m.fix === 'string' && !['quota', 'retry', 'endpoint', 'model'].includes(m.fix)
+                          ? <span className="tiny">Fix: <code>{m.fix}</code></span>
+                          : null}
                         {m.fix === 'retry' ? <button className="btn small ghost" onClick={() => send()}>Try again</button> : null}
                         {m.fix === 'endpoint' ? <span className="tiny">Base URL + key live in Settings → Providers. A key you saved is never blamed for a server that simply cannot reach out.</span> : null}
                       </div>
