@@ -366,10 +366,16 @@ try {
     ok('…with the keychain keys attached', /acx:api:stream[\s\S]{0,1600}provider_keys: getKeychain\(\)\.load\(\)\.keys/.test(mainSrc));
     ok('…and the local token for gateways on this machine', /x-anticodex-local/.test(mainSrc.slice(mainSrc.indexOf('acx:api:stream'))));
     ok('a cancel really aborts it', /acx:api:stream:abort/.test(mainSrc) && /streamControllers/.test(mainSrc));
-    ok('the preload exposes it as one call with a callback', /streamApi: \(action, payload, onEvent\)/.test(preloadSrc));
-    ok('…and filters events by stream id', /msg\?\.streamId !== streamId/.test(preloadSrc));
+    ok('the preload exposes it as one call with a callback', /streamApi: \(action, payload, onEvent, streamId\)/.test(preloadSrc));
+    ok('…filters events by stream id', /msg\?\.streamId !== id/.test(preloadSrc));
+    // A Stop that only hides the typing dots is the bug this pins: the renderer
+    // has to name the stream it started, or the abort has no controller to reach.
+    ok('…and the caller names the stream, so Stop can reach that controller',
+      /const id = String\(streamId \|\|/.test(preloadSrc) && /acx:api:stream', action, payload, id/.test(preloadSrc));
+    ok('every event is forwarded, heartbeats included', /\n\s+send\(evt\);\n/.test(mainSrc) && !/\|\| true/.test(mainSrc));
     const apiSrc = read('web/src/lib/api.js');
     ok('the web client uses it when the app is there', /hasDesktop\(\) && window\.anticodexDesktop\.streamApi/.test(apiSrc));
+    ok('…aborts the main process by the same id when the view stops', /abortStream\?\.\(streamId\)/.test(apiSrc) && /addEventListener\('abort', cancel/.test(apiSrc));
     ok('…and plain HTTP everywhere else', /fetch\('\/api\/bridge'/.test(apiSrc));
 
     // --- REA -----------------------------------------------------------------

@@ -29,14 +29,20 @@ contextBridge.exposeInMainWorld('anticodexDesktop', {
   // Opens a file picker for a `.skill` archive and installs it into ~/.codex/skills.
   installSkill: () => ipcRenderer.invoke('acx:skillInstall'),
   // Streamed chat: events arrive on a private channel, filtered by stream id.
-  streamApi: (action, payload, onEvent) => {
-    const streamId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  // The caller generates the id (or gets one back) because cancelling needs the
+  // same id: a stream the renderer cannot name is a Stop button that only hides
+  // the typing dots while the provider keeps generating.
+  streamApi: (action, payload, onEvent, streamId) => {
+    const fresh = () => (globalThis.crypto?.randomUUID
+      ? `s_${globalThis.crypto.randomUUID()}`
+      : `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
+    const id = String(streamId || fresh());
     const listener = (_e, msg) => {
-      if (msg?.streamId !== streamId) return;
+      if (msg?.streamId !== id) return;
       try { onEvent?.(msg.evt); } catch { /* a view error must not kill the stream */ }
     };
     ipcRenderer.on('acx:stream:event', listener);
-    return ipcRenderer.invoke('acx:api:stream', action, payload, streamId)
+    return ipcRenderer.invoke('acx:api:stream', action, payload, id)
       .finally(() => ipcRenderer.removeListener('acx:stream:event', listener));
   },
   abortStream: (streamId) => ipcRenderer.invoke('acx:api:stream:abort', streamId),

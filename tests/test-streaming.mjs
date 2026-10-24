@@ -45,6 +45,29 @@ const upstream = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ data: [{ id: 'mock/real-model' }, { id: 'mock/other-model' }] }));
   }
 
+  // Anthropic's wire: content blocks, deltas keyed by index, and a tool call whose
+  // JSON arrives as fragments. Same client code path as the real Messages API.
+  if (req.url === '/v1/messages') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const frame = (o) => res.write(`event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`);
+    frame({ type: 'message_start', message: { id: 'msg_1', model: 'claude-mock' } });
+    frame({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    frame({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Claude ' } });
+    frame({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'answers' } });
+    frame({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu_1', name: 'do_thing' } });
+    frame({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"a":' } });
+    frame({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '1}' } });
+    frame({ type: 'message_stop' });
+    return res.end();
+  }
+
+  // Accepts the connection and never answers: a probe has to give up on its own.
+  if (parsed.model === 'hang-model') {
+    const t = setTimeout(() => { try { res.end(); } catch { /* gone */ } }, 30000);
+    res.on('close', () => clearTimeout(t));
+    return;
+  }
+
   // An id this endpoint does not have — exactly what produced the error users saw.
   if (parsed.model === 'ghost-model') {
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -110,10 +133,13 @@ const PORT = upstream.address().port;
 const defs = [{
   id: 'mock', name: 'Mock provider', type: 'openai', endpoint: `http://127.0.0.1:${PORT}/v1`,
   key_env: 'MOCK_API_KEY', default_model: 'mock/real-model'
+}, {
+  id: 'mockclaude', name: 'Mock Claude', type: 'anthropic', endpoint: `http://127.0.0.1:${PORT}`,
+  key_env: 'CLAUDE_MOCK_KEY', default_model: 'claude-mock'
 }];
 // The bridge hands device-supplied gateways to the engine under this key; naming
 // it here means the test exercises the same path a browser request does.
-const keys = { MOCK_API_KEY: 'test-key', [PROVIDER_DEFS_KEY]: defs };
+const keys = { MOCK_API_KEY: 'test-key', CLAUDE_MOCK_KEY: 'claude-key', [PROVIDER_DEFS_KEY]: defs };
 
 section('an OpenAI-shaped stream');
 {
@@ -254,6 +280,36 @@ section('the picker hides what the endpoint did not list');
   const mock = idx.providers.find((p) => p.id === 'mock');
   ok('only live ids are offered', mock.models.every((m) => m.live === true));
   ok('…and the confirmed ids are there', mock.models.some((m) => m.id === 'mock/real-model'));
+}
+
+section('an Anthropic-shaped stream');
+{
+  const events = [];
+  const out = await chatStream(
+    { model: 'claude-mock', provider: 'mockclaude', messages: [{ role: 'user', content: 'hi' }], keys },
+    { onEvent: (e) => events.push(e) }
+  );
+  const deltas = events.filter((e) => e.type === 'delta').map((e) => e.text).join('');
+  ok('the answer is the text blocks, in order', out.text === 'Claude answers', JSON.stringify(out.text));
+  ok('…the same text arrives as deltas', deltas === 'Claude answers', JSON.stringify(deltas));
+  ok('a phase says it connected and is streaming', events.some((e) => e.type === 'phase' && e.phase === 'streaming'));
+  ok('the tool block is rebuilt from its fragments',
+    out.tool_calls?.[0]?.function?.name === 'do_thing' && out.tool_calls[0].function.arguments === '{"a":1}',
+    JSON.stringify(out.tool_calls));
+  const done = events.find((e) => e.type === 'done');
+  ok('done reports what was produced', done?.chars === out.text.length && done?.model === 'claude-mock', JSON.stringify(done));
+  ok('the Anthropic call used the Messages path and the x-api-key header', calls.some((c) => c.url === '/v1/messages'));
+}
+
+section('a probe gives up, and closing the connection is what stops it');
+{
+  const started = Date.now();
+  const out = await probeModel({ model: 'hang-model', provider: 'mock', keys, timeoutMs: 150 });
+  const took = Date.now() - started;
+  ok('a provider that never answers is reported, not waited on forever', out.ok === false, JSON.stringify(out));
+  ok('…the sentence says the probe gave up', /gave up/i.test(out.error || ''), out.error);
+  ok('…and it happened on the timeout, not later', took >= 120 && took < 3000, `${took}ms`);
+  ok('…recorded as a network problem, not a missing model', out.state === 'network', out.state);
 }
 
 section('health survives a restart (it is a file, not a variable)');

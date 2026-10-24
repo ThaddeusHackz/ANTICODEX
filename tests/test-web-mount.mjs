@@ -478,6 +478,21 @@ globalThis.__mount = (route) => {
   ok('and survives the index cache being dropped', /DeepSeek R1/.test(triggerText()), triggerText());
   chatStub = null;
 
+  console.log('\n— model output cannot become markup —');
+  {
+    const { renderMarkdown } = await import('../web/src/lib/markdown.js');
+    const html = (md) => renderMarkdown(md);
+    ok('an injected img keeps nothing but a dead src', /src="#"/.test(html('<img src=x onerror=alert(1)>')), html('<img src=x onerror=alert(1)>'));
+    ok('…and no event handler survives it', !/onerror=/i.test(html('<img src=x onerror=alert(1)>')));
+    ok('…an onclick on a real link is dropped', !/onclick/i.test(html('<a href="https://ok.example" onclick="x()">ok</a>')));
+    ok('a script tag is escaped', !/<script/i.test(html('<script>alert(1)</script>')));
+    ok('an svg payload is escaped too', !/<svg/i.test(html('<svg onload=alert(1)>')));
+    ok('a javascript: link goes nowhere', /href="#"/.test(html('[click](javascript:alert(1))')), html('[click](javascript:alert(1))'));
+    ok('a data: image goes nowhere', !/src="data:/i.test(html('![x](data:text/html;base64,AAA)')));
+    ok('real markdown still renders', /<strong>bold<\/strong>/.test(html('**bold**')) && /<blockquote>/.test(html('> quoted')));
+    ok('a code block keeps its angle brackets as text', /&lt;div&gt;/.test(html('```\n<div>\n```')), html('```\n<div>\n```'));
+  }
+
   console.log('\n— signed out —');
   win.eval('localStorage.clear()');
   const loginText = await mountAt('/login');

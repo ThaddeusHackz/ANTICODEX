@@ -302,7 +302,7 @@ ipcMain.handle('acx:api:stream', async (event, action, payload, streamId) => {
         let evt;
         try { evt = JSON.parse(data); } catch { continue; }
         if (evt.type === 'delta') text += evt.text || '';
-        if (evt.type !== 'heartbeat' || true) send(evt);
+        send(evt);
         if (evt.type === 'done' || evt.type === 'error' || evt.type === 'aborted') final = evt;
       }
     }

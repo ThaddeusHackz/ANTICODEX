@@ -85,9 +85,24 @@ export async function chatStream(payload, { onEvent, signal } = {}) {
   // needs. It forwards the same events over IPC.
   if (hasDesktop() && window.anticodexDesktop.streamApi) {
     try {
-      return await window.anticodexDesktop.streamApi('chat_stream', payload, (evt) => {
-        try { onEvent?.(evt); } catch { /* view error */ }
-      });
+      // The main process cancels by stream id, so the id has to be ours: the
+      // Stop button aborts `signal`, and that has to reach the fetch the main
+      // process is holding — otherwise it only hides the typing dots.
+      const streamId = globalThis.crypto?.randomUUID
+        ? `s_${globalThis.crypto.randomUUID()}`
+        : `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const cancel = () => { try { window.anticodexDesktop.abortStream?.(streamId); } catch { /* window gone */ } };
+      if (signal) {
+        if (signal.aborted) cancel();
+        else signal.addEventListener('abort', cancel, { once: true });
+      }
+      try {
+        return await window.anticodexDesktop.streamApi('chat_stream', payload, (evt) => {
+          try { onEvent?.(evt); } catch { /* view error */ }
+        }, streamId);
+      } finally {
+        try { signal?.removeEventListener('abort', cancel); } catch { /* no signal */ }
+      }
     } catch (e) {
       // Fall through to the HTTP path; the bundled server serves it too.
       if (e?.name === 'AbortError') return { ok: true, aborted: true, text: '' };
