@@ -683,6 +683,21 @@ Nothing is deleted: `hidden` carries both groups with the provider's sentence, a
 `include_hidden: true` returns them marked `dead: true`. Because the website and the
 desktop app read the same index, one fix covers both.
 
+One shape needed its own rule. NVIDIA NIM answers
+
+```
+{"status":404,"title":"Not Found","detail":"Function '<uuid>': Not found for account '…'"}
+```
+
+for *every* id when the key is unknown or the account lacks the “Public API
+Endpoints” entitlement — a 404 that never mentions a model. Matching on the status
+alone said “this endpoint has no model called X”, offered the picker, and recorded the
+id as missing, so a model the endpoint itself lists vanished for twelve hours. Both
+the sentence and the health record now read the body: a 404 that names an account, a
+function or a page is a key problem, and it says so with the Settings link instead of
+a swap that would fail identically. CI caught this on a fake key; it is the same
+complaint as §13.2 with a different cause.
+
 ### 13.3 REA, installed by a human who saw the plan first
 
 `lib/rea.js` parses REA 6.7.0's real `setup --dry-run` output — a YAML header with a
