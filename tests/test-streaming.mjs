@@ -19,7 +19,7 @@ import assert from 'node:assert';
 
 process.env.ANTICODEX_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-stream-data-'));
 
-const { chatStream, chat, probeModel, PROVIDER_DEFS_KEY } = await import('../lib/providers.js');
+const { chatStream, chat, probeModel, explainProviderError, PROVIDER_DEFS_KEY } = await import('../lib/providers.js');
 const health = await import('../lib/model-health.js');
 const { modelIndex } = await import('../lib/providers.js');
 
@@ -49,6 +49,17 @@ const upstream = http.createServer(async (req, res) => {
   if (parsed.model === 'ghost-model') {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: { message: 'The model `ghost-model` does not exist', code: 'model_not_found' } }));
+  }
+
+  // What NVIDIA NIM really answers when its gateway will not route the key: a 404
+  // about the account, not the id. This is the sentence that made a model the
+  // endpoint itself lists look deleted.
+  if (parsed.model === 'account-404-model') {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      status: 404, title: 'Not Found',
+      detail: "Function '5beba52c-65a9-4f46-8cd9-656689a1b205': Not found for account 'abc'"
+    }));
   }
 
   if (parsed.model === 'slow-model') {
@@ -200,6 +211,27 @@ section('classification');
   ok('a 429 is quota', health.classifyFailure(new Error('429 rate limit')) === 'quota');
   ok('a timeout is the network', health.classifyFailure(new Error('fetch failed ECONNRESET')) === 'network');
   ok('a 500 is a retry', health.classifyFailure(new Error('503 overloaded')) === 'retry');
+}
+
+section('a 404 about the account is not a missing model');
+{
+  const ACCOUNT_404 = 'Mock provider returned 404: {"status":404,"title":"Not Found","detail":"Function \'5beba52c\': Not found for account \'abc\'"}';
+  const said = explainProviderError(new Error(ACCOUNT_404), 'Mock provider', 'mock/real-model');
+  ok('it blames the key, not the picker', said.fix === 'key' && (said.verdict || said.fix) === 'key', JSON.stringify(said).slice(0, 140));
+  ok('it quotes the provider instead of inventing a model bug', /Not found for account/.test(said.error), said.error.slice(0, 100));
+  ok('it never tells the user to pick another model', !/Pick another model/i.test(said.error), said.error.slice(0, 120));
+  ok('and health records it as a key problem, not a missing id', health.classifyFailure(new Error(ACCOUNT_404)) === 'key', health.classifyFailure(new Error(ACCOUNT_404)));
+  ok('a real "no such model" still opens the picker', explainProviderError(new Error('404 model_not_found: `x` does not exist'), 'Mock provider', 'x').fix === 'model');
+
+  // …and the same answer through the streaming path, which is what a browser hits.
+  const events = [];
+  const out = await chatStream(
+    { model: 'account-404-model', provider: 'mock', messages: [{ role: 'user', content: 'hi' }], keys },
+    { onEvent: (e) => events.push(e) }
+  ).catch((e) => ({ error: String(e.message || e) }));
+  const errEvt = events.find((e) => e.type === 'error');
+  ok('the stream says the account 404 is a key problem', errEvt?.state === 'key', JSON.stringify(errEvt || out).slice(0, 140));
+  ok('and it did not hide a model the endpoint lists', health.isDead('mock::account-404-model') === false);
 }
 
 section('probing one model answers in eight tokens');
