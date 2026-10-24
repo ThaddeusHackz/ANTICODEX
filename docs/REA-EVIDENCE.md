@@ -502,10 +502,72 @@ license: Complete terms in LICENSE.txt
 | Target | Why | Status |
 |---|---|---|
 | `chatgpt.com`, `claude.ai` over the network | sandbox egress is allowlisted to npm/PyPI/GitHub; both return `000` | **unknown**, not analysed |
-| ChatGPT `app.asar` (582 072 504 B) | above the connector's 100 MB inline download cap | **not analysed** |
-| `codex.exe` (341 312 816 B), `claude.exe` (245 756 240 B) | same cap; and no disassembler engine is installed | **not analysed** |
+| ChatGPT `app.asar` (582 072 504 B) | above the connector's 100 MB inline download cap | **not analysed yet** — the relay retries it with a streamed download; a crash in the download path is now a per-target error with a stack, not a lost run |
+| `codex.exe` (341 312 816 B), `claude.exe` (245 756 240 B) | above the connector's inline cap | **analysed by the relay** — PE headers, imports, capabilities and toolchain in `relay/out/assets.json` (§12.4) |
 | Claude `.vite/build` semantic detail for 400+ chunks | REA's result budget: 855 resource-constraint limitations | static facts only |
 | Claude's `$BROWSER` shim (`claude-browser-shim.js`, 6 770 B) | read, not yet implemented | backlog: a URL handed to the OS browser should open in an in-app pane |
 
 The honest summary: the *desktop packages* were reverse-engineered from Drive; the *websites*
 were not, and were never reachable from this environment.
+
+## 12. Pass 4 — artifact template picker and the sandbox boundary
+
+### 12.1 The picker (Drive: `artifact-picker/server.mjs`, 30 990 B)
+
+A standalone MCP server, `openai_artifact_template_picker` 1.0.0, protocol
+`2025-06-18`, two tools: `list_artifact_templates` and `choose_artifact_template`.
+It answers "what style should this document use?" with a picture grid and returns the
+chosen skill path to the model.
+
+**seen** in the file:
+
+| Fact | Value |
+|---|---|
+| kinds | `document`/`presentation`/`spreadsheet`, plus `google-docs`/`google-slides`/`google-sheets` as workspace flavours of the same families (`document`, `presentation`, `spreadsheets`) |
+| limits | 100 templates, **10 offered**, 1 000-char request, 8 MiB preview, 32 MiB total preview, 16 Mi pixels per preview, 32 Mi pixels total |
+| elicitation | prefers `openai/elicitation/create` (`mode: "form"`, `x-openai-input` of type `file`), falls back to legacy `openai/form` with `openai/imagePicker`; `_meta.autoResolutionMs: 30000`; **no form extension → `{status:"unsupported"}`** rather than a degraded grid |
+| on-disk shapes | personal `~/.codex/skills/remote-skills/skill-<id>/`, plugins `~/.codex/plugins/cache/<marketplace>/<owner>/<version>/skills/artifact-template-*/`; `CODEX_HOME` honoured |
+| metadata | `SKILL.md` frontmatter (`name` must match `artifact-template-[a-z0-9][a-z0-9._-]*`), `artifact-template.json` (`schemaVersion: 1`, `kind`, `reference: assets/reference.<ext>`, optional `sourceUrl`, `preview`), `agents/openai.yaml` (`interface.display_name`, `interface.icon_large`) |
+| refusals | realpath containment for every read; `plugin.json` owner must equal a namespaced name; exactly one installed version, else the plugin is skipped; Google templates need the canonical `https://docs.google.com/<path>/d/<id>/edit[?resourcekey=…]` and `/e/` shortcuts are rejected; preview must be a real PNG (magic + `IHDR`) ≤ 8192 px a side; icon must be inside the template and end in `.png` |
+| statuses | `selected`, `uploaded`, `unsupported`, `unavailable`, `cancelled`, `declined`; the upload path asks for a display name (≤ 64, trimmed, no `<>`/CR/LF, must contain a letter or digit) |
+
+The part worth copying is not the grid, it is that **every path is re-resolved before
+use and a template that fails one check is silently dropped instead of failing the
+list** — one bad download cannot take out the picker.
+
+### 12.2 What was built from this pass
+
+| Change | File | What it does |
+|---|---|---|
+| template validation | `lib/artifacts.js` | kinds/families, `readTrustedText` (realpath + size), `isCanonicalGoogleUrl`, `pngSize`, `parseSkillFrontmatter`, `parseInterface`, `loadTemplate`, `discoverTemplates`, `offer` (10 cards + preview budget), `resolveSelection` (ambiguity refused), `suggestDisplayName`/`validateDisplayName` |
+| bridge | `api/bridge.js` `artifacts` — `kinds` / `roots` / `list` / `choose` | local-only reads of the ChatGPT home; unknown kind is a **400 with a code**, not an empty grid |
+| chat | `web/src/pages/Chat.jsx`, `web/src/lib/api.js` | ▤ picker in the composer: kind tabs, preview cards, chosen template shown as a removable pill; the pick travels with the turn as `template` |
+| prompt | `api/bridge.js` `normalizeChatTemplate` | the template is flattened and capped before it reaches a system prompt — a title cannot smuggle a newline-delimited block or a path |
+| tests | `tests/test-artifacts.mjs` (79), `tests/test-desktop.mjs` (+7) | escaping reference/icon, fake PNG, 8193 px preview, plugin owner mismatch, non-canonical Google URL, ambiguous selection, preview budget, and the desktop bridge end-to-end |
+
+### 12.3 The sandbox is a network + token boundary
+
+Both shipped desktop apps enforce the sandbox at a layer lower than approvals:
+
+- `codex-command-runner.exe` (Rust) imports `CreateRestrictedToken`,
+  `AdjustTokenPrivileges`, `SetTokenInformation(TokenDefaultDacl | TokenGroups)` and
+  speaks `--pipe-i/o` — the child runs as a **reduced token over named pipes**;
+  `codex-windows-sandbox-setup.exe` carries `sandbox-secrets` and its own log.
+- `cowork-svc.exe` (Go 1.25.14, 42 modules) is a **user-mode network stack**:
+  gVisor `tcpip`, `gvisor-tap-vsock`, DHCP, `miekg/dns`, `inetaf/tcpproxy`, go-winio and
+  `github.com/anthropics/win-httpproxy`.
+
+**Built:** `lib/egress.js` — an allowlisting HTTP/CONNECT proxy with exact,
+`*.suffix` and `*` rules, deny-wins evaluation, a bounded verdict log, live policy
+changes and the `HTTP(S)_PROXY`/`NO_PROXY` environment a child needs — plus an
+`egress` bridge action and a Codex-page network switch that actually starts it. It is
+documented as **a policy, not a kernel**: a process that ignores `HTTP_PROXY` is not
+contained, and the UI says so.
+
+### 12.4 Relay status
+
+The evidence runs live in `.github/workflows/relay.yml`; `relay/out/` is the published
+record. Runs 2–4 collected the Claude MSIX, the Codex release and the Claude Code
+binary; the ChatGPT MSIX (1 GB) failed twice on V8's ~512 MB string limit before the
+download became a streamed pipeline (`Readable.fromWeb` → file, sha256 incremental, no
+string for anything over 32 MiB) and the PE reader used a 2-byte `readSync`.

@@ -330,6 +330,33 @@ try {
     ok('a bad mode is a 400, not a 500', (await call(local.base, 'egress', { op: 'start', mode: 'yolo' })).status === 400);
     ok('the network switch drives the proxy, not a label', /toggleNet[\s\S]{0,400}egressApi\.start/.test(read('web/src/pages/Codex.jsx')));
 
+    // Artifact templates: the packaged app is the only place a template grid can
+    // be read from the ChatGPT home, so prove the in-process bridge serves it —
+    // and that the checks from lib/artifacts.js are the ones doing the filtering.
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-tpl-'));
+    const templateDir = path.join(fixture, 'skills', 'remote-skills', 'skill-personal');
+    fs.mkdirSync(path.join(templateDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(templateDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(templateDir, 'SKILL.md'), '---\nname: artifact-template-personal\ndescription: Create a document using the smoke template.\n---\n');
+    fs.writeFileSync(path.join(templateDir, 'artifact-template.json'), JSON.stringify({ schemaVersion: 1, kind: 'document', reference: 'assets/reference.docx', preview: 'assets/preview.png' }));
+    fs.writeFileSync(path.join(templateDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: "Smoke template"\n  icon_large: "assets/preview.png"\n');
+    fs.writeFileSync(path.join(templateDir, 'assets', 'reference.docx'), 'fixture');
+    fs.writeFileSync(path.join(templateDir, 'assets', 'preview.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+
+    const kinds = await call(local.base, 'artifacts', { op: 'kinds' });
+    ok('the desktop bridge enumerates the artifact kinds', kinds.data.kinds?.length === 6 && kinds.data.local === true);
+    const listed = await call(local.base, 'artifacts', { op: 'list', artifact_kind: 'document', codex_home: fixture });
+    ok('a template on disk reaches the picker as a card', listed.data.cards?.length === 1 && listed.data.cards[0].title === 'Smoke template');
+    ok('…with its preview inlined for the grid', /^data:image\/png;base64,/.test(listed.data.cards[0].preview || ''));
+    const deck = await call(local.base, 'artifacts', { op: 'list', artifact_kind: 'presentation', codex_home: fixture });
+    ok('a deck request does not offer a document template', deck.data.cards?.length === 0);
+    const chosen = await call(local.base, 'artifacts', { op: 'choose', artifact_kind: 'document', selection: listed.data.cards[0].id, codex_home: fixture });
+    ok('choosing a card returns the selected skill', chosen.data.ok === true && chosen.data.skillName === 'artifact-template-personal');
+    const bogus = await call(local.base, 'artifacts', { op: 'list', artifact_kind: 'video', codex_home: fixture });
+    ok('an unknown artifact kind is a 400, not an empty grid', bogus.status === 400 && bogus.data.code === 'InvalidArtifactKind');
+    fs.rmSync(fixture, { recursive: true, force: true });
+    ok('the picker is reachable from the chat composer', /api\.artifacts\.list/.test(read('web/src/pages/Chat.jsx')));
+
     // Installing a packaged skill is a write to this machine, so it goes through
     // the main process (file picker + the registry's own extractor), never the page.
     const main = read('desktop/main.mjs');

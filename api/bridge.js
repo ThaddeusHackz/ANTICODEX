@@ -15,6 +15,16 @@ import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
 import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
 import { startEgressProxy, checkEgress, normalizeEgressPolicy, EGRESS_MODES, DEFAULT_ALLOW, egressEnv } from '../lib/egress.js';
+import {
+  ARTIFACT_KINDS,
+  discoverTemplates,
+  extensionOf,
+  familyOf,
+  normalizeRequest,
+  offer,
+  resolveSelection,
+  templateRoots
+} from '../lib/artifacts.js';
 import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
 import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
@@ -133,6 +143,7 @@ export default async function handler(req, res) {
       case 'workspace': return await handleWorkspace(req, body, res);
       case 'skills': return await handleSkills(req, body, res);
       case 'egress': return await handleEgress(req, body, res);
+      case 'artifacts': return await handleArtifacts(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
@@ -333,8 +344,32 @@ async function handleUserKeys(req, body, res) {
   return json(res, 400, { error: 'unknown user_keys op' });
 }
 
+// A chosen artifact template travels with the turn as three short strings. It is
+// model-facing text, so it is flattened and capped: a template title must not be
+// able to smuggle instructions (or a newline-delimited fake system block) into
+// the prompt.
+function normalizeChatTemplate(template) {
+  if (!template || typeof template !== 'object') return null;
+  const clean = (value, max) =>
+    typeof value === 'string' ? value.replace(/[\r\n]+/g, ' ').trim().slice(0, max) : '';
+  const title = clean(template.title, 120);
+  const artifactKind = clean(template.artifact_kind, 32);
+  const skillName = clean(template.skill_name, 120);
+  if (!title || !ARTIFACT_KINDS.has(artifactKind)) return null;
+  return { title, artifactKind, skillName };
+}
+
+function withTemplate(system, template) {
+  if (!template) return system;
+  const line = `The user picked the "${template.title}" ${template.artifactKind} template${
+    template.skillName ? ` (skill ${template.skillName})` : ''
+  }; follow its structure and styling.`;
+  return [system, line].filter(Boolean).join('\n');
+}
+
 async function handleChat(body, res, req) {
   const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
+  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
   if (provider && (keys.__provider_defs_dropped_ids__ || []).includes(provider)) {
@@ -354,7 +389,7 @@ async function handleChat(body, res, req) {
       if (tools.length) {
         let out;
         try {
-          out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+          out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
         } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
@@ -375,7 +410,7 @@ async function handleChat(body, res, req) {
           }
           let next;
           try {
-            next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+            next = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
           } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
           Object.assign(out, next);
           if (!next.tool_calls?.length) break;
@@ -385,13 +420,13 @@ async function handleChat(body, res, req) {
     }
   }
   try {
-    const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys });
+    const out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys });
     return json(res, 200, out);
   } catch (e) {
     const { payload, retry_with } = await describeChatFailure(e, provider, model, keys);
     if (retry_with) {
       try {
-        const again = await chat({ messages: msgs, model: retry_with, system, temperature, max_tokens, provider, keys });
+        const again = await chat({ messages: msgs, model: retry_with, system: systemPrompt, temperature, max_tokens, provider, keys });
         // Honest about what happened: the model you asked for does not exist
         // there, so this answered instead — and the picker now knows the list.
         return json(res, 200, {
@@ -793,6 +828,60 @@ async function egressOp(req, body, res) {
   }
 
   return json(res, 400, { error: 'unknown egress op' });
+}
+
+
+// --- artifact templates ------------------------------------------------------
+//
+// The ChatGPT app answers "what style should this document use?" with a picture
+// grid built from templates on disk (openai_artifact_template_picker). The same
+// grid here offers whatever templates are installed in the ChatGPT/Codex home,
+// checked by lib/artifacts.js before a single byte of preview reaches the page.
+// Reading that home only happens for a local caller — a hosted deployment has no
+// templates, and says so rather than showing an empty grid.
+
+async function handleArtifacts(req, body, res) {
+  const op = body.op || 'kinds';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+
+  if (op === 'kinds') {
+    return json(res, 200, {
+      ok: true,
+      local,
+      kinds: [...ARTIFACT_KINDS.keys()].map((id) => ({ id, family: familyOf(id), extension: extensionOf(id) }))
+    });
+  }
+
+  if (!local) {
+    return json(res, 200, {
+      ok: true,
+      local: false,
+      cards: [],
+      count: 0,
+      note: 'Artifact templates live in the ChatGPT/Codex home on this machine — open the desktop app or a local `npm start`.'
+    });
+  }
+
+  try {
+    if (op === 'roots') {
+      return json(res, 200, { ok: true, ...templateRoots(body.codex_home || undefined) });
+    }
+
+    const kind = body.artifact_kind || 'document';
+    const request = normalizeRequest(kind, body.request);
+    const templates = await discoverTemplates({ codexHome: body.codex_home || undefined, artifactKind: kind });
+
+    if (op === 'list') {
+      return json(res, 200, { ok: true, artifact_kind: kind, request, count: templates.length, cards: offer(templates) });
+    }
+    if (op === 'choose') {
+      const chosen = resolveSelection(templates, body.selection);
+      return json(res, 200, { ok: true, ...chosen });
+    }
+    return json(res, 400, { ok: false, error: 'unknown artifacts op' });
+  } catch (e) {
+    return json(res, 400, { ok: false, code: e.code || 'InvalidTemplate', error: String(e.message || e) });
+  }
 }
 
 // --- skills -----------------------------------------------------------------

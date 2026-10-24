@@ -136,6 +136,15 @@ export const egress = {
   stop: () => api('egress', { op: 'stop' })
 };
 
+// Artifact templates: the picture grid the ChatGPT app shows for a document,
+// deck or spreadsheet style. Reads the local ChatGPT home, so it is local-only.
+export const artifacts = {
+  kinds: () => api('artifacts', { op: 'kinds' }),
+  roots: () => api('artifacts', { op: 'roots' }),
+  list: (artifactKind, request) => api('artifacts', { op: 'list', artifact_kind: artifactKind, request: request || undefined }),
+  choose: (artifactKind, selection) => api('artifacts', { op: 'choose', artifact_kind: artifactKind, selection })
+};
+
 export const skills = {
   list: (p) => api('skills', { op: 'list', ...p }),
   get: (name) => api('skills', { op: 'get', name }),
