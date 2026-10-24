@@ -1,1 +1,1 @@
-trigger 2 (assets)
+trigger 4 — assets with the big-buffer fix + Go/Rust/Bun toolchain detection

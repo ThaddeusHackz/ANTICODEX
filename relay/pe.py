@@ -33,6 +33,8 @@ INTERESTING_IMPORTS = {
     'SetThreadExecutionState', 'SetWinEventHook', 'SetWindowsHookExA',
 }
 
+CERT_NOISE = re.compile(rb'(?i)digicert|sectigo|verisign|globalsign|symantec|thawte|entrust|usertrust|comodo|w3\.org|schemas\.microsoft\.com|ocsp\.|cacerts|crl[0-9]?\.')
+
 INTERESTING_STRINGS = re.compile(
     rb'(?i)(https?://[a-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]{6,120}'
     rb'|\\\\\.\\pipe\\[A-Za-z0-9_.-]{2,60}'
@@ -78,6 +80,44 @@ def disassemble(pe, limit=160):
         return [f'{ins.address:08x}  {ins.mnemonic} {ins.op_str}'.strip() for ins in md.disasm(code, ep)][:limit]
     except Exception as exc:  # noqa: BLE001 - report, never fail the job
         return [f'disassembly failed: {exc}']
+
+
+GO_BUILDINFO = re.compile(rb'\xff Go buildinf:')
+
+
+def go_buildinfo(data):
+    """Go embeds its own manifest: toolchain, module list, build flags."""
+    if not GO_BUILDINFO.search(data):
+        return None
+    out = {'present': True, 'go_version': None, 'modules': [], 'build_settings': []}
+    m = re.search(rb'go1\.\d+(?:\.\d+)?', data)
+    if m:
+        out['go_version'] = m.group(0).decode()
+    # Module table entries look like: dep\t<path>\t<version>\t<hash>
+    for hit in re.finditer(rb'(?m)^(dep|=>)\t([\w./~-]{3,120})\t(v[\w.+-]{1,40}|\S{0,40})', data):
+        out['modules'].append({'kind': hit.group(1).decode(), 'path': hit.group(2).decode(), 'version': hit.group(3).decode()})
+        if len(out['modules']) >= 300:
+            break
+    if not out['modules']:
+        # Older Go: a `path\tversion\th1:` table without the `dep` prefix.
+        for hit in re.finditer(rb'(?m)^([\w./~-]{3,120})\t(v[\w.+-]{1,40})\th1:', data):
+            out['modules'].append({'kind': 'dep', 'path': hit.group(1).decode(), 'version': hit.group(2).decode()})
+            if len(out['modules']) >= 300:
+                break
+    for hit in re.finditer(rb'(?m)^build\t([-\w./=]+)\t(.{0,120})$', data):
+        out['build_settings'].append(f'{hit.group(1).decode()}={hit.group(2).decode(errors="replace")}')
+    return out
+
+
+def symbol_families(data, limit=60):
+    """Crude but useful: which package prefixes recur in the symbol table."""
+    counts = Counter()
+    for hit in re.finditer(rb'(?:[a-z0-9_-]+\.)+[a-z0-9_/-]{3,40}\.[A-Z][A-Za-z0-9_]{2,40}', data):
+        name = hit.group(0).decode('utf-8', 'replace')
+        parts = name.split('.')
+        if len(parts) >= 3:
+            counts['.'.join(parts[:-1])] += 1
+    return [{'prefix': k, 'n': v} for k, v in counts.most_common(limit)]
 
 
 def main(path):
@@ -126,6 +166,8 @@ def main(path):
     strings = []
     seen = set()
     for match in INTERESTING_STRINGS.finditer(data):
+        if CERT_NOISE.search(match.group(0)):
+            continue
         value = match.group(0).decode('utf-8', 'replace')
         if value.lower() in seen:
             continue
@@ -165,7 +207,40 @@ def main(path):
         if 'dbghelp' in dll.lower():
             capabilities.append('can produce crash dumps')
 
+    # Rust and Go leave fingerprints in the image; a toolchain tells us how the
+    # carrier was built even when every symbol is stripped.
+    toolchain = []
+    for needle, label in [(b'rustc', 'rust'), (b'cargo', 'cargo'), (b'go1.', 'go'), (b'Go build ID', 'go'), (b'node.exe', 'node'), (b'electron', 'electron')]:
+        if needle in data:
+            toolchain.append(label)
+    pdb = []
+    for entry in getattr(pe, 'DIRECTORY_ENTRY_DEBUG', []):
+        try:
+            if entry.entry.PdbFileName:
+                pdb.append(entry.entry.PdbFileName.decode('utf-8', 'replace').rstrip('\x00'))
+        except Exception:  # noqa: BLE001
+            pass
+
+    go = go_buildinfo(data)
+    if go:
+        toolchain.append('go')
+    # Rust release binaries keep panic/format paths and the allocator shim even
+    # when every symbol is stripped; a Bun build names itself in the version block.
+    if re.search(rb'(?i)/rustc/|library/core/src|library/std/src|rust_begin_unwind|RUST_BACKTRACE|core::fmt', data):
+        toolchain.append('rust')
+    if b'clap-rs/clap' in data or b'docs.rs/' in data:
+        toolchain.append('rust')
+    if re.search(rb'(?i)\bbun\b.*version|/bun/|@bun', data):
+        toolchain.append('bun')
+    if b'electron' in bytes(data).lower():
+        toolchain.append('electron')
+
     out = {
+        'go_build': go,
+        'symbol_families': symbol_families(data),
+        'toolchain': sorted(set(toolchain)),
+        'pdb': pdb[:5],
+        'rich_header_present': bool(getattr(pe, 'RICH_HEADER', None)),
         'file': path.split('/')[-1],
         'size': len(data),
         'sha256': sha256(path),

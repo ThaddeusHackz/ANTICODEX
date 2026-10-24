@@ -40,7 +40,10 @@ async function get(url, opts = {}) {
     headers: { 'user-agent': UA, ...(opts.headers || {}) }
   });
   const buf = Buffer.from(await res.arrayBuffer());
-  return { status: res.status, headers: Object.fromEntries(res.headers), buf, text: buf.toString('utf8'), url: res.url };
+  // A 1 GB MSIX cannot become a JS string (V8's limit is ~512 MB), and nothing
+  // downstream needs the text of a binary, so decoding stays lazy.
+  const text = buf.length <= 32 * 1024 * 1024 ? buf.toString('utf8') : '';
+  return { status: res.status, headers: Object.fromEntries(res.headers), buf, text, url: res.url };
 }
 async function tryGet(url, opts) {
   try { return await get(url, opts); } catch (e) { return { status: 0, error: String(e.message || e), buf: Buffer.alloc(0), text: '', headers: {} }; }
