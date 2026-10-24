@@ -34,11 +34,15 @@ function CatalogCard({ item, onConnect, status }) {
         <div className="mcp-icon">{item.name.slice(0, 1)}</div>
         <div style={{ minWidth: 0 }}>
           <h3>{item.name}</h3>
-          <div className="tiny">{item.vendor} {item.oauth ? '· OAuth sign-in in browser' : '· no sign-in needed'}</div>
+          <div className="tiny">
+          {item.vendor} {item.oauth ? '· OAuth sign-in in browser' : '· no sign-in needed'}
+          {item.version ? ` · v${item.version}` : ''}
+        </div>
         </div>
       </div>
       <div className="small" style={{ color: 'var(--text-2)', flex: 1 }}>{item.description}</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {item.local && <span className="local-chip">⌂ runs on this machine</span>}
         {(item.tags || []).slice(0, 6).map((t) => <span key={t} className="source-chip">{t}</span>)}
       </div>
       <div className="row" style={{ marginTop: 4 }}>
@@ -87,6 +91,9 @@ export default function McpPage() {
     setBusy(item.id);
     setProbeOut(null);
     try {
+      if (item.local && !window.anticodexDesktop) {
+        notify('This server runs on your machine — connect it from the desktop app or a local `npm start`, not from the hosted site.');
+      }
       if (item.url?.startsWith('REPLACE') || item.url?.includes('YOUR-')) {
         notify('This one needs your personal endpoint URL — open its gateway page first, then paste the URL below');
         window.open(item.gateway || item.url, '_blank', 'noopener');
@@ -104,6 +111,7 @@ export default function McpPage() {
         notify(`Connected ${r.connection?.name} — ${r.connection?.tools?.length || 0} tools available`);
       } else {
         notify(r.message || r.error || 'Connection needs extra setup');
+        if (r.fix) notify(r.fix, 'info');
       }
       await refresh();
     } catch (e) {

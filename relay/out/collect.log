@@ -1,0 +1,8 @@
+[relay] site chatgpt
+npm warn deprecated prebuild-install@7.1.3: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.
+[relay] rea web-chatgpt ev_98b61a377c6120c979ceec8252e4d78975c800f01a11a306bd5cdc45523bf35b
+[relay] site claude
+[relay] rea web-claude ev_0b4d3d2897c1352a41039c4a47a541b45437c4b3e7a5c1228129f5e2919d4759
+[relay] wrote relay/out/web.json 393432 B
+[relay] wrote relay/out/run.json 412364 B
+[relay] done

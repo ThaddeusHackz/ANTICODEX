@@ -5,6 +5,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer, screen, globalShortcut, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComputerUse } from './computer-use.mjs';
@@ -32,6 +33,45 @@ const BRIDGE_CANDIDATES = [
   path.join(RES_ROOT, 'api', 'bridge.js')
 ];
 const STATE_FILE = path.join(app.getPath('userData'), 'anticodex-state.json');
+
+// A `.skill` is a ZIP holding `<name>/SKILL.md` — the packaged form both shipped
+// desktop assistants exchange. The installer is the registry's own, so the app
+// and the bridge cannot disagree about what a valid archive is.
+async function installSkillArchive() {
+  const { extractSkillArchive, readSkillArchive } = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'skills.js')).href);
+  const parent = win && !win.isDestroyed() ? win : null;
+  const dialogOpts = {
+    title: 'Install a skill',
+    properties: ['openFile'],
+    filters: [{ name: 'Skill archive', extensions: ['skill', 'zip'] }]
+  };
+  const picked = parent ? await dialog.showOpenDialog(parent, dialogOpts) : await dialog.showOpenDialog(dialogOpts);
+  if (picked.canceled || !picked.filePaths?.length) return { ok: false, canceled: true };
+  const file = picked.filePaths[0];
+  const peek = readSkillArchive(file, { scope: 'user' });
+  // A file that is not a skill is refused before anything is written.
+  if (!peek.skills.length) {
+    return { ok: false, error: peek.errors[0]?.message || 'that archive does not contain a SKILL.md' };
+  }
+  const dest = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'skills');
+  try {
+    const result = extractSkillArchive(file, dest);
+    return { ok: true, ...result, description: peek.skills[0].description };
+  } catch (e) {
+    if (e.code === 'Exists') {
+      const boxOpts = {
+        type: 'question', buttons: ['Replace', 'Cancel'], defaultId: 1, cancelId: 1,
+        message: `${peek.skills[0].name} is already installed`,
+        detail: 'Replacing it overwrites the copy on this machine.'
+      };
+      const go = parent ? await dialog.showMessageBox(parent, boxOpts) : await dialog.showMessageBox(boxOpts);
+      if (go.response !== 0) return { ok: false, canceled: true };
+      const result = extractSkillArchive(file, dest, { overwrite: true });
+      return { ok: true, ...result, replaced: true, description: peek.skills[0].description };
+    }
+    return { ok: false, error: String(e.message || e) };
+  }
+}
 
 // Runtime data (config.json / db.json) lives in userData so the packaged app is
 // writable everywhere.
@@ -176,6 +216,11 @@ ipcMain.handle('acx:saveCustoms', (_e, list) => {
 ipcMain.handle('acx:getCustoms', () => {
   const list = loadState().customProviders;
   return Array.isArray(list) ? list : [];
+});
+
+ipcMain.handle('acx:skillInstall', async () => {
+  try { return await installSkillArchive(); }
+  catch (e) { return { ok: false, error: String(e?.message || e) }; }
 });
 
 ipcMain.handle('acx:api', async (_e, action, payload) => {

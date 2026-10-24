@@ -301,6 +301,89 @@ try {
     const client = read('web/src/lib/api.js');
     ok('the browser sends its own gateways on the actions that need them', /GATEWAY_ACTIONS[\s\S]{0,400}provider_defs/.test(client));
   }
+  console.log('\n— the desktop app reads this machine\'s skill registry —');
+  {
+    const localSkills = await call(local.base, 'skills', { op: 'list' });
+    const pubSkills = await call(pub.base, 'skills', { op: 'list' });
+    ok('the in-process bridge the .exe runs answers `skills`', localSkills.status === 200 && Array.isArray(localSkills.data.skills));
+    ok('the bundled skills ship with the app', (localSkills.data.skills || []).some((s) => s.name === 'reverse-engineer-anything'));
+    ok('a loopback caller is told the registry is local', localSkills.data.local === true);
+    ok('the plain website server lists the same registry', (pubSkills.data.skills || []).length === (localSkills.data.skills || []).length);
+    ok('each skill says what it is and where it came from',
+      (localSkills.data.skills || []).every((s) => s.name && s.description && s.path && s.scope && /SKILL\.md$/.test(s.path)));
+    ok('a skill can be loaded by name, as the chat page does',
+      (await call(local.base, 'skills', { op: 'get', name: 'reverse-engineer-anything' })).data.instructions.startsWith('# Skill: reverse-engineer-anything'));
+    ok('the page reaches the registry through the same bridge action', /api\('skills'/.test(read('web/src/lib/api.js')));
+
+    // Network policy is a running proxy, so it has to work through the same
+    // in-process bridge the packaged app uses — and stop cleanly.
+    const started = await call(local.base, 'egress', { op: 'start', mode: 'allowlist', allow: ['api.openai.com'] });
+    ok('the desktop bridge starts an egress proxy', started.status === 200 && started.data.port > 0);
+    ok('…and returns the environment a child process needs', started.data.env?.HTTPS_PROXY === started.data.url);
+    ok('…with loopback excluded so local calls still work', /127\.0\.0\.1/.test(started.data.env?.NO_PROXY || ''));
+    const runningStatus = await call(local.base, 'egress', { op: 'status' });
+    ok('the status is readable while it runs', runningStatus.data.running === true && runningStatus.data.local === true);
+    const verdict = await call(local.base, 'egress', { op: 'check', host: 'example.com', mode: 'allowlist', allow: ['api.openai.com'] });
+    ok('a host off the list is refused with a reason', verdict.data.allowed === false && /allowlist/.test(verdict.data.reason));
+    const stopped = await call(local.base, 'egress', { op: 'stop' });
+    ok('it stops on request', stopped.data.stopped === true && (await call(local.base, 'egress', { op: 'status' })).data.running === false);
+    ok('a bad mode is a 400, not a 500', (await call(local.base, 'egress', { op: 'start', mode: 'yolo' })).status === 400);
+    ok('the network switch drives the proxy, not a label', /toggleNet[\s\S]{0,400}egressApi\.start/.test(read('web/src/pages/Codex.jsx')));
+
+    // Artifact templates: the packaged app is the only place a template grid can
+    // be read from the ChatGPT home, so prove the in-process bridge serves it —
+    // and that the checks from lib/artifacts.js are the ones doing the filtering.
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-tpl-'));
+    const templateDir = path.join(fixture, 'skills', 'remote-skills', 'skill-personal');
+    fs.mkdirSync(path.join(templateDir, 'agents'), { recursive: true });
+    fs.mkdirSync(path.join(templateDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(templateDir, 'SKILL.md'), '---\nname: artifact-template-personal\ndescription: Create a document using the smoke template.\n---\n');
+    fs.writeFileSync(path.join(templateDir, 'artifact-template.json'), JSON.stringify({ schemaVersion: 1, kind: 'document', reference: 'assets/reference.docx', preview: 'assets/preview.png' }));
+    fs.writeFileSync(path.join(templateDir, 'agents', 'openai.yaml'), 'interface:\n  display_name: "Smoke template"\n  icon_large: "assets/preview.png"\n');
+    fs.writeFileSync(path.join(templateDir, 'assets', 'reference.docx'), 'fixture');
+    fs.writeFileSync(path.join(templateDir, 'assets', 'preview.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+
+    const kinds = await call(local.base, 'artifacts', { op: 'kinds' });
+    ok('the desktop bridge enumerates the artifact kinds', kinds.data.kinds?.length === 6 && kinds.data.local === true);
+    const listed = await call(local.base, 'artifacts', { op: 'list', artifact_kind: 'document', codex_home: fixture });
+    ok('a template on disk reaches the picker as a card', listed.data.cards?.length === 1 && listed.data.cards[0].title === 'Smoke template');
+    ok('…with its preview inlined for the grid', /^data:image\/png;base64,/.test(listed.data.cards[0].preview || ''));
+    const deck = await call(local.base, 'artifacts', { op: 'list', artifact_kind: 'presentation', codex_home: fixture });
+    ok('a deck request does not offer a document template', deck.data.cards?.length === 0);
+    const chosen = await call(local.base, 'artifacts', { op: 'choose', artifact_kind: 'document', selection: listed.data.cards[0].id, codex_home: fixture });
+    ok('choosing a card returns the selected skill', chosen.data.ok === true && chosen.data.skillName === 'artifact-template-personal');
+    const bogus = await call(local.base, 'artifacts', { op: 'list', artifact_kind: 'video', codex_home: fixture });
+    ok('an unknown artifact kind is a 400, not an empty grid', bogus.status === 400 && bogus.data.code === 'InvalidArtifactKind');
+    fs.rmSync(fixture, { recursive: true, force: true });
+    ok('the picker is reachable from the chat composer', /api\.artifacts\.list/.test(read('web/src/pages/Chat.jsx')));
+
+    // The ChatGPT webview's skill channels (skills/list, skills/manage,
+    // skills/config, skills/plugins) are one page here, and both of its data
+    // sources have to be the real endpoints.
+    ok('the Skills route exists', /path="\/skills"/.test(read('web/src/App.jsx')) && /SkillsPage/.test(read('web/src/App.jsx')));
+    const skillsPage = read('web/src/pages/Skills.jsx');
+    ok('…and reads the registry', /skillsApi\.list/.test(skillsPage));
+    ok('…and the template roots for the plugins tab', /artifactsApi\.list/.test(skillsPage));
+    ok('…with per-account toggles rather than per-browser ones', /userKey\('acx_enabled_skills'/.test(skillsPage));
+    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /duplicates/.test(skillsPage));
+
+    // Installing a packaged skill is a write to this machine, so it goes through
+    // the main process (file picker + the registry's own extractor), never the page.
+    const main = read('desktop/main.mjs');
+    const preload = read('desktop/preload.mjs');
+    ok('the app can install a .skill through a native file picker', /acx:skillInstall/.test(main) && /installSkillArchive/.test(main));
+    ok('…using the registry\'s extractor, not a second implementation', /extractSkillArchive/.test(main) && /readSkillArchive/.test(main));
+    ok('…into this machine\'s skill root', /\.codex.*'skills'|'skills'\)/.test(main));
+    ok('…and refuses an archive with no SKILL.md before writing', /does not contain a SKILL\.md/.test(main));
+    ok('…asks before replacing an installed skill', /already installed/.test(main) && /overwrite: true/.test(main));
+    ok('the renderer reaches it through the preload bridge only', /installSkill: \(\) => ipcRenderer\.invoke\('acx:skillInstall'\)/.test(preload));
+    ok('the install button only exists where the bridge does', /canInstall[\s\S]{0,160}installSkill/.test(read('web/src/pages/Claude.jsx')));
+
+    const relative = await call(local.base, 'skills', { op: 'install', file: 'notes.skill' });
+    ok('a relative path is refused', relative.status === 400 && /absolute/.test(relative.data.error));
+    const notASkill = await call(local.base, 'skills', { op: 'install', file: '/tmp/whatever.txt' });
+    ok('a file that is not a .skill is refused', notASkill.status === 400 && /\.skill/.test(notASkill.data.error));
+  }
 } finally {
   local.proc.kill('SIGTERM');
   pub.proc.kill('SIGTERM');

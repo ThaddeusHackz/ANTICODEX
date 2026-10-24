@@ -122,6 +122,54 @@ export const pairing = {
   status: (code) => api('pair', { op: 'status', code })
 };
 
+/** Adopt the config this machine already has (Codex config.toml, Claude settings). */
+export const importConfig = (payload) => api('import_config', payload);
+
+// Egress policy: an allowlisting proxy a spawned process is pointed at. Starting
+// one listens on this machine, so every write op is desktop/local only.
+export const egress = {
+  status: () => api('egress', { op: 'status' }),
+  presets: () => api('egress', { op: 'presets' }),
+  check: (host, p = {}) => api('egress', { op: 'check', host, ...p }),
+  start: (p = {}) => api('egress', { op: 'start', ...p }),
+  update: (p = {}) => api('egress', { op: 'update', ...p }),
+  stop: () => api('egress', { op: 'stop' })
+};
+
+// Artifact templates: the picture grid the ChatGPT app shows for a document,
+// deck or spreadsheet style. Reads the local ChatGPT home, so it is local-only.
+export const artifacts = {
+  kinds: () => api('artifacts', { op: 'kinds' }),
+  roots: () => api('artifacts', { op: 'roots' }),
+  list: (artifactKind, request) => api('artifacts', { op: 'list', artifact_kind: artifactKind, request: request || undefined }),
+  choose: (artifactKind, selection) => api('artifacts', { op: 'choose', artifact_kind: artifactKind, selection })
+};
+
+export const skills = {
+  list: (p) => api('skills', { op: 'list', ...p }),
+  get: (name) => api('skills', { op: 'get', name }),
+  resolve: (text) => api('skills', { op: 'resolve', text }),
+  // A `.skill` is a ZIP holding `<name>/SKILL.md` — the packaged form the shipped
+  // desktop apps use. `archive` inspects one, `install` extracts it into this
+  // machine's ~/.codex/skills (local only), `manifest` reads a bundled manifest.
+  archive: (file) => api('skills', { op: 'archive', file }),
+  install: (file, p = {}) => api('skills', { op: 'install', file, ...p }),
+  manifest: (dir) => api('skills', { op: 'manifest', dir })
+};
+
+export const workspace = {
+  context: (p) => api('workspace', { op: 'context', ...p }),
+  set: (p) => api('workspace', { op: 'set', ...p })
+};
+
+/** Write a Codex-compatible `config.toml` from what this device knows. */
+export const exportConfig = (state) => api('export_config', { state });
+
+export const policy = {
+  get: () => api('policy', { op: 'get' }),
+  set: (patch) => api('policy', { op: 'set', patch })
+};
+
 export const extras = (payload) => api('extras', payload);
 
 /**

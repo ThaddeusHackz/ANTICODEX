@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { json, readBody } from '../lib/util.js';
 import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
@@ -8,7 +12,22 @@ import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
-import { MCP_CATALOG, McpClient, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
+import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
+import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
+import { startEgressProxy, checkEgress, normalizeEgressPolicy, EGRESS_MODES, DEFAULT_ALLOW, egressEnv } from '../lib/egress.js';
+import {
+  ARTIFACT_KINDS,
+  discoverTemplates,
+  extensionOf,
+  familyOf,
+  normalizeRequest,
+  offer,
+  resolveSelection,
+  templateRoots
+} from '../lib/artifacts.js';
+import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
+import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
+import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
@@ -118,7 +137,14 @@ export default async function handler(req, res) {
         redirect_to: body.redirect_to, origin
       })));
       case 'threads': return await handleThreads(req, body, res);
-      case 'mcp': return await handleMcp(body, res);
+      case 'mcp': return await handleMcp(body, res, req);
+      case 'policy': return await handlePolicy(req, body, res);
+      case 'import_config': return await handleImportConfig(req, body, res);
+      case 'workspace': return await handleWorkspace(req, body, res);
+      case 'skills': return await handleSkills(req, body, res);
+      case 'egress': return await handleEgress(req, body, res);
+      case 'artifacts': return await handleArtifacts(req, body, res);
+      case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
@@ -318,8 +344,32 @@ async function handleUserKeys(req, body, res) {
   return json(res, 400, { error: 'unknown user_keys op' });
 }
 
+// A chosen artifact template travels with the turn as three short strings. It is
+// model-facing text, so it is flattened and capped: a template title must not be
+// able to smuggle instructions (or a newline-delimited fake system block) into
+// the prompt.
+function normalizeChatTemplate(template) {
+  if (!template || typeof template !== 'object') return null;
+  const clean = (value, max) =>
+    typeof value === 'string' ? value.replace(/[\r\n]+/g, ' ').trim().slice(0, max) : '';
+  const title = clean(template.title, 120);
+  const artifactKind = clean(template.artifact_kind, 32);
+  const skillName = clean(template.skill_name, 120);
+  if (!title || !ARTIFACT_KINDS.has(artifactKind)) return null;
+  return { title, artifactKind, skillName };
+}
+
+function withTemplate(system, template) {
+  if (!template) return system;
+  const line = `The user picked the "${template.title}" ${template.artifactKind} template${
+    template.skillName ? ` (skill ${template.skillName})` : ''
+  }; follow its structure and styling.`;
+  return [system, line].filter(Boolean).join('\n');
+}
+
 async function handleChat(body, res, req) {
   const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
+  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
   if (provider && (keys.__provider_defs_dropped_ids__ || []).includes(provider)) {
@@ -339,7 +389,7 @@ async function handleChat(body, res, req) {
       if (tools.length) {
         let out;
         try {
-          out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+          out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
         } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
@@ -360,7 +410,7 @@ async function handleChat(body, res, req) {
           }
           let next;
           try {
-            next = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys, tools });
+            next = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
           } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
           Object.assign(out, next);
           if (!next.tool_calls?.length) break;
@@ -370,13 +420,13 @@ async function handleChat(body, res, req) {
     }
   }
   try {
-    const out = await chat({ messages: msgs, model, system, temperature, max_tokens, provider, keys });
+    const out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys });
     return json(res, 200, out);
   } catch (e) {
     const { payload, retry_with } = await describeChatFailure(e, provider, model, keys);
     if (retry_with) {
       try {
-        const again = await chat({ messages: msgs, model: retry_with, system, temperature, max_tokens, provider, keys });
+        const again = await chat({ messages: msgs, model: retry_with, system: systemPrompt, temperature, max_tokens, provider, keys });
         // Honest about what happened: the model you asked for does not exist
         // there, so this answered instead — and the picker now knows the list.
         return json(res, 200, {
@@ -480,7 +530,59 @@ async function handleThreads(req, body, res) {
 
 // --- MCP (real Model Context Protocol) --------------------------------------
 
-async function handleMcp(body, res) {
+// A local MCP server (REA) is a child process. Serverless deployments cannot
+// spawn one, and pretending otherwise is how a connector ends up looking
+// "connected" while every tool call fails. Say so instead.
+function canSpawnLocalMcp() {
+  return !process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME && !process.env.NETLIFY;
+}
+
+/** An MCP connection that would spawn a process on this machine. */
+function isSpawnable(conn) {
+  return isLocalMcp(conn?.url) || (conn?.stdio && /^(stdio|local):/.test(conn.url || ''));
+}
+
+/** Loopback + a process-capable host. An imported command from a user config is
+ *  only ever run for the machine it came from, never for a remote caller. */
+function localSpawnAllowed(req, conn) {
+  if (!canSpawnLocalMcp()) return false;
+  if (!isLoopback(req)) return false;
+  if (conn && !stdioSpec(conn.url) && !conn.stdio) return false;
+  return true;
+}
+
+async function currentUser(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  return auth ? authx.findByToken(auth) : null;
+}
+
+function noLocalMcpServer(why) {
+  if (why === 'policy') {
+    return {
+      ok: false, error: 'Local MCP servers are turned off by your policy.',
+      fix: 'Settings → Policy → turn on “Local MCP servers”, then connect again.',
+      local_capable: true, blocked_by: 'policy'
+    };
+  }
+  return {
+    ok: false,
+    error: 'This MCP server runs on your machine, so it needs the ANTICODEX desktop app (or a self-hosted `npm start`) — a serverless deployment cannot spawn a local process, and a remote caller is never allowed to run your commands.',
+    fix: 'Open ANTICODEX desktop, or run the app locally, then connect REA again.',
+    local_capable: false, blocked_by: 'environment'
+  };
+}
+
+/** null = allowed, otherwise the refusal body to send. */
+async function localRefusal(req, conn) {
+  if (!canSpawnLocalMcp()) return 'environment';
+  if (!isLoopback(req)) return 'environment';
+  if (conn && !stdioSpec(conn.url) && !conn.stdio) return 'environment';
+  const user = await currentUser(req, {});
+  if (user && !policyAllows(await getPolicy(user.email), 'allow_local_mcp')) return 'policy';
+  return null;
+}
+
+async function handleMcp(body, res, req) {
   const op = body.op || 'list';
   if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
 
@@ -501,6 +603,10 @@ async function handleMcp(body, res) {
 
   if (op === 'probe') {
     // Live handshake — initialize + tools/list against the real server.
+    if (isLocalMcp(body.url)) {
+      const why = await localRefusal(req);
+      if (why) return json(res, 200, noLocalMcpServer(why));
+    }
     try {
       const result = await probeServer(body.url, body.token);
       return json(res, 200, result);
@@ -515,6 +621,31 @@ async function handleMcp(body, res) {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     const url = body.url || conn?.url;
     if (!url) return json(res, 400, { error: 'url or connection_id required' });
+
+    // Local (stdio) servers have no authorization server: connect = handshake.
+    if (isLocalMcp(url)) {
+      const why = await localRefusal(req);
+      if (why) return json(res, 200, noLocalMcpServer(why));
+      try {
+        const probe = await probeServer(url);
+        const spec = stdioSpec(url);
+        const row = {
+          id: body.connection_id || spec.id, name: probe.server?.name || spec.name || url,
+          url, status: 'connected', enabled: true, local: true,
+          tools: probe.tools, prompts: probe.prompts,
+          server_version: probe.server?.version || null,
+          protocol_version: probe.protocolVersion || null,
+          connected_at: Date.now()
+        };
+        const existing = await findOne('mcp_connections', (x) => x.id === row.id);
+        if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+        else await insert('mcp_connections', row);
+        return json(res, 200, { ok: true, connected: true, connection: row });
+      } catch (e) {
+        return json(res, 200, { ok: false, error: String(e.message || e), local: true });
+      }
+    }
+
     const meta = await discoverAuth(url);
     const redirectUri = body.redirect_uri || `${getKey('SITE_URL') || 'http://localhost:8787'}/mcp/callback`;
     const state = uid('st');
@@ -579,6 +710,10 @@ async function handleMcp(body, res) {
   if (op === 'test') {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     if (!conn) return json(res, 404, { error: 'connection not found' });
+    if (isSpawnable(conn)) {
+      const why = await localRefusal(req, conn);
+      if (why) return json(res, 200, noLocalMcpServer(why));
+    }
     try {
       const probe = await probeServer(conn.url, conn.access_token || conn.token);
       await update('mcp_connections', (x) => x.id === conn.id, { tools: probe.tools, last_test: Date.now(), last_error: null });
@@ -593,10 +728,18 @@ async function handleMcp(body, res) {
     const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
     if (!conn) return json(res, 404, { error: 'connection not found' });
     try {
-      const client = new McpClient(conn.url, { token: conn.access_token || conn.token });
-      await client.initialize();
-      const result = await client.callTool(body.tool, body.args || {});
-      await client.close();
+      if (isSpawnable(conn)) {
+        const why = await localRefusal(req, conn);
+        if (why) return json(res, 200, noLocalMcpServer(why));
+      }
+      const client = createClient(conn);
+      try {
+        await client.initialize();
+        const result = await client.callTool(body.tool, body.args || {});
+        return json(res, 200, { ok: true, tool: body.tool, result });
+      } finally {
+        await client.close().catch(() => {});
+      }
       return json(res, 200, { ok: true, tool: body.tool, result });
     } catch (e) {
       return json(res, 200, { ok: false, error: String(e.message || e) });
@@ -604,6 +747,440 @@ async function handleMcp(body, res) {
   }
 
   return json(res, 400, { error: 'unknown mcp op' });
+}
+
+// --- policy ----------------------------------------------------------------
+
+
+// --- egress ---------------------------------------------------------------
+//
+// The sandboxed-work story both desktop apps ship at a different layer: Codex
+// gives the command runner a reduced token, Claude's `cowork-svc` gives it its
+// own user-mode network. Here it is an allowlisting HTTP/CONNECT proxy plus the
+// environment that points a spawned process at it. Starting one binds a port on
+// this machine, so it is gated exactly like a local MCP server.
+
+let egressProxy = null;
+
+async function handleEgress(req, body, res) {
+  try {
+    return await egressOp(req, body, res);
+  } catch (e) {
+    // A bad mode or host is the caller's mistake, not ours: say which field.
+    return json(res, 400, { ok: false, code: e.code || 'InvalidPolicy', error: String(e.message || e) });
+  }
+}
+
+async function egressOp(req, body, res) {
+  const op = body.op || 'status';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+
+  if (op === 'presets') {
+    return json(res, 200, { ok: true, modes: EGRESS_MODES, default_allow: DEFAULT_ALLOW, local });
+  }
+
+  if (op === 'check') {
+    const policy = normalizeEgressPolicy({ mode: body.mode || 'allowlist', allow: body.allow || DEFAULT_ALLOW, deny: body.deny || [] });
+    return json(res, 200, { ok: true, host: body.host, ...checkEgress(policy, body.host) });
+  }
+
+  if (op === 'status') {
+    return json(res, 200, {
+      ok: true,
+      running: Boolean(egressProxy),
+      local,
+      url: egressProxy ? egressProxy.url : null,
+      env: egressProxy ? egressProxy.env : egressEnv(0),
+      ...(egressProxy ? egressProxy.stats() : { policy: normalizeEgressPolicy({ mode: 'off' }), allowed: 0, denied: 0, open_tunnels: 0, last: [] }),
+      note: local ? null : 'Starting an egress proxy listens on the machine that runs the app — open the desktop build or a local `npm start`.'
+    });
+  }
+
+  if (!local) {
+    return needsLocal(res, 'An egress proxy listens on this machine, so it needs the desktop app or a local `npm start`.');
+  }
+
+  if (op === 'start') {
+    const wanted = normalizeEgressPolicy({
+      mode: body.mode || 'allowlist',
+      allow: body.allow && body.allow.length ? body.allow : DEFAULT_ALLOW,
+      deny: body.deny || []
+    });
+    if (egressProxy) {
+      return json(res, 200, { ok: true, reused: true, url: egressProxy.url, port: egressProxy.port, env: egressProxy.env, ...egressProxy.stats(), policy: egressProxy.setPolicy(wanted) });
+    }
+    egressProxy = await startEgressProxy({ policy: wanted, port: Number(body.port) || 0 });
+    return json(res, 200, { ok: true, url: egressProxy.url, port: egressProxy.port, env: egressProxy.env, ...egressProxy.stats() });
+  }
+
+  if (op === 'update') {
+    if (!egressProxy) return json(res, 409, { ok: false, error: 'egress is not running' });
+    const next = egressProxy.setPolicy({ mode: body.mode || 'allowlist', allow: body.allow || [], deny: body.deny || [] });
+    return json(res, 200, { ok: true, policy: next, ...egressProxy.stats() });
+  }
+
+  if (op === 'stop') {
+    if (!egressProxy) return json(res, 200, { ok: true, stopped: false });
+    const stats = egressProxy.stats();
+    await egressProxy.close();
+    egressProxy = null;
+    return json(res, 200, { ok: true, stopped: true, allowed: stats.allowed, denied: stats.denied });
+  }
+
+  return json(res, 400, { error: 'unknown egress op' });
+}
+
+
+// --- artifact templates ------------------------------------------------------
+//
+// The ChatGPT app answers "what style should this document use?" with a picture
+// grid built from templates on disk (openai_artifact_template_picker). The same
+// grid here offers whatever templates are installed in the ChatGPT/Codex home,
+// checked by lib/artifacts.js before a single byte of preview reaches the page.
+// Reading that home only happens for a local caller — a hosted deployment has no
+// templates, and says so rather than showing an empty grid.
+
+async function handleArtifacts(req, body, res) {
+  const op = body.op || 'kinds';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+
+  if (op === 'kinds') {
+    return json(res, 200, {
+      ok: true,
+      local,
+      kinds: [...ARTIFACT_KINDS.keys()].map((id) => ({ id, family: familyOf(id), extension: extensionOf(id) }))
+    });
+  }
+
+  if (!local) {
+    return json(res, 200, {
+      ok: true,
+      local: false,
+      cards: [],
+      count: 0,
+      note: 'Artifact templates live in the ChatGPT/Codex home on this machine — open the desktop app or a local `npm start`.'
+    });
+  }
+
+  try {
+    if (op === 'roots') {
+      return json(res, 200, { ok: true, ...templateRoots(body.codex_home || undefined) });
+    }
+
+    const kind = body.artifact_kind || 'document';
+    const request = normalizeRequest(kind, body.request);
+    const templates = await discoverTemplates({ codexHome: body.codex_home || undefined, artifactKind: kind });
+
+    if (op === 'list') {
+      return json(res, 200, { ok: true, artifact_kind: kind, request, count: templates.length, cards: offer(templates) });
+    }
+    if (op === 'choose') {
+      const chosen = resolveSelection(templates, body.selection);
+      return json(res, 200, { ok: true, ...chosen });
+    }
+    return json(res, 400, { ok: false, error: 'unknown artifacts op' });
+  } catch (e) {
+    return json(res, 400, { ok: false, code: e.code || 'InvalidTemplate', error: String(e.message || e) });
+  }
+}
+
+// --- skills -----------------------------------------------------------------
+//
+// Discovery follows Codex's model: a root is a directory named `skills`, a skill
+// is a subdirectory with a `SKILL.md`, a broken one is an error entry rather than
+// a silent omission, and an earlier root shadows a later one by name.
+//
+// The repository's own `skills/` is part of the deployment, so it is readable
+// anywhere. This machine's `~/.codex` and `~/.claude` are a filesystem read on
+// the host, so — like AGENTS.md — they are only included for a loopback caller.
+
+const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+async function handleSkills(req, body, res) {
+  const op = body.op || 'list';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const extra = [path.join(REPO_ROOT, 'skills')];
+  if (local && Array.isArray(body.extra_roots)) {
+    for (const r of body.extra_roots.slice(0, 10)) if (typeof r === 'string') extra.push(r);
+  }
+
+  // Packaged `.skill` archives are read from a directory the caller names (and,
+  // for a local caller, from this repo's own `skills/`). Listing never extracts
+  // anything; `install` is the only op that writes.
+  const archives = [path.join(REPO_ROOT, 'skills')];
+  if (local && Array.isArray(body.archive_roots)) {
+    for (const r of body.archive_roots.slice(0, 10)) if (typeof r === 'string') archives.push(r);
+  }
+
+  const loaded = loadSkills({
+    cwd: local ? (body.cwd || REPO_ROOT) : null,
+    codexHome: local ? body.codex_home : null,
+    claudeHome: local ? body.claude_home : null,
+    extra,
+    archives
+  });
+
+  if (op === 'list') {
+    return json(res, 200, {
+      ok: true,
+      local,
+      count: loaded.count,
+      skills: loaded.skills.map((s) => ({
+        name: s.name, description: s.description, short_description: s.short_description ?? null,
+        scope: s.scope, root_label: s.root_label, path: s.path_to_skills_md,
+        bytes: s.bytes, allow_implicit_invocation: s.allow_implicit_invocation,
+        dependencies: s.dependencies, products: s.products,
+        packaged: Boolean(s.packaged), archive: s.archive || null,
+        archive_bytes: s.archive_bytes ?? null, archive_files: s.archive_files ?? null,
+        tier: s.tier ?? null, license: s.license ?? null
+      })),
+      errors: loaded.errors,
+      duplicates: loaded.duplicates,
+      roots: loaded.roots,
+      note: local ? null : 'Only the bundled repository skills are visible here — open the desktop app (or run locally) to see this machine\'s ~/.codex and ~/.claude skills.'
+    });
+  }
+
+  if (op === 'get') {
+    const skill = loaded.skills.find((s) => s.name === body.name);
+    if (!skill) return json(res, 404, { ok: false, error: `no skill named ${body.name}` });
+    return json(res, 200, { ok: true, skill, instructions: skillInstructions(skill) });
+  }
+
+  if (op === 'resolve') {
+    const matched = resolveSkillMentions(body.text || '', loaded.skills);
+    return json(res, 200, {
+      ok: true,
+      matched: matched.map((s) => ({ name: s.name, instructions: skillInstructions(s) }))
+    });
+  }
+
+  // Inspect one archive without installing it (size, entries, manifest entry).
+  if (op === 'archive') {
+    if (!local) return needsLocal(res, 'Reading a .skill file is a filesystem read on your machine.');
+    const file = String(body.file || '');
+    if (!path.isAbsolute(file) || !file.toLowerCase().endsWith('.skill')) {
+      return json(res, 400, { ok: false, error: 'file must be an absolute path to a .skill archive' });
+    }
+    const one = readSkillArchive(file);
+    return json(res, 200, {
+      ok: one.errors.length === 0, archive: file,
+      skills: one.skills.map((s) => ({ name: s.name, description: s.description, tier: s.tier, license: s.license, files: s.archive_files, bytes: s.bytes })),
+      errors: one.errors
+    });
+  }
+
+  // Install a `.skill` archive into this machine's skill root. This writes, so it
+  // is desktop/local-only, and it refuses to overwrite an existing skill unless
+  // the caller says so explicitly.
+  if (op === 'install') {
+    if (!local) return needsLocal(res, 'Installing a .skill writes to this machine, so it needs the desktop app or a local `npm start`.');
+    const file = String(body.file || '');
+    if (!path.isAbsolute(file) || !file.toLowerCase().endsWith('.skill')) {
+      return json(res, 400, { ok: false, error: 'file must be an absolute path to a .skill archive' });
+    }
+    const dest = body.dest ? String(body.dest) : path.join(os.homedir(), '.codex', 'skills');
+    if (!path.isAbsolute(dest)) return json(res, 400, { ok: false, error: 'dest must be an absolute directory' });
+    try {
+      const result = extractSkillArchive(file, dest, { overwrite: body.overwrite === true });
+      return json(res, 200, { ok: true, ...result, dest });
+    } catch (e) {
+      return json(res, e.code === 'Exists' ? 409 : 400, { ok: false, code: e.code || 'InstallFailed', error: String(e.message || e) });
+    }
+  }
+
+  if (op === 'manifest') {
+    if (!local) return needsLocal(res, 'Reading a skills manifest is a filesystem read on your machine.');
+    const dir = body.dir ? String(body.dir) : path.join(REPO_ROOT, 'skills');
+    if (!path.isAbsolute(dir)) return json(res, 400, { ok: false, error: 'dir must be absolute' });
+    const text = (() => { try { return fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'); } catch { return null; } })();
+    return json(res, 200, { ok: true, dir, manifest: parseSkillsManifest(text) });
+  }
+
+  return json(res, 400, { error: 'unknown skills op' });
+}
+
+/** One shape for "this needs a real machine" refusals. */
+function needsLocal(res, error) {
+  return json(res, 200, { ok: false, needs_local: true, error });
+}
+
+// --- workspace (AGENTS.md, sandbox, approval) --------------------------------
+//
+// Reading a caller-supplied directory is a filesystem read on *this* machine, so
+// it is gated exactly like a local MCP server: loopback + a process-capable host.
+// A hosted deployment answers with `needs_local` instead of reading the server's
+// own disk for a remote caller.
+
+async function handleWorkspace(req, body, res) {
+  const op = body.op || 'context';
+  const user = await currentUser(req, body);
+
+  if (op === 'context') {
+    const cwd = body.cwd || process.cwd();
+    if (!canSpawnLocalMcp() || !isLoopback(req)) {
+      return json(res, 200, {
+        ok: false, needs_local: true,
+        error: 'Reading AGENTS.md is a filesystem read on your machine — it needs the desktop app or a local `npm start`.',
+        sandbox_modes: SANDBOX_MODES, approval_modes: APPROVAL_MODES
+      });
+    }
+    let isDir = false;
+    try { isDir = fs.statSync(cwd).isDirectory(); } catch { isDir = false; }
+    if (!isDir) return json(res, 400, { ok: false, error: `not a directory: ${cwd}` });
+
+    const found = discoverAgentDocs({
+      cwd,
+      codexHome: body.codex_home,
+      stopAt: body.root,
+      nestedPaths: Array.isArray(body.nested_paths) ? body.nested_paths : []
+    });
+    const policy = await getPolicy(user?.email);
+    const sandbox = body.sandbox ? normalizeSandboxPolicy(body.sandbox) : policy.defaults.sandbox_policy;
+    const approval = body.approval ? normalizeApprovalPolicy(body.approval) : policy.defaults.approval_policy;
+    return json(res, 200, {
+      ok: true,
+      cwd,
+      documents: found.docs,
+      instructions: found.instructions,
+      composed: found.composed,
+      bytes: found.bytes,
+      truncated: found.truncated,
+      max_bytes: found.max_bytes,
+      sandbox,
+      approval,
+      describe: describePolicy({ sandbox, approval }),
+      sandbox_modes: SANDBOX_MODES,
+      approval_modes: APPROVAL_MODES,
+      decisions: {
+        read: decideApproval({ sandbox, approval, action: 'read' }),
+        write: decideApproval({ sandbox, approval, action: 'write' }),
+        exec: decideApproval({ sandbox, approval, action: 'exec' }),
+        network: decideApproval({ sandbox, approval, action: 'network' })
+      }
+    });
+  }
+
+  if (op === 'set') {
+    if (!user) return json(res, 401, { error: 'sign in to save workspace policy' });
+    const current = await getPolicy(user.email);
+    const patch = {
+      ...current,
+      defaults: {
+        ...current.defaults,
+        ...(body.sandbox !== undefined ? { sandbox_policy: normalizeSandboxPolicy(body.sandbox) } : {}),
+        ...(body.approval !== undefined ? { approval_policy: normalizeApprovalPolicy(body.approval) } : {})
+      }
+    };
+    const saved = await savePolicy(user.email, normalizePolicy(patch));
+    return json(res, 200, { ok: true, ...saved, describe: describeWorkspacePolicy(saved.policy) });
+  }
+
+  return json(res, 400, { error: 'unknown workspace op' });
+}
+
+/** Emit a `~/.codex/config.toml` body from what this product already knows. */
+function handleExportConfig(body, res) {
+  try {
+    const toml = exportCodexConfig(body.state || body);
+    return json(res, 200, { ok: true, filename: 'config.toml', toml, bytes: Buffer.byteLength(toml) });
+  } catch (e) {
+    return json(res, 200, { ok: false, error: String(e.message || e) });
+  }
+}
+
+async function handlePolicy(req, body, res) {
+  const user = await currentUser(req, body);
+  const op = body.op || 'get';
+  if (op === 'get') {
+    const policy = await getPolicy(user?.email);
+    return json(res, 200, {
+      ok: true,
+      signed_in: Boolean(user),
+      policy,
+      flags: POLICY_FLAGS,
+      note: user ? null : 'Showing the defaults — sign in to save your own policy.'
+    });
+  }
+  if (op === 'set') {
+    if (!user) return json(res, 401, { error: 'sign in to change policy' });
+    const saved = await savePolicy(user.email, normalizePolicy(body.patch || body.policy || {}));
+    return json(res, 200, { ok: true, ...saved, flags: POLICY_FLAGS });
+  }
+  return json(res, 400, { error: 'unknown policy op' });
+}
+
+// --- bring your own setup (Codex config.toml / Claude settings) -------------
+
+/**
+ * Dry-run by default. `apply:true` stores what is safe to store and returns the
+ * rest for the client (custom providers and model aliases are a per-device
+ * choice in this product, so they are not written into the account ledger).
+ *
+ * Secrets: a `.claude/settings.json` env token is reported as a boolean
+ * (`has_token`) and never echoed back or persisted.
+ */
+async function handleImportConfig(req, body, res) {
+  const plan = buildImportPlan({
+    codex_toml: body.codex_toml,
+    claude_settings: body.claude_settings,
+    claude_policy: body.claude_policy
+  });
+  if (!plan.ok) return json(res, 400, plan);
+
+  const rows = planToRows(plan);
+  const out = {
+    ok: true,
+    mode: body.apply ? 'applied' : 'plan',
+    summary: plan.summary,
+    warnings: plan.warnings,
+    providers: rows.providers,
+    connections: rows.connections.map((c) => ({
+      id: c.id, name: c.name, url: c.url, transport: c.stdio ? 'stdio' : 'http',
+      ...(c.stdio ? { command: [c.stdio.command, ...(c.stdio.args || [])].join(' '), env_vars: c.env_vars } : {}),
+      needs_local: Boolean(c.stdio)
+    })),
+    aliases: rows.aliases,
+    flags: rows.flags,
+    behaviour: plan.codex?.behaviour || null,
+    migrations: plan.codex?.migrations || [],
+    sandbox: plan.codex?.sandbox || null,
+    notify_hook: plan.codex?.notify_hook || null
+  };
+
+  if (!body.apply) {
+    out.note = 'Nothing was written. Approve to connect these servers and apply these flags.';
+    return json(res, 200, out);
+  }
+
+  const user = await currentUser(req, body);
+  if (!user) return json(res, 401, { error: 'sign in to apply an import' });
+
+  const applied = [];
+  const skipped = [];
+  for (const c of rows.connections) {
+    const spawnable = Boolean(c.stdio);
+    if (spawnable && (await localRefusal(req, c))) {
+      skipped.push({ id: c.id, reason: 'this server needs a command to run on your machine — open ANTICODEX desktop to use it' });
+      continue;
+    }
+    const existing = await findOne('mcp_connections', (x) => x.id === c.id);
+    const row = { ...c, status: 'disconnected', enabled: true, imported_at: new Date().toISOString() };
+    if (existing) await update('mcp_connections', (x) => x.id === c.id, row);
+    else await insert('mcp_connections', row);
+    applied.push({ kind: 'mcp', id: c.id, name: c.name, transport: row.stdio ? 'stdio' : 'http' });
+  }
+
+  if (rows.flags.length) {
+    const patch = { flags: Object.fromEntries(rows.flags.map((f) => [f.key, f.allowed])) };
+    const saved = await savePolicy(user.email, normalizePolicy({ ...(await getPolicy(user.email)), ...patch }));
+    applied.push({ kind: 'policy', flags: rows.flags.length, persisted: saved.persisted });
+  }
+
+  return json(res, 200, {
+    ...out, mode: 'applied', applied, skipped,
+    note: 'Providers and model aliases are returned for this device to add — they are not stored on your account.'
+  });
 }
 
 // --- admin ------------------------------------------------------------------

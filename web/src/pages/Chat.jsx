@@ -68,6 +68,11 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // The style picker: a document/deck/sheet template chosen for this turn. The
+  // grid mirrors the ChatGPT app's artifact template picker, including the part
+  // that matters — nothing is shown that failed validation on disk.
+  const [template, setTemplate] = useState(null);
+  const [picker, setPicker] = useState(null);
   const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true });
   const [threadId, setThreadId] = useState(() => new URLSearchParams(window.location.search).get('thread') || `th_${Date.now()}`);
   const scrollRef = useRef(null);
@@ -106,6 +111,33 @@ export default function ChatPage() {
     } catch { /* offline ok */ }
   };
 
+  const TEMPLATE_KINDS = [
+    { id: 'document', label: 'Document' },
+    { id: 'presentation', label: 'Deck' },
+    { id: 'spreadsheet', label: 'Sheet' }
+  ];
+
+  async function openTemplates(kind = 'document') {
+    setPicker({ kind, loading: true, cards: [], note: null });
+    try {
+      const r = await api.artifacts.list(kind);
+      setPicker({ kind, loading: false, cards: r.cards || [], note: r.note || (r.count === 0 && r.local ? 'No templates are installed in your ChatGPT home yet.' : null) });
+    } catch (e) {
+      setPicker({ kind, loading: false, cards: [], note: e.message || 'Could not read templates.' });
+    }
+  }
+
+  async function chooseTemplate(card) {
+    try {
+      const r = await api.artifacts.choose(picker.kind, card.id);
+      setTemplate({ ...r, preview: card.preview, title: r.title || card.title });
+      setPicker(null);
+      notify(`${card.title} template selected — the assistant will follow it.`);
+    } catch (e) {
+      setPicker((p) => ({ ...p, note: e.message || 'That template is no longer available.' }));
+    }
+  }
+
   async function send(text) {
     const content = (text ?? input).trim();
     if (!content || busy) return;
@@ -136,6 +168,7 @@ export default function ChatPage() {
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
         system,
+        template: template || undefined,
         use_mcp: active.mcp !== false
       });
       // A provider failure comes back as { ok:false, error, settings_link } on a
@@ -237,6 +270,14 @@ export default function ChatPage() {
         )}
 
         <div className="composer" style={empty ? { marginTop: 18 } : {}}>
+          {template && (
+            <div className="row between" style={{ padding: '8px 10px 0' }}>
+              <span className="pill" title={template.skill_path || ''}>
+                ▤ {template.title} · {template.artifact_kind}
+              </span>
+              <button className="icon-btn" title="Remove template" onClick={() => setTemplate(null)}>×</button>
+            </div>
+          )}
           <textarea
             ref={taRef}
             rows={1}
@@ -267,12 +308,46 @@ export default function ChatPage() {
                 } catch (err) { notify('Transcription failed: ' + err.message); }
               }} />
             </label>
+            <button className="icon-btn" title="Choose a document, deck or sheet template" onClick={() => openTemplates(template?.artifact_kind?.replace('google-', '') || 'document')}>▤</button>
             <ToolChips active={active} setActive={setActive} />
             <button className="send-btn" disabled={!input.trim() || busy} onClick={() => send()}>
               {busy ? '■' : '↑'}
             </button>
           </div>
         </div>
+
+        {picker && (
+          <div className="modal-back" onClick={(e) => { if (e.target === e.currentTarget) setPicker(null); }}>
+            <div className="modal" style={{ width: 720, maxWidth: '94vw' }}>
+              <div className="modal-head row between">
+                <span>What style should this {TEMPLATE_KINDS.find((k) => k.id === picker.kind)?.label.toLowerCase() || 'document'} use?</span>
+                <button className="icon-btn" onClick={() => setPicker(null)}>×</button>
+              </div>
+              <div className="row" style={{ padding: '0 22px', gap: 6 }}>
+                {TEMPLATE_KINDS.map((k) => (
+                  <button key={k.id} className={`chip-toggle ${picker.kind === k.id ? 'on' : ''}`} onClick={() => openTemplates(k.id)}>{k.label}</button>
+                ))}
+              </div>
+              <div className="modal-body">
+                {picker.loading && <div className="tiny">Reading templates…</div>}
+                {!picker.loading && picker.note && <div className="tiny" style={{ opacity: 0.8 }}>{picker.note}</div>}
+                {!picker.loading && picker.cards.length > 0 && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
+                    {picker.cards.map((card) => (
+                      <button key={card.id} className="suggest-card" style={{ padding: 8 }} onClick={() => chooseTemplate(card)}>
+                        {card.preview
+                          ? <img src={card.preview} alt="" width={card.width} height={card.height} style={{ width: '100%', height: 90, objectFit: 'cover', borderRadius: 8 }} />
+                          : <div style={{ height: 90, borderRadius: 8, background: 'var(--bg-soft)' }} />}
+                        <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600 }}>{card.title}</div>
+                        <div className="tiny" style={{ opacity: 0.75, lineHeight: 1.35 }}>{card.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {empty && (
           <>

@@ -1,0 +1,1 @@
+trigger 8 — web stage: inline bootstrap discovery for chatgpt.com

@@ -40,10 +40,11 @@ cd desktop && npm install && npm run package:win
 | **Agent Studio** | Plans, persistent project memory (`ANTICODEX.md`), skills (REA + leanrea installed), live tool log — the Claude-Code/Claude-desktop agent pattern |
 | **Images** | Cloudflare Workers AI **Flux** (schnell/dev) |
 | **Video** | **MiniMax Hailuo (H3)** text-to-video, unlimited on your key |
-| **MCP Connectors** | 18-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Postgres, Playwright, Supabase, Figma, Cloudflare…), OAuth-style authorize page, permission editor, tool playground, custom stdio/HTTP servers |
+| **MCP Connectors** | 21-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Postgres, Playwright, Supabase, Figma, Cloudflare… **plus REA**), OAuth-style authorize page, permission editor, tool playground, custom HTTP/SSE servers, and a **real stdio transport** so a local server runs as a supervised child process |
 | **Computer Use** | Desktop pairing codes, screen capture → vision model, mouse/keyboard control, app launch/install (confirm-gated), AI command console |
 | **Auth** | Email + password (signs straight in, no mailer required), **GitHub OAuth**, forgot-password with **6-digit email codes** (single-use, 15-min expiry, stored with their expiry), session tokens, optional email-verification gate |
 | **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |
+| **Bring your setup** | Reads a Codex `~/.codex/config.toml` and a Claude `.claude/settings.json` + `policy-limits.json` → shows a diff-style plan → connects the MCP servers, applies the feature policy, and returns model providers / aliases / migrations for this device. Nothing is written before you approve it; a token in the env block is detected but never echoed back |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 
 ## Service keychain (integrated 2026-10-19)
@@ -261,7 +262,67 @@ to the GitHub Release).
 ## REA / leanrea
 
 The REA skill pack (morluto/rea) and leanrea (aicodeking/leanrea) are installed under [`skills/`](skills/)
-and were used to drive the forensic sweep documented in [`docs/FORENSIC-REPORT.md`](docs/FORENSIC-REPORT.md).
+and were used to drive the forensic sweeps documented in [`docs/FORENSIC-REPORT.md`](docs/FORENSIC-REPORT.md)
+and [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md).
+
+### REA as a connector (local stdio MCP)
+
+REA ships as an MCP server (`npx -y rea-agents mcp`) with **207 tools / 6 prompts**. Until now the
+bridge could only speak HTTP/SSE, so a local server could be *listed* but never *connected* — `Connect`
+POSTed to the literal string `stdio:rea`. `lib/mcp-stdio.js` adds the missing transport:
+
+* spawn → `initialize` → `tools/list` → `tools/call` → reap, over newline-delimited JSON **or**
+  LSP-style `Content-Length` frames (older servers still ship that);
+* the child is killed as a **process group** (`npx` + the node it launches), so a leaked server can
+  never keep a Node host alive;
+* commands come from a **server-side registry**, never from a request — a browser can ask for `rea`,
+  it cannot ask for `rm -rf`. Imported `[mcp_servers.*]` commands (see *Bring your setup*) are only
+  run for a **loopback caller on a process-capable host**, and only while the `allow_local_mcp` policy
+  flag is on.
+
+```bash
+npx -y rea-agents@latest mcp doctor --json     # healthy, 207/207 tools
+REA_E2E=1 node tests/test-mcp-stdio.mjs        # 31 assertions incl. the real server
+```
+
+A hosted (Vercel) deployment answers honestly instead of pretending: *"this MCP server runs on your
+machine, so it needs the desktop app or a local `npm start`"*.
+
+### Codex parity: AGENTS.md, sandbox and approval
+
+`openai/codex` is Apache-2.0 (verified via the GitHub API before cloning), so its
+**contract** is reused rather than guessed at — not its code:
+
+* **AGENTS.md** — `~/.codex/AGENTS.md` first, then one document per directory from
+  the project root down to the cwd, then nested documents as the agent touches
+  subdirectories; merged under `project_doc_max_bytes` (32 KiB) and wrapped in the
+  exact `# AGENTS.md instructions for <project>` / `<INSTRUCTIONS>` block Codex
+  sends. The workspace page shows which files were loaded and what the model gets.
+* **Sandbox** — `read-only`, `workspace-write`, `external-sandbox`,
+  `danger-full-access`, with writable roots and `network_access`. An unrecognised
+  mode coerces to `workspace-write` and says so; it never silently escalates.
+* **Approval** — `untrusted`, `on-request` (the old `on-failure` spelling is
+  accepted), `granular` with the same five categories, and `never`. One matrix
+  answers `auto` / `prompt` / `deny` for each of read, write, exec and network.
+* **Export** — the same `config.toml` shape can be written back out, so adopting
+  ANTICODEX is not a one-way door.
+
+`node tests/test-workspace.mjs` pins 59 of those behaviours.
+
+### Bring your setup
+
+`lib/configimport.js` parses the config schemas recovered from the two shipped desktop apps — the whole
+`[model_providers.*]`, `[mcp_servers.*]`, `[marketplaces.*]`, `[plugins."name@marketplace"]`,
+`[windows] sandbox`, `[desktop] followUpQueueMode`, `[notice.model_migrations]` surface, plus the
+`.claude` `env` block and `policy-limits.json` restrictions. Settings → **Bring your setup** shows the
+plan before anything is written; `node tests/test-import-config.mjs` pins it (53 assertions).
+
+`lib/policy.js` is the same idea for gates: every capability is a named flag with an explicit default,
+and `Settings → Policy` writes it per account (`public.policy`).
+
+See [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md) for the evidence behind each of those, marked
+**seen** / **inferred** / **unknown**, and for the two things this sandbox could not do (live
+`chatgpt.com` / `claude.ai`, and the 582 MB ASAR that exceeds the transfer cap).
 
 ## License
 

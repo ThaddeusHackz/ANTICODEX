@@ -164,3 +164,22 @@ create index if not exists idx_threads_user_email on public.threads(user_email);
 alter table public.users add column if not exists avatar_url text;
 alter table public.users add column if not exists updated_at timestamptz default now();
 analyze public.reset_codes; analyze public.threads; analyze public.users;
+
+-- ---------------------------------------------------------------------------
+-- 2026-10-24 feature policy (per account) — shape mirrored from the shipped
+-- Claude desktop `policy-limits.json`: named capabilities with an explicit
+-- `allowed`, plus taints / notice / defaults. Backs Settings → Policy.
+-- ---------------------------------------------------------------------------
+create table if not exists public.policy (
+  id text primary key,
+  email text,
+  flags jsonb not null default '{}'::jsonb,
+  compliance_taints jsonb not null default '[]'::jsonb,
+  monitoring_notice text,
+  defaults jsonb not null default '{}'::jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_policy_email on public.policy(email);
+alter table public.policy enable row level security;
+create policy "service role full access" on public.policy for all using (true) with check (true);

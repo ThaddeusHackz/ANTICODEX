@@ -1,0 +1,12 @@
+[
+  {
+    "label": "codex-cli",
+    "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip",
+    "note": "fast probe that the new relay code (streaming download, toolchain detection) runs"
+  },
+  {
+    "label": "chatgpt-win",
+    "url": "https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix",
+    "note": "the 582 MB app.asar that Drive refused"
+  }
+]

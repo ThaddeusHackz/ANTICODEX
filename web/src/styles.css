@@ -194,6 +194,16 @@ button { font-family: inherit; }
 /* ---------- generic pages / legacy page classes ---------- */
 .content { padding: 24px 28px; overflow-y: auto; flex: 1; }
 .content-wide { padding: 18px 22px; overflow-y: auto; flex: 1; }
+/* A plain document page (Skills): the shell already scrolls, so a page is just a
+   centred column that does not fight the sidebar. */
+.page {
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+  overflow-y: auto;
+}
+
 .card {
   background: var(--bg-elev); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 18px;
@@ -508,3 +518,36 @@ h3 { font-size: 16px; }
 .msg-fix-option:hover { border-color: var(--violet); background: var(--hover); }
 .msg-note { opacity: .8; margin-top: 6px; font-style: italic; }
 
+
+/* Config paste boxes ("Bring your setup") — monospace, no resize jitter. */
+.code-editor {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0b0d14;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 120px;
+}
+.code-editor:focus { outline: none; border-color: var(--violet); }
+.code-editor::placeholder { color: var(--muted); opacity: .8; }
+/* "runs on this machine" marker on a connector card */
+.local-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #22d3ee55;
+  color: #67e8f9;
+  background: #22d3ee12;
+}
+
+/* Inline monospace (paths, env var names, commands). */
+.mono { font-family: var(--mono); font-size: .95em; }

@@ -1,0 +1,14 @@
+2026-10-24T17:02:40.008Z asset codex-cli https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip
+2026-10-24T17:02:45.482Z codex-cli: 164128567 B, 47 entries
+2026-10-24T17:05:27.221Z codex-cli: 8 PE report(s)
+2026-10-24T17:05:27.269Z asset chatgpt-win https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix
+2026-10-24T17:05:47.642Z chatgpt-win: 979994720 B, 3665 entries
+2026-10-24T17:05:47.643Z chatgpt-win: unpacking asar 640129388 B
+2026-10-24T17:05:47.718Z FAILED chatgpt-win: The value of "position" is out of range. It must be an integer. Received NaN
+2026-10-24T17:15:43.481Z asset codex-cli https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip
+2026-10-24T17:15:48.708Z codex-cli: 164128567 B, 47 entries
+2026-10-24T17:18:37.177Z codex-cli: 8 PE report(s)
+2026-10-24T17:18:37.223Z asset chatgpt-win https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix
+2026-10-24T17:18:58.901Z chatgpt-win: 979994720 B, 3665 entries
+2026-10-24T17:18:58.902Z chatgpt-win: unpacking asar 640129388 B
+2026-10-24T17:36:53.714Z chatgpt-win: 10 PE report(s)

@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('anticodexDesktop', {
   keychainStatus: () => ipcRenderer.invoke('acx:keychainStatus'),
   saveCustoms: (list) => ipcRenderer.invoke('acx:saveCustoms', list),
   getCustoms: () => ipcRenderer.invoke('acx:getCustoms'),
+  // Opens a file picker for a `.skill` archive and installs it into ~/.codex/skills.
+  installSkill: () => ipcRenderer.invoke('acx:skillInstall'),
   checkUpdate: () => ipcRenderer.invoke('acx:update'),
   downloadUpdate: () => ipcRenderer.invoke('acx:update:download'),
   onUpdateAvailable: (cb) => ipcRenderer.on('acx:update-available', (_e, info) => cb(info)),
