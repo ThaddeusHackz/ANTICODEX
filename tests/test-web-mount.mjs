@@ -522,6 +522,14 @@ globalThis.__mount = (route) => {
     chatStub = null;
   }
 
+  console.log('\n— the sandbox page —');
+  {
+    const text = await mountAt('/sandbox', { token: reg.token, user: reg.user });
+    ok('the page renders', /Sandbox/.test(text) && /Run/.test(text), text.slice(0, 120));
+    ok('it says what it will run', /JavaScript/.test(text) && /Python/.test(text));
+    ok('…and what it will not do', /not a container|only for the person sitting/i.test(text), text.slice(-200));
+  }
+
   console.log('\n— signed out —');
   win.eval('localStorage.clear()');
   const loginText = await mountAt('/login');
