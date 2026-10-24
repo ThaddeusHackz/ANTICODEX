@@ -1,1 +1,1 @@
-trigger 7 — unpacked asar entries are files beside the archive, not NaN offsets
+trigger 8 — web stage: inline bootstrap discovery for chatgpt.com
