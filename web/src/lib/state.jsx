@@ -12,12 +12,16 @@ export function AppProvider({ children }) {
   const [toast, setToast] = useState(null);
   const [cfg, setCfg] = useState(null);
   const [model, setModel] = useState(localStorage.getItem('acx_model') || 'anticodex/demo-core');
+  // fast | balanced | max — how much deliberation the next answer is worth.
+  const [effort, setEffort] = useState(localStorage.getItem('acx_effort') || 'balanced');
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 900);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('acx_theme', theme);
   }, [theme]);
+
+  useEffect(() => { localStorage.setItem('acx_effort', effort); }, [effort]);
 
   useEffect(() => {
     localStorage.setItem('acx_model', model);
@@ -71,7 +75,8 @@ export function AppProvider({ children }) {
   return (
     <Ctx.Provider value={{
       user, setUser, signIn, signOut, theme, setTheme,
-      toast, notify, cfg, setCfg, model, setModel, sidebarOpen, setSidebarOpen
+      toast, notify, cfg, setCfg, model, setModel, effort, setEffort,
+      sidebarOpen, setSidebarOpen
     }}>
       {children}
     </Ctx.Provider>

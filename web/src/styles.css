@@ -609,3 +609,39 @@ h3 { font-size: 16px; }
 .mh-checks { opacity: 0.45; }
 .mh-why { opacity: 0.7; overflow-wrap: anywhere; }
 .mh-hidden { margin-top: 8px; max-height: 260px; overflow: auto; }
+
+/* --- how hard the model should think (topbar) ----------------------------- */
+.effort { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 10px; background: var(--bg-soft); border: 1px solid var(--border-soft); }
+.effort-label { font-size: 12px; opacity: 0.55; padding: 0 4px; }
+.effort-btn { border: 0; background: transparent; color: var(--text); opacity: 0.62; font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 7px; cursor: pointer; }
+.effort-btn:hover { opacity: 0.9; }
+.effort-btn.on { background: rgba(124, 92, 255, 0.22); color: #cdbdff; opacity: 1; }
+.effort.compact .effort-label { display: none; }
+
+/* --- the model's deliberation, streamed ----------------------------------- */
+.think { margin: 6px 0 8px; border-left: 2px solid rgba(124, 92, 255, 0.45); padding-left: 10px; }
+.think-head { display: flex; align-items: center; gap: 8px; background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; opacity: 0.72; }
+.think-head:hover { opacity: 1; }
+.think-count { font-size: 11.5px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.think-body { margin: 6px 0 0; max-height: 260px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; line-height: 1.5; opacity: 0.72; }
+.live-think { margin: 0 0 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; line-height: 1.5; opacity: 0.65; }
+
+/* --- sandbox -------------------------------------------------------------- */
+.sb-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+@media (max-width: 1000px) { .sb-grid { grid-template-columns: minmax(0, 1fr); } }
+.sb-pane { display: flex; flex-direction: column; gap: 8px; min-height: 320px; }
+.sb-pane-head { align-items: center; gap: 8px; flex-wrap: wrap; }
+.sb-select { background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 12px; }
+.sb-code { flex: 1; min-height: 240px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; tab-size: 2; background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px; }
+.sb-gen { gap: 8px; align-items: center; }
+.sb-input { flex: 1; background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-soft); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 12.5px; }
+.sb-out { margin: 0; padding: 10px 12px; background: var(--bg-soft); border-radius: 8px; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow: auto; max-height: 280px; }
+.sb-err { color: #fca5a5; }
+.sb-files, .sb-meta { gap: 6px; flex-wrap: wrap; align-items: center; }
+.sb-file { font-family: var(--mono); font-size: 11.5px; cursor: pointer; }
+.sb-view { display: grid; gap: 6px; }
+.sb-runid { font-family: var(--mono); opacity: 0.5; }
+.sb-lang { font-size: 11.5px; opacity: 0.5; }
+.sb-lang.on { opacity: 0.85; }
+.sb-blocked { border-color: rgba(250, 165, 165, 0.4); display: grid; gap: 6px; }
+.sb-note { margin-top: 12px; display: grid; gap: 6px; opacity: 0.85; }

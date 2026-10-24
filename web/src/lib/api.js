@@ -133,6 +133,7 @@ export async function chatStream(payload, { onEvent, signal } = {}) {
   const decoder = new TextDecoder();
   let buf = '';
   let text = '';
+  let reasoning = '';
   let final = null;
   for (;;) {
     const { value, done } = await reader.read();
@@ -147,6 +148,7 @@ export async function chatStream(payload, { onEvent, signal } = {}) {
       let evt;
       try { evt = JSON.parse(data); } catch { continue; }
       if (evt.type === 'delta') text += evt.text || '';
+      if (evt.type === 'thinking') reasoning += evt.text || '';
       if (evt.type === 'done') final = evt;
       if (evt.type === 'error') final = { ...evt, type: 'error' };
       if (evt.type === 'aborted') final = { ...evt, aborted: true };
@@ -158,8 +160,10 @@ export async function chatStream(payload, { onEvent, signal } = {}) {
     ok: true,
     text,
     content: text,
+    ...(reasoning ? { reasoning } : {}),
     model: final?.model,
     first_token_ms: final?.first_token_ms,
+    thinking_ms: final?.thinking_ms,
     elapsed_ms: final?.elapsed_ms,
     aborted: Boolean(final?.aborted)
   };
@@ -245,6 +249,30 @@ export const artifacts = {
 // What the picker knows about a model after someone used it: latency, and which
 // ids a provider has rejected (those are the ones that answered "there is
 // nothing like this model available" and are now hidden by default).
+// The Sandbox runs code on the machine that owns the bridge (the desktop app, or
+// a server you run yourself) — the whole point is that the code the model wrote
+// is executed and its real output is shown, not described.
+export const sandbox = {
+  status: () => api('sandbox', { op: 'status' }),
+  run: (payload) => api('sandbox', { op: 'run', ...payload }),
+  read: (runId, name) => api('sandbox', { op: 'read', run_id: runId, name }),
+  clear: (runId) => api('sandbox', { op: 'clear', run_id: runId }),
+  // Ask the model for a snippet and hand back the first fenced code block: the
+  // "code gen" half of the page, kept separate from running it.
+  async generate({ prompt, language = 'node', model, provider, effort }) {
+    const out = await chatStream({
+      messages: [
+        { role: 'system', content: `You write one runnable ${language} program. Reply with the code in a single fenced block and nothing else.` },
+        { role: 'user', content: prompt }
+      ],
+      model, provider, effort, use_mcp: false
+    });
+    const text = out.text || out.content || '';
+    const fence = text.match(/```[\w-]*\n([\s\S]*?)```/);
+    return { ok: Boolean(out.ok && (fence || text)), code: (fence ? fence[1] : text).trim(), raw: text, model: out.model };
+  }
+};
+
 export const modelHealth = {
   list: () => api('model_health', { op: 'list' }),
   clear: (ref) => api('model_health', { op: 'clear', ref }),

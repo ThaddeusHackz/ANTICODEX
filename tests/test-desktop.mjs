@@ -378,6 +378,14 @@ try {
     ok('…aborts the main process by the same id when the view stops', /abortStream\?\.\(streamId\)/.test(apiSrc) && /addEventListener\('abort', cancel/.test(apiSrc));
     ok('…and plain HTTP everywhere else', /fetch\('\/api\/bridge'/.test(apiSrc));
 
+    // --- speed, thinking, and the sandbox (desktop parity) -------------------
+    ok('the app does not re-spawn MCP servers on every message', /toolsFor\(conns\)/.test(read('api/bridge.js')) && !/collectTools\(conns\)\)\.filter/.test(read('api/bridge.js')));
+    ok('the speed dial is in the topbar of the packaged app too', /EffortPicker/.test(read('web/src/App.jsx')) && /effort-btn/.test(read('web/src/EffortPicker.jsx')));
+    ok('the message carries the chosen effort', /effort,/.test(read('web/src/pages/Chat.jsx')) && /const \{ messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort \} = body/.test(read('api/bridge.js')));
+    ok('the reasoning is shown, not dropped', /ThinkingBlock/.test(read('web/src/pages/Chat.jsx')) && /reasoning_chars/.test(read('lib/providers.js')));
+    ok('the Sandbox page ships in the app', /path="\/sandbox"/.test(read('web/src/App.jsx')) && /export const sandbox = \{/.test(read('web/src/lib/api.js')));
+    ok('…and the desktop server it talks to can run code locally', /case 'sandbox':/.test(read('api/bridge.js')) && /isLoopback\(req\)/.test(read('api/bridge.js')));
+
     // --- REA -----------------------------------------------------------------
     ok('the desktop reports why it can run REA', /acx:reaEnv/.test(mainSrc) && /canSpawn: true/.test(mainSrc));
     ok('the REA page exists and is routed', /path="\/rea"/.test(read('web/src/App.jsx')) && /ReaPage/.test(read('web/src/App.jsx')));

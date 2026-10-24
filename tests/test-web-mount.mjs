@@ -177,8 +177,9 @@ globalThis.__mount = (route) => {
       ? [{ type: 'error', ...payload }]
       : [
           { type: 'phase', phase: 'connected' },
+          ...(payload?.reasoning ? [{ type: 'thinking', text: payload.reasoning }] : []),
           { type: 'delta', text: payload?.text || payload?.content || '' },
-          { type: 'done', model: payload?.model, chars: (payload?.text || '').length }
+          { type: 'done', model: payload?.model, chars: (payload?.text || '').length, ...(payload?.thinking_ms ? { thinking_ms: payload.thinking_ms } : {}) }
         ];
     const raw = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('');
     const bytes = new TextEncoder().encode(raw);
@@ -491,6 +492,34 @@ globalThis.__mount = (route) => {
     ok('a data: image goes nowhere', !/src="data:/i.test(html('![x](data:text/html;base64,AAA)')));
     ok('real markdown still renders', /<strong>bold<\/strong>/.test(html('**bold**')) && /<blockquote>/.test(html('> quoted')));
     ok('a code block keeps its angle brackets as text', /&lt;div&gt;/.test(html('```\n<div>\n```')), html('```\n<div>\n```'));
+  }
+
+  console.log('\n— the speed dial, and what the model thought —');
+  {
+    bridgeCalls.length = 0;
+    chatStub = { ok: true, text: 'The answer.', model: 'nvidia/deepseek-r1', reasoning: 'First I read the question, then I answered it.', thinking_ms: 1200 };
+    await mountAt('/', { token: reg.token, user: reg.user });
+    const dial = qa('#root .effort-btn');
+    ok('the topbar offers three speeds', dial.length === 3, `${dial.length} buttons`);
+    ok('…and starts on Balanced', dial.find((b) => b.getAttribute('aria-pressed') === 'true')?.textContent === 'Balanced', dial.map((b) => b.textContent).join(','));
+    click(dial.find((b) => b.textContent === 'Max'));
+    await settle(2);
+    ok('choosing one is remembered', String(win.eval('localStorage.getItem("acx_effort")')) === 'max', String(win.eval('localStorage.getItem("acx_effort")')));
+
+    typeIn(q('#root .composer textarea'), 'think about this');
+    await settle(2);
+    click(q('#root .send-btn'));
+    await settle(24);
+    const sent = bridgeCalls.filter((c) => c.action === 'chat_stream').at(-1);
+    ok('the choice goes out with the message', sent?.effort === 'max', JSON.stringify(sent?.effort));
+    const think = q('#root .think');
+    ok('the reasoning is kept with the answer', Boolean(think) && /Thought for/.test(think.textContent), think?.textContent || 'no .think block');
+    ok('…and the answer itself is unchanged', /The answer\./.test(q('#root .msg-row.assistant .msg-text')?.textContent || ''));
+    click(think.querySelector('.think-head'));
+    await settle(3);
+    ok('expanding it shows what it actually thought', /First I read the question/.test(q('#root .think-body')?.textContent || ''), q('#root .think-body')?.textContent || 'no body');
+    win.eval('localStorage.setItem("acx_effort", "balanced")');
+    chatStub = null;
   }
 
   console.log('\n— signed out —');

@@ -40,6 +40,8 @@ import {
 import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
 import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
+import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
+import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
@@ -160,6 +162,7 @@ export default async function handler(req, res) {
       case 'chat_stream': return await handleChatStream(req, res, body);
       case 'model_health': return await handleModelHealth(req, body, res);
       case 'rea': return await handleRea(req, body, res);
+      case 'sandbox': return await handleSandbox(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
@@ -384,7 +387,7 @@ function withTemplate(system, template) {
 }
 
 async function handleChat(body, res, req) {
-  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
+  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort } = body;
   const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
@@ -401,11 +404,13 @@ async function handleChat(body, res, req) {
     const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
     const builtins = builtinTools();
     if (conns.length || builtins.length) {
-      const tools = [...builtins, ...(await collectTools(conns)).filter((t) => !t._error)].slice(0, 40);
+      // Cached schemas, and never on the critical path: see lib/tool-cache.js.
+      const listed = conns.length ? await toolsFor(conns) : { tools: [] };
+      const tools = [...builtins, ...listed.tools].slice(0, 40);
       if (tools.length) {
         let out;
         try {
-          out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
+          out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools, effort });
         } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
@@ -602,18 +607,21 @@ async function handleMcp(body, res, req) {
   const op = body.op || 'list';
   if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
 
-  if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500) });
+  if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500), tool_cache: toolCacheSummary() });
 
   if (op === 'save') {
     const c = { ...body.connection, id: body.connection?.id || uid('mcp'), updated_at: new Date().toISOString() };
     const existing = await findOne('mcp_connections', (x) => x.id === c.id);
     if (existing) await update('mcp_connections', (x) => x.id === c.id, c);
     else await insert('mcp_connections', { status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c });
+    // Its tool list may have changed with it; the next chat re-reads once.
+    forgetTools();
     return json(res, 200, { ok: true, connection: c });
   }
 
   if (op === 'delete') {
     await remove('mcp_connections', (x) => x.id === body.id);
+    forgetTools();
     return json(res, 200, { ok: true });
   }
 
@@ -804,7 +812,7 @@ function sse(res) {
 }
 
 async function handleChatStream(req, res, body) {
-  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp } = body;
+  const { messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort } = body;
   const stream = sse(res);
   const controller = new AbortController();
   // The client hanging up is the cancel button; stop paying for tokens.
@@ -833,14 +841,18 @@ async function handleChatStream(req, res, body) {
       conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
       const builtins = builtinTools();
       if (conns.length || builtins.length) {
-        tools = [...builtins, ...(await collectTools(conns)).filter((t) => !t._error)].slice(0, 40);
+        const listed = conns.length ? await toolsFor(conns) : { tools: [] };
+        tools = [...builtins, ...listed.tools].slice(0, 40);
+        // Cold cache: say so once, so "why did the tool not run this time" has an
+        // answer that is not a guess.
+        if (listed.warming) stream.send({ type: 'phase', phase: 'tools-warming', detail: 'reading MCP tool lists in the background — this answer goes without them' });
       }
     } catch { tools = []; }
   }
 
   try {
     let out = await chatStream(
-      { messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools: tools.length ? tools : undefined },
+      { messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, effort, tools: tools.length ? tools : undefined },
       { onEvent: (evt) => stream.send(evt), signal: controller.signal }
     );
     if (out?.aborted) return stream.end();
@@ -888,6 +900,44 @@ async function handleChatStream(req, res, body) {
     stream.send({ type: 'error', ...payload });
     return stream.end();
   }
+}
+
+// --- sandbox -----------------------------------------------------------------
+
+/** Code that runs is code that runs *somewhere*: this is the machine the bridge
+ *  is on, so a remote caller does not get to do it. The desktop app's bridge is
+ *  loopback by construction, which is why the feature exists there first. */
+function sandboxAllowed(req) {
+  if (String(process.env.ANTICODEX_SANDBOX || '').toLowerCase() === 'remote') return true;
+  return isLoopback(req);
+}
+
+async function handleSandbox(req, body, res) {
+  if (!sandboxAllowed(req)) {
+    return json(res, 403, {
+      ok: false, fix: 'desktop', verdict: 'blocked',
+      error: 'Running generated code happens on the machine that owns it, so a remote request cannot do it here.',
+      hint: 'Install ANTICODEX Desktop (or run this server yourself) — the same Sandbox page then compiles and runs on your own machine, with your own Node and Python.',
+      settings_link: '/sandbox'
+    });
+  }
+  const op = body.op || 'status';
+  if (op === 'status') return json(res, 200, { ok: true, ...sandboxStatus(), runs: listRuns() });
+  if (op === 'run') {
+    const out = await runSandbox({
+      language: body.language, code: body.code, timeout_ms: body.timeout_ms,
+      files: body.files, stdin: body.stdin
+    });
+    await audit({
+      type: 'sandbox.run', language: out.language || body.language, ok: Boolean(out.ok),
+      exit_code: out.exit_code ?? null, timed_out: Boolean(out.timed_out), duration_ms: out.duration_ms ?? null,
+      ip: clientIp(req)
+    }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'read') return json(res, 200, readSandboxFile(body.run_id, body.name));
+  if (op === 'clear') return json(res, 200, clearSandbox(body.run_id));
+  return json(res, 400, { ok: false, error: `Unknown sandbox op "${op}".` });
 }
 
 // --- model health -------------------------------------------------------------
@@ -1096,6 +1146,7 @@ async function handleRea(req, body, res) {
       const existing = await findOne('mcp_connections', (x) => x.id === row.id);
       if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
       else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: false } });
+      forgetTools();
       await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
       return json(res, 200, { ok: true, connection: row, tools: (probe.tools || []).length });
     } catch (e) {

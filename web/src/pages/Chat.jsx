@@ -40,11 +40,31 @@ function ToolChips({ active, setActive }) {
 const LIVE_PHASES = {
   contacting: 'Contacting the provider…',
   connected: 'Connected — waiting for tokens',
+  thinking: 'Thinking…',
   streaming: 'Streaming',
   tools: 'Running a tool',
+  'tools-warming': 'Reading MCP tools (background)',
   demo: 'Demo Core (offline)',
   'non-streaming': 'Answering in one piece'
 };
+
+// What the model thought before it answered. Collapsed by default (the answer is
+// the thing you asked for), but it is right there, streamed as it happened and
+// kept with the message — "it took 20 seconds" reads very differently when you can
+// see four of them were spent deciding.
+function ThinkingBlock({ text, ms }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <div className="think">
+      <button type="button" className="think-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <span>{open ? '▾' : '▸'} {ms ? `Thought for ${formatElapsed(ms)}` : 'Reasoning'}</span>
+        <span className="think-count">{text.length} chars</span>
+      </button>
+      {open ? <pre className="think-body">{text}</pre> : null}
+    </div>
+  );
+}
 
 const formatElapsed = (ms) => {
   const s = Math.round((ms || 0) / 1000);
@@ -79,7 +99,7 @@ function MessageActions({ text, onRegen }) {
 }
 
 export default function ChatPage() {
-  const { model, setModel, user, notify, cfg } = useApp();
+  const { model, setModel, user, notify, cfg, effort } = useApp();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -179,7 +199,7 @@ export default function ChatPage() {
     setMessages(next);
     setBusy(true);
     const started = Date.now();
-    setLive({ phase: 'contacting', elapsed: 0, text: '', firstToken: null, chars: 0, tools: [] });
+    setLive({ phase: 'contacting', elapsed: 0, text: '', thinking: '', firstToken: null, chars: 0, tools: [] });
     const controller = new AbortController();
     abortRef.current = controller;
     // A clock that ticks even when nothing else does: silence for 20 seconds is
@@ -197,6 +217,7 @@ export default function ChatPage() {
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
         system,
+        effort,
         template: template || undefined,
         use_mcp: active.mcp !== false
       }, {
@@ -204,6 +225,7 @@ export default function ChatPage() {
         onEvent: (evt) => {
           if (evt.type === 'phase') setLive((l) => (l ? { ...l, phase: evt.phase, detail: evt.detail || null, firstToken: evt.first_token_ms ?? l.firstToken } : l));
           if (evt.type === 'heartbeat') setLive((l) => (l ? { ...l, elapsed: evt.elapsed_ms, waiting_on: evt.waiting_on } : l));
+          if (evt.type === 'thinking') setLive((l) => (l ? { ...l, phase: l.phase === 'streaming' ? 'streaming' : 'thinking', thinking: ((l.thinking || '') + evt.text).slice(-40000) } : l));
           if (evt.type === 'delta') setLive((l) => (l ? { ...l, phase: 'streaming', text: (l.text + evt.text).slice(-20000), chars: (l.chars || 0) + evt.text.length } : l));
           if (evt.type === 'tool') setLive((l) => (l ? { ...l, phase: 'tools', tools: [...(l.tools || []), { name: evt.name, status: evt.status }] } : l));
         }
@@ -219,6 +241,11 @@ export default function ChatPage() {
           : problem ? `⚠ ${out.error}` : (out.text || out.content || '(no response)'),
         tool_calls: out.tool_calls,
         model: out.model,
+        // What it thought before answering, and how long that took — the reason a
+        // "slow" reply is legible instead of just slow.
+        reasoning: out.reasoning || undefined,
+        thinking_ms: out.thinking_ms ?? null,
+        effort,
         error: problem || undefined,
         // The actionable part is UI, not prose: a real button to the key you are
         // missing, or the model menu that has the one that works.
@@ -279,12 +306,14 @@ export default function ChatPage() {
                   <div className="msg-user-pill">{m.content}</div>
                 ) : (
                   <>
+                    {m.reasoning ? <ThinkingBlock text={m.reasoning} ms={m.thinking_ms} /> : null}
                     <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                     {m.note && !m.error ? <div className="tiny msg-note">{m.note}</div> : null}
                     {m.elapsed_ms && !m.error ? (
                       <div className="tiny msg-timing">
+                        {m.thinking_ms ? `thought ${formatElapsed(m.thinking_ms)} · ` : ''}
                         {m.first_token_ms != null ? `first token ${formatElapsed(m.first_token_ms)} · ` : ''}
-                        answered in {formatElapsed(m.elapsed_ms)}{m.model ? ` · ${m.model}` : ''}
+                        answered in {formatElapsed(m.elapsed_ms)}{m.model ? ` · ${m.model}` : ''}{m.effort ? ` · ${m.effort}` : ''}
                       </div>
                     ) : null}
                     {m.error ? (
@@ -359,6 +388,7 @@ export default function ChatPage() {
                   {live.tools.map((t, i) => <span key={i} className="live-tool">{t.status === 'running' ? '⏳' : t.status === 'ok' ? '✓' : '✗'} {t.name}</span>)}
                 </div>
               )}
+              {live.thinking ? <div className="live-think">{live.thinking}</div> : null}
               {live.text ? <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.text) }} /> : null}
             </div>
           </div>
