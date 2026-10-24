@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
-import { modelLabel } from '../ModelPicker.jsx';
+import { modelLabel, rememberLabel } from '../ModelPicker.jsx';
 import * as api from '../lib/api.js';
 import { renderMarkdown } from '../lib/markdown.js';
 
@@ -305,7 +305,11 @@ export default function ChatPage() {
                                 title={`Use ${f.id}`}
                                 onClick={() => {
                                   const pid = m.provider || String(model || '').split('::')[0];
-                                  setModel(`${pid}::${f.id}`);
+                                  const ref = `${pid}::${f.id}`;
+                                  setModel(ref);
+                                  // The reply just told us this id's real name;
+                                  // keep it even if the index cache is dropped.
+                                  rememberLabel(ref, f.label);
                                   notify(`Now using ${f.label || f.id} — send it again and it will answer.`);
                                 }}
                               >{f.label || f.id}</button>

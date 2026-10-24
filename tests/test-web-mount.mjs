@@ -467,6 +467,15 @@ globalThis.__mount = (route) => {
   await settle(8);
   ok('one click switches to a real model', String(win.eval('localStorage.getItem("acx_model")')) === 'nvidia::deepseek-ai/deepseek-r1', String(win.eval('localStorage.getItem("acx_model")')));
   ok('the trigger follows the switch', /DeepSeek R1/.test(triggerText()), triggerText());
+  // The index is a cache the app throws away on purpose (a rejected id clears it
+  // so the menu re-reads). Losing it must not rename the model back to its raw id
+  // in the top bar — the reply already said what this id is called.
+  ok('the name it was given is remembered, not only the id',
+    /DeepSeek R1/.test(String(win.eval('localStorage.getItem("acx_model_labels")||""'))),
+    String(win.eval('localStorage.getItem("acx_model_labels")||""')).slice(0, 120));
+  win.eval('localStorage.removeItem("acx_model_index")');
+  await mountAt('/', { token: reg.token, user: reg.user });
+  ok('and survives the index cache being dropped', /DeepSeek R1/.test(triggerText()), triggerText());
   chatStub = null;
 
   console.log('\n— signed out —');

@@ -29,6 +29,27 @@ function readCachedIndex() {
   return null;
 }
 
+function knownLabels() {
+  try { return JSON.parse(localStorage.getItem('acx_model_labels') || '{}') || {}; } catch { return {}; }
+}
+
+/** Remember the name of an id we just saw named. The index is a cache that gets
+ *  thrown away on purpose (a provider rejecting an id clears it so the menu
+ *  re-reads), and losing a cache must not rename the model in the top bar from
+ *  "DeepSeek R1" back to "deepseek-ai/deepseek-r1". */
+export function rememberLabel(ref, label) {
+  const key = String(ref || '');
+  const name = String(label || '').trim();
+  if (!key.includes('::') || !name || name === key || name === key.split('::').slice(1).join('::')) return;
+  try {
+    const map = knownLabels();
+    map[key] = name.slice(0, 80);
+    const keys = Object.keys(map);
+    for (const stale of keys.slice(0, Math.max(0, keys.length - 60))) delete map[stale];
+    localStorage.setItem('acx_model_labels', JSON.stringify(map));
+  } catch { /* quota / private mode */ }
+}
+
 export function modelLabel(ref, index) {
   const text = String(ref || '');
   if (!text.includes('::')) return text === 'anticodex/demo-core' ? 'Demo Core' : (text.split('/').pop() || text);
@@ -39,7 +60,7 @@ export function modelLabel(ref, index) {
   // A model we know by label shows its friendly name; anything else (including an
   // id you typed yourself) keeps the full id — dropping the org prefix would make
   // "vendor/totally-new-2027-model" read as just "2027-model".
-  return m?.label || id || `${pid} · ${id}`;
+  return m?.label || knownLabels()[text] || id || `${pid} · ${id}`;
 }
 
 function recentRefs() {
@@ -145,6 +166,7 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
     else if (m.unverified) notify(`${provider?.name || pid} did not list "${m.id}" in its live model list — if it refuses, the model menu and Settings both have Sync models.`);
     setModel(ref);
     rememberModel(ref);
+    rememberLabel(ref, m.label);
     setOpen(false);
   };
 
