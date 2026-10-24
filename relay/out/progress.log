@@ -12,3 +12,10 @@
 2026-10-24T17:18:58.901Z chatgpt-win: 979994720 B, 3665 entries
 2026-10-24T17:18:58.902Z chatgpt-win: unpacking asar 640129388 B
 2026-10-24T17:36:53.714Z chatgpt-win: 10 PE report(s)
+2026-10-24T19:28:13.548Z asset codex-cli https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip
+2026-10-24T19:28:17.503Z codex-cli: 164128567 B, 47 entries
+2026-10-24T19:30:28.093Z codex-cli: 8 PE report(s)
+2026-10-24T19:30:28.136Z asset chatgpt-win https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix
+2026-10-24T19:30:45.503Z chatgpt-win: 979994720 B, 3665 entries
+2026-10-24T19:30:45.503Z chatgpt-win: unpacking asar 640129388 B
+2026-10-24T19:45:35.646Z chatgpt-win: 10 PE report(s)
