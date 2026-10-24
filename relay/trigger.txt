@@ -1,1 +1,1 @@
-trigger 5 — streaming download + chatgpt msix
+trigger 6 — streamed asar unpack, visible log, crash guard

@@ -162,30 +162,63 @@ function factsFromTree(root) {
 // ---------------------------------------------------------------------------
 
 function unpackAsar(file, dest) {
-  const b = fs.readFileSync(file);
-  const headerSize = b.readUInt32LE(4);
-  const jsonLen = b.readUInt32LE(12);
-  const header = JSON.parse(b.subarray(16, 16 + jsonLen).toString('utf8'));
-  const base = 8 + headerSize;
-  let files = 0;
-  let bytes = 0;
-  const skipped = [];
-  const walkNode = (node, dir) => {
-    for (const [name, entry] of Object.entries(node.files || {})) {
-      const p = path.join(dir, name);
-      if (entry.files) { fs.mkdirSync(p, { recursive: true }); walkNode(entry, p); continue; }
-      if (entry.link) continue;
-      const size = Number(entry.size);
-      if (size > 12 * 1024 * 1024) { skipped.push({ path: path.relative(dest, p), size }); continue; }
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, b.subarray(base + Number(entry.offset), base + Number(entry.offset) + size));
-      files++; bytes += size;
+  // Read the archive through a file descriptor. The ChatGPT app's asar is 582 MB
+  // and the MSIX holding it is 1 GB; holding either of those as one Buffer while
+  // also writing 1.2 GB of extracted files is how a runner runs out of memory and
+  // dies with *no* output at all (which looks exactly like "the run did nothing").
+  const fd = fs.openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(16);
+    fs.readSync(fd, head, 0, 16, 0);
+    const headerSize = head.readUInt32LE(4);
+    const jsonLen = head.readUInt32LE(12);
+    if (!headerSize || jsonLen > 64 * 1024 * 1024) throw new Error(`implausible asar header (${jsonLen} B)`);
+    const jsonBuf = Buffer.alloc(jsonLen);
+    fs.readSync(fd, jsonBuf, 0, jsonLen, 16);
+    const header = JSON.parse(jsonBuf.toString('utf8'));
+    const base = 8 + headerSize;
+
+    let files = 0;
+    let bytes = 0;
+    const skipped = [];
+    const walkNode = (node, dir) => {
+      for (const [name, entry] of Object.entries(node.files || {})) {
+        const p = path.join(dir, name);
+        if (entry.files) { fs.mkdirSync(p, { recursive: true }); walkNode(entry, p); continue; }
+        if (entry.link) continue;
+        const size = Number(entry.size) || 0;
+        if (size > 12 * 1024 * 1024) { skipped.push({ path: path.relative(dest, p), size }); continue; }
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        const buf = Buffer.alloc(size);
+        if (size) fs.readSync(fd, buf, 0, size, base + Number(entry.offset));
+        fs.writeFileSync(p, buf);
+        files += 1;
+        bytes += size;
+      }
+    };
+    fs.mkdirSync(dest, { recursive: true });
+    walkNode(header, dest);
+    const hash = crypto.createHash('sha256');
+    const chunk = Buffer.alloc(4 * 1024 * 1024);
+    let pos = 0;
+    for (;;) {
+      const read = fs.readSync(fd, chunk, 0, chunk.length, pos);
+      if (!read) break;
+      hash.update(chunk.subarray(0, read));
+      pos += read;
     }
-  };
-  fs.mkdirSync(dest, { recursive: true });
-  walkNode(header, dest);
-  const top = Object.keys(header.files || {});
-  return { header_bytes: headerSize, entries_top: top, files, bytes, skipped_large: skipped, archive_bytes: b.length, archive_sha256: sha(b) };
+    return {
+      header_bytes: headerSize,
+      entries_top: Object.keys(header.files || {}),
+      files,
+      bytes,
+      skipped_large: skipped,
+      archive_bytes: pos,
+      archive_sha256: hash.digest('hex')
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -430,9 +463,23 @@ async function acquire(url, label) {
 // Main
 // ---------------------------------------------------------------------------
 
+// A crash must leave evidence. Without these two handlers a fatal error in a
+// stage kills the process and the run publishes *nothing*, which is
+// indistinguishable from "the run found no changes".
+function crashGuard(kind, err) {
+  const detail = { phase: 'crash', kind, error: String((err && err.message) || err), stack: String((err && err.stack) || '').split('\n').slice(0, 8) };
+  try { progress(`CRASH ${kind}: ${detail.error}`); } catch { /* best effort */ }
+  if (kind === 'assets' && Object.keys(report.targets).length === 0) {
+    try { writeOut('assets.json', { crash: detail }); } catch { /* best effort */ }
+  }
+  process.exitCode = 1;
+}
+process.on('uncaughtException', (e) => crashGuard('uncaught', e));
+process.on('unhandledRejection', (e) => crashGuard('rejection', e));
+
 const report = {
   started_at: new Date().toISOString(),
-  relay_version: 3,
+  relay_version: 4,
   features: ['streaming-download', 'lazy-text', 'go-buildinfo', 'rust-bun-electron', 'rea-filtered'],
   runner: { node: process.version, platform: process.platform, arch: process.arch },
   targets: {}

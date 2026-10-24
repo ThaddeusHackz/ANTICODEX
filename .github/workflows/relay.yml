@@ -62,7 +62,15 @@ jobs:
       - name: collect
         env:
           RELAY_ONLY: ${{ github.event.inputs.only || '' }}
-        run: node relay/collect.mjs 2>&1 | tee relay/out.log
+        # `tee` without pipefail turns a dead collector into a green run that
+        # publishes nothing — which is exactly what run 40112080221 looked like.
+        # The log now lands in relay/out/ so it is published with the facts.
+        run: |
+          set -o pipefail
+          mkdir -p relay/out
+          df -h / | tail -1
+          node --max-old-space-size=6144 relay/collect.mjs 2>&1 | tee relay/out/collect.log
+          df -h / | tail -1
 
       - uses: actions/upload-artifact@v4
         if: always()
