@@ -386,6 +386,22 @@ try {
     ok('the Sandbox page ships in the app', /path="\/sandbox"/.test(read('web/src/App.jsx')) && /export const sandbox = \{/.test(read('web/src/lib/api.js')));
     ok('…and the desktop server it talks to can run code locally', /case 'sandbox':/.test(read('api/bridge.js')) && /isLoopback\(req\)/.test(read('api/bridge.js')));
 
+    // --- the desktop sign-in handoff -----------------------------------------
+    // The app opens the website to sign in, and the *website* mints the pairing
+    // code, so the website owns the row the app has to read. Polling 127.0.0.1
+    // first is the bug behind "signed in on the site, still signed out in the app".
+    const pairSrc = mainSrc.slice(mainSrc.indexOf('async function pairStatus'), mainSrc.indexOf("ipcMain.handle('acx:githubLogin'"));
+    ok('the app polls the website that minted the code', /siteBridge\(\{ action: 'pair', op: 'status', code \}\)/.test(pairSrc));
+    ok('…then this machine, never the other way round', pairSrc.indexOf('siteBridge') < pairSrc.indexOf('localBridge') && /localBridge\(\{ action: 'pair', op: 'status', code \}\)/.test(pairSrc));
+    ok('the pairing poll uses the shared status helper', /await pairStatus\(code\)/.test(mainSrc));
+    ok('…and a typed code claims on the site first too', /await pairClaim\(code, \{ user_id: 'desktop' \}\)/.test(mainSrc));
+    const authSrc = read('web/src/pages/Auth.jsx');
+    ok('a pair code carried in the OAuth state is claimed by the callback', /claimDesktopPair\(r\.user, r\.token, r\.pair_code\)/.test(authSrc));
+    ok('an already signed-in browser links the app on load', /export function DesktopLinkHandler/.test(authSrc) && /localStorage\.getItem\('acx_token'\)/.test(authSrc));
+    ok('…mounted beside the other link handlers', /<DesktopLinkHandler \/>/.test(read('web/src/App.jsx')));
+    ok('the app accepts anticodex:// links, cold start included', /app\.on\('open-url'/.test(mainSrc) && /deepArgv\(\)/.test(mainSrc) && /flushDeepLinks/.test(mainSrc));
+    ok('…and the renderer claims the code such a link carries', /export function DesktopDeepLinkHandler/.test(authSrc) && /desk\.pairWait\(code\)/.test(authSrc));
+
     // --- REA -----------------------------------------------------------------
     ok('the desktop reports why it can run REA', /acx:reaEnv/.test(mainSrc) && /canSpawn: true/.test(mainSrc));
     ok('the REA page exists and is routed', /path="\/rea"/.test(read('web/src/App.jsx')) && /ReaPage/.test(read('web/src/App.jsx')));

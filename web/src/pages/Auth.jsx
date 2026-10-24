@@ -51,6 +51,80 @@ function SetupSteps({ setup }) {
   );
 }
 
+/**
+ * Link an *already signed-in* browser to the desktop app that asked for it.
+ *
+ * The old flow only claimed the pairing code after a fresh sign-in, so somebody
+ * who was already signed in on the website clicked "GitHub" in the app, landed
+ * on /login?desktop=123456, got bounced straight to the chat by the route guard,
+ * and the app waited five minutes for a code nothing ever claimed. If this tab
+ * already holds a session, link it the moment the page loads.
+ */
+export function DesktopLinkHandler() {
+  const { notify } = useApp();
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const code = q.get('desktop');
+    if (!code || code === 'local') return;
+    const token = localStorage.getItem('acx_token');
+    if (!token) return; // not signed in — the sign-in screens claim it instead
+    let user = null;
+    try { user = JSON.parse(localStorage.getItem('acx_user') || 'null'); } catch { /* ignore */ }
+    let alive = true;
+    (async () => {
+      try {
+        const out = await api.pairing.claim(code, user?.id, token, user);
+        if (!alive) return;
+        q.delete('desktop');
+        const rest = q.toString();
+        window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''));
+        if (out?.ok !== false) notify(`This browser is signed in — linking ANTICODEX on your PC as ${user?.email || user?.name || 'you'}`);
+      } catch { /* expired code: the desktop reports it in its own window */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  return null;
+}
+
+/**
+ * `anticodex://pair?code=123456` — the website already claimed the code, so the
+ * app only has to pick the session up. This also covers the cold-start case
+ * (clicking the link launched the app) because main-process deep links are
+ * queued until the renderer reports it has loaded.
+ */
+export function DesktopDeepLinkHandler() {
+  const { signIn, notify } = useApp();
+  useEffect(() => {
+    const desk = typeof window !== 'undefined' ? window.anticodexDesktop : null;
+    if (!desk?.onDeepLink) return;
+    let alive = true;
+    desk.onDeepLink(async (url) => {
+      let code = null;
+      try {
+        const u = new URL(url);
+        if (u.protocol !== 'anticodex:') return;
+        if (u.hostname !== 'pair' && u.pathname.replace(/\//g, '') !== 'pair') return;
+        code = u.searchParams.get('code');
+      } catch { return; }
+      if (!code || !alive) return;
+      try {
+        const r = await desk.pairWait(code);
+        if (!alive) return;
+        if (r?.ok) {
+          signIn(r.token, r.user || {});
+          notify(`Linked this app to ${r.user?.email || r.user?.name || 'your account'}${r.synced_keys ? ` — ${r.synced_keys} keys synced` : ''}`);
+        } else {
+          notify(r?.error || 'That link expired — click GitHub in the app to try again', 'warn');
+        }
+      } catch {
+        notify('Could not finish linking — click GitHub in the app to try again', 'warn');
+      }
+    });
+    return () => { alive = false; };
+  }, []);
+  return null;
+}
+
 /** Handles email links (token_hash/type or code) landing back on the app. */
 export function EmailLinkHandler() {
   const { signIn, notify } = useApp();
@@ -109,13 +183,37 @@ export function EmailLinkHandler() {
   return null;
 }
 
-async function claimDesktopPair(user, token) {
-  const code = sessionStorage.getItem('acx_pair_code');
-  if (!code) return;
+/**
+ * Hand this browser session to the desktop app that asked for it.
+ *
+ * The code can arrive three ways, and all three matter:
+ *   * `explicitCode` — GitHub OAuth carries it inside the signed `state`, so the
+ *     callback URL itself has no `?desktop=` on it. Dropping this return value is
+ *     exactly the bug where the desktop app "opens, shows you signed in on the
+ *     site, and never signs in itself": the site claimed nothing, and the app
+ *     polled a pairing code nobody had used until it timed out.
+ *   * `?desktop=<code>` — the email/password and signup screens.
+ *   * sessionStorage — the same, remembered across those screens.
+ */
+async function claimDesktopPair(user, token, explicitCode) {
+  const code = explicitCode || sessionStorage.getItem('acx_pair_code')
+    || new URLSearchParams(window.location.search).get('desktop');
+  if (!code) return null;
   try {
-    await api.pairing.claim(code, user?.id, token, user);
+    const out = await api.pairing.claim(code, user?.id, token, user);
     sessionStorage.removeItem('acx_pair_code');
-  } catch { /* expired — harmless */ }
+    return { ok: out?.ok !== false, code };
+  } catch {
+    // The GitHub exchange links the code the moment the signed OAuth state
+    // carries one, so by the time the callback posts `claim` the row is already
+    // used and the write is refused. Ask the code itself before calling this a
+    // failure — otherwise the app looks unlinked while it is in fact linked.
+    try {
+      const st = await api.pairing.status(code);
+      if (st?.claimed) { sessionStorage.removeItem('acx_pair_code'); return { ok: true, code, already: true }; }
+    } catch { /* expired after all — the desktop reports it in its own window */ }
+  }
+  return null;
 }
 
 /**
@@ -471,9 +569,11 @@ export function CallbackPage() {
     api.auth.oauthCallback({ code, state }).then(async (r) => {
       if (r.ok === false) { setError(r.error || 'GitHub sign-in failed'); setSetup(r.setup || null); return; }
       signIn(r.token, r.user);
-      await claimDesktopPair(r.user, r.token);
+      const linked = await claimDesktopPair(r.user, r.token, r.pair_code);
       sessionStorage.removeItem('acx_pair_code');
-      notify(`Signed in as ${r.user?.name || r.user?.email}`);
+      notify(linked
+        ? `Signed in as ${r.user?.name || r.user?.email} — handing this session to ANTICODEX on your PC`
+        : `Signed in as ${r.user?.name || r.user?.email}`);
       window.history.replaceState({}, '', '/');
       nav('/', { replace: true });
     }).catch((e) => setError(e?.data?.error || e.message || 'GitHub sign-in failed'));

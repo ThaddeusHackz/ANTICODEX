@@ -18,7 +18,7 @@ import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
 import SetupPage from './pages/Setup.jsx';
-import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler } from './pages/Auth.jsx';
+import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler, DesktopLinkHandler, DesktopDeepLinkHandler } from './pages/Auth.jsx';
 
 // Sidebar nav mirrors the reverse-engineered ChatGPT desktop rail (new chat,
 // search, library, codex) with ANTICODEX sections added below.
@@ -196,6 +196,8 @@ export default function App() {
   return (
     <>
       <EmailLinkHandler />
+      <DesktopLinkHandler />
+      <DesktopDeepLinkHandler />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />

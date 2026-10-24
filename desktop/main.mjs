@@ -395,6 +395,46 @@ async function localBridge(body) {
   return res.json();
 }
 
+/**
+ * Read a pairing code from whichever ledger actually owns it.
+ *
+ * `acx:githubLogin` mints the code with `siteBridge` (the website), so the row
+ * lives in the site's ledger. Polling the *local* bridge first meant a user who
+ * was already signed in on the website claimed the code remotely while this
+ * process watched a local table that never saw the claim — the app "opened the
+ * browser and never logged in". Website first, this machine second.
+ */
+async function pairStatus(code) {
+  let lastError = null;
+  for (const attempt of [
+    () => siteBridge({ action: 'pair', op: 'status', code }),
+    () => localBridge({ action: 'pair', op: 'status', code })
+  ]) {
+    try {
+      const s = await attempt();
+      if (s && !s.error) return s;
+      if (s?.error) lastError = s.error;
+    } catch (e) { lastError = lastError || String(e.message || e); }
+  }
+  return { ok: false, error: lastError || 'pairing unavailable' };
+}
+
+/** Same provenance rule for claiming: the website minted it, the website claims it. */
+async function pairClaim(code, extra = {}) {
+  let lastError = null;
+  for (const attempt of [
+    () => siteBridge({ action: 'pair', op: 'claim', code, ...extra }),
+    () => localBridge({ action: 'pair', op: 'claim', code, ...extra })
+  ]) {
+    try {
+      const s = await attempt();
+      if (s?.ok) return s;
+      if (s?.error) lastError = s.error;
+    } catch (e) { lastError = lastError || String(e.message || e); }
+  }
+  return { ok: false, error: lastError || 'pairing unavailable' };
+}
+
 ipcMain.handle('acx:githubLogin', async () => {
   // Preferred: sign in on the website, which claims a pairing code and hands
   // this install the session (plus the shared provider keys).
@@ -441,7 +481,7 @@ ipcMain.handle('acx:pairWait', async (_e, code) => {
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
     try {
-      const s = await siteBridge({ action: 'pair', op: 'status', code });
+      const s = await pairStatus(code);
       if (s?.claimed) {
         saveState({ desktopToken: s.token, user: s.user, pairedAt: new Date().toISOString() });
         // Teach this install's own bridge about the linked session, otherwise
@@ -467,14 +507,7 @@ ipcMain.handle('acx:pairWait', async (_e, code) => {
 });
 
 ipcMain.handle('acx:pair', async (_e, code) => {
-  const state = loadState();
-  const base = state.apiBase || 'http://127.0.0.1:8787';
-  const res = await fetch(`${base}/api/bridge`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'pair', op: 'claim', code, user_id: 'desktop' })
-  });
-  const data = await res.json();
+  const data = await pairClaim(code, { user_id: 'desktop' });
   if (data.ok) {
     saveState({ desktopToken: data.token, pairedAt: new Date().toISOString() });
     try { await localBridge({ action: 'pair', op: 'adopt', token: data.token, user: data.user || { email: data.email } }); } catch { /* non-fatal */ }
@@ -493,15 +526,44 @@ ipcMain.handle('acx:update:download', async () => {
 
 // --- lifecycle --------------------------------------------------------------
 
+// --- deep links -------------------------------------------------------------
+// `anticodex://pair?code=123456` is how the website hands a session to this app.
+// Windows/Linux deliver it as an argv on a *second* launch, macOS through
+// `open-url`, and both can deliver it on a **cold start**, before any window (or
+// renderer listener) exists. Queue those instead of dropping them.
+const deepLinks = [];
+const deepArgv = (argv = process.argv) => argv.find((a) => typeof a === 'string' && a.startsWith('anticodex://')) || null;
+
+function deliverDeepLink(url) {
+  if (!url) return;
+  if (!win || win.webContents.isLoading()) { deepLinks.push(url); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  win.webContents.send('acx:deep-link', url);
+}
+
+function flushDeepLinks() {
+  while (deepLinks.length) {
+    const url = deepLinks.shift();
+    win?.webContents.send('acx:deep-link', url);
+  }
+}
+
+// Must be registered before `whenReady` for macOS to route the link here.
+app.on('open-url', (e, url) => { e.preventDefault(); deliverDeepLink(url); });
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 else {
   app.on('second-instance', (_e, argv) => {
-    const deep = argv.find((a) => a.startsWith('anticodex://'));
+    const deep = deepArgv(argv);
     if (win) {
       if (win.isMinimized()) win.restore();
       win.focus();
       if (deep) win.webContents.send('acx:deep-link', deep);
+    } else if (deep) {
+      deepLinks.push(deep);
     }
   });
 
@@ -509,6 +571,11 @@ else {
     try { app.setAsDefaultProtocolClient('anticodex'); } catch { /* non-fatal */ }
     await startLocalServer();
     createWindow();
+    win?.webContents.on('did-finish-load', flushDeepLinks);
+    // Cold start from a link: the argv that launched us, or one macOS queued
+    // while the app was booting.
+    const cold = deepArgv();
+    if (cold) deliverDeepLink(cold);
     // Offer updates once per session after a delay (user must accept).
     setTimeout(async () => {
       try {
@@ -521,7 +588,12 @@ else {
   });
 
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+      win?.webContents.on('did-finish-load', flushDeepLinks);
+    }
+  });
 }
 
 export { VERSION };
