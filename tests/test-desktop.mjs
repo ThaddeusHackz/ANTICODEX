@@ -414,6 +414,19 @@ try {
     ok('…asks REA which analysis engines this machine has', /reaApi\.engines\(\)/.test(reaPage) && /op === 'engines'/.test(read('api/bridge.js')));
     ok('…and says what to install when one is missing', /Analysis engines/.test(reaPage) && /Copy steps/.test(reaPage) && /Variable:/.test(reaPage));
 
+    // --- the Qoder CLI agent, from Chat --------------------------------------
+    // The agent is a provider row with no key, and its answer travels the same
+    // SSE frames as a model's — that is what makes it render in the same view.
+    const bridgeSrc = read('api/bridge.js');
+    const provSrc = read('lib/providers.js');
+    ok('a local agent is offered as a pickable provider', /agentProviderDef\(qoderCliCached\(\)\)/.test(provSrc));
+    ok('…the picker asks for it once, not per keystroke', /refreshQoderCli\(\)/.test(bridgeSrc) && /canSpawnLocalMcp\(\) && isLoopback\(req\)\) await refreshQoderCli/.test(bridgeSrc));
+    ok('chat_stream routes the agent before any HTTP model call', bridgeSrc.indexOf('if (isAgentRef(model))') < bridgeSrc.indexOf('let out = await chatStream('));
+    ok('…and drives it through the ACP adapter', /streamAcpAnswer\(\{/.test(bridgeSrc));
+    ok('…refusing to pretend when the machine cannot spawn', /const local = canSpawnLocalMcp\(\) && isLoopback\(req\);/.test(bridgeSrc));
+    ok('the HTTP path refuses an agent ref instead of guessing', /isAgentRef\(model\)\) \{[\s\S]{0,200}throw new Error/.test(provSrc));
+    ok('a thought chunk is rendered as reasoning, not as text', /agent_thought_chunk/.test(read('lib/qoder.js')));
+
     // --- model health --------------------------------------------------------
     const settings = read('web/src/pages/Settings.jsx');
     ok('Model health is a Settings tab', /ModelHealthPanel/.test(settings) && /'models'/.test(settings));

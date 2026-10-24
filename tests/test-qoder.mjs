@@ -15,8 +15,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  ACP_PROTOCOL_VERSION, QCA_BASE, createAcpClient, createSseParser, explainAcpError,
-  qcaPage, qcaRequest, qcaUrl, qoderActionWorkflow, qoderStatus, resolveQoderToken
+  ACP_PROTOCOL_VERSION, QCA_BASE, QODER_AGENT_REF, agentProviderDef, createAcpClient,
+  createSseParser, explainAcpError, isAgentRef, qcaPage, qcaRequest, qcaUrl,
+  qoderActionWorkflow, qoderStatus, resolveQoderToken, streamAcpAnswer
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally } from '../lib/qoder-repos.js';
 
@@ -212,6 +213,58 @@ section('ACP: a real JSON-RPC peer, driven to completion');
   ok('the same prompt still completes either way', allowed.result.stopReason === 'end_turn');
   ok('ACP protocol version is 1', ACP_PROTOCOL_VERSION === 1);
   fs.rmSync(fixture, { force: true });
+}
+
+// ---------------------------------------------------------------------------
+section('the agent is a model you can pick, and it streams as chat events');
+{
+  ok('the ref is provider::model', QODER_AGENT_REF === 'agent::qodercli');
+  ok('…and only that ref is the agent', isAgentRef('agent::qodercli') && !isAgentRef('nvidia::qwen') && !isAgentRef(''));
+  ok('no installed CLI means no provider row', agentProviderDef({ found: false }) === null);
+  const row = agentProviderDef({ found: true, version: '1.2.3' });
+  ok('an installed CLI is always configured', row.configured === true && row.id === 'agent');
+  ok('…it needs no key', row.key_env === null);
+  ok('…and says what it runs', /qodercli --acp/.test(row.models_note) && row.models_note.includes('1.2.3'));
+  ok('…with one reasoning model, already verified', row.models_verified === true && row.models[0].reasoning === true && row.models[0].live === true);
+
+  // A peer that thinks, then answers, then asks for a tool.
+  const fixture = path.join(os.tmpdir(), `acx-agent-chat-${process.pid}.mjs`);
+  fs.writeFileSync(fixture, `
+    import readline from 'node:readline';
+    const rl = readline.createInterface({ input: process.stdin });
+    const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+    let permission = null;
+    let promptId = null;
+    rl.on('line', (line) => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'fake', title: 'Fake CLI', version: '1.2.3' }, authMethods: [], agentCapabilities: {} } });
+      else if (msg.method === 'session/new') send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 's-chat' } });
+      else if (msg.method === 'session/prompt') {
+        promptId = msg.id;
+        send({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'let me think' } } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'tool_call', title: 'read file', status: 'pending' } } });
+        send({ jsonrpc: '2.0', id: 'p1', method: 'session/request_permission', params: { options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }] } });
+      } else if (msg.id === 'p1') {
+        permission = msg.result?.outcome?.outcome;
+        send({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello ' } } } });
+        send({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'world' } } } });
+        send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn', _perm: permission } });
+      } else if (msg.method === 'session/close') send({ jsonrpc: '2.0', id: msg.id, result: {} });
+    });
+  `);
+
+  const collected = [];
+  for await (const evt of streamAcpAnswer({ text: 'hi', command: process.execPath, args: [fixture], cwd: os.tmpdir() })) {
+    collected.push(evt);
+  }
+  fs.rmSync(fixture, { force: true });
+
+  const types = collected.map((e) => e.type);
+  ok('a thought chunk becomes a thinking event', collected.some((e) => e.type === 'thinking' && e.text === 'let me think'));
+  ok('tool calls become tool events, not actions', collected.some((e) => e.type === 'tool' && e.name === 'read file'));
+  ok('the answer arrives as deltas', collected.filter((e) => e.type === 'delta').map((e) => e.text).join('') === 'Hello world');
+  ok('the run ends with a done event', types.lastIndexOf('done') === types.length - 1 && collected.find((e) => e.type === 'done').stop_reason === 'end_turn');
+  ok('the agent is announced before the answer', types.indexOf('phase') === 0 && types.indexOf('phase') < types.indexOf('delta'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

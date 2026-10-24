@@ -21,17 +21,21 @@ import {
   runRea
 } from '../lib/rea.js';
 import {
+  QODER_AGENT_REF,
   QODER_PAT_ENVS,
   QCA_BASE,
   createAcpClient,
   explainAcpError,
+  isAgentRef,
   qcaEvents,
   qcaPage,
   qcaRequest,
   qcaUrl,
   qoderActionWorkflow,
   qoderCliStatus,
-  qoderStatus
+  qoderStatus,
+  refreshQoderCli,
+  streamAcpAnswer
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally as qoderAtlasTally } from '../lib/qoder-repos.js';
 import { webSearch } from '../lib/search.js';
@@ -89,6 +93,10 @@ export default async function handler(req, res) {
         }));
       }
       case 'models': {
+        // A local agent is a provider with no key: detecting it costs one
+        // `qodercli --version` (cached for five minutes), and only a machine
+        // that can spawn processes is asked.
+        if (canSpawnLocalMcp() && isLoopback(req)) await refreshQoderCli().catch(() => {});
         // Whose keys count: the account on this request, then any explicit keys
         // (the desktop keychain sends those). Without this the UI could not see
         // a per-user key and reported a configured provider as "needs key".
@@ -839,6 +847,66 @@ async function handleChatStream(req, res, body) {
 
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
+
+  // A local agent instead of an HTTP model. Same SSE frames, so Chat renders it
+  // exactly like any other answer — including the reasoning panel.
+  if (isAgentRef(model)) {
+    const t0 = Date.now();
+    const local = canSpawnLocalMcp() && isLoopback(req);
+    if (!local) {
+      stream.send({ type: 'error', state: 'local', error: 'The Qoder CLI agent runs on the machine you are using — open the desktop app, or run this server locally.' });
+      return stream.end();
+    }
+    const cli = await refreshQoderCli().catch(() => null);
+    if (!cli?.found) {
+      stream.send({
+        type: 'error', state: 'install',
+        error: cli?.timed_out ? '`qodercli --version` did not answer, so the agent was not started.' : 'qodercli is not installed on this machine.',
+        fix: cli?.install || 'npm i -g @qoder-ai/qodercli',
+        next: 'Sign in once with `qodercli login`, then ask again.'
+      });
+      return stream.end();
+    }
+    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+    const promptText = [systemPrompt, lastUser?.content].filter((x) => x && String(x).trim()).join('\n\n');
+    if (!promptText) {
+      stream.send({ type: 'error', state: 'input', error: 'Nothing to send: the message is empty.' });
+      return stream.end();
+    }
+    stream.send({ type: 'phase', phase: 'contacting', ref: QODER_AGENT_REF, at: t0 });
+    let chars = 0;
+    let textOut = '';
+    let thinkingChars = 0;
+    try {
+      for await (const evt of streamAcpAnswer({
+        text: promptText,
+        cwd: os.tmpdir(),
+        signal: controller.signal,
+        allowTools: body.allow_tools === true
+      })) {
+        if (controller.signal.aborted) break;
+        if (evt.type === 'delta') { chars += evt.text.length; textOut += evt.text; }
+        if (evt.type === 'thinking') thinkingChars += evt.text.length;
+        if (evt.type === 'done') break;
+        stream.send(evt);
+      }
+      if (controller.signal.aborted) { stream.send({ type: 'aborted' }); return stream.end(); }
+      stream.send({
+        type: 'done', elapsed_ms: Date.now() - t0, chars,
+        reasoning_chars: thinkingChars || null,
+        model: QODER_AGENT_REF, agent: 'qodercli', text: textOut
+      });
+    } catch (e) {
+      if (controller.signal.aborted) { stream.send({ type: 'aborted' }); return stream.end(); }
+      const auth = e?.code === -32000 && /auth/i.test(String(e.message || ''));
+      stream.send({
+        type: 'error', state: auth ? 'auth' : 'agent',
+        error: explainAcpError(e),
+        ...(auth ? { fix: 'Run `qodercli login` on this machine, or set QODER_PERSONAL_ACCESS_TOKEN.' } : {})
+      });
+    }
+    return stream.end();
+  }
   let keys;
   try { keys = await mergedKeys(req, body); } catch (e) {
     stream.send({ type: 'error', error: String(e.message || e), state: 'auth' });

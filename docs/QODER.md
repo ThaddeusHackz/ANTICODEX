@@ -101,6 +101,44 @@ qodercli is installed but not signed in. Run `qodercli login`
 (or set QODER_PERSONAL_ACCESS_TOKEN) and try again.
 ```
 
+## The agent in Chat
+
+`qodercli` shows up in the model picker as **Qoder CLI (local agent)**
+(`agent::qodercli`), and `chat_stream` routes that ref to the ACP adapter instead
+of an HTTP model. The answer travels the same SSE frames as any other assistant
+message, so:
+
+| ACP frame | what Chat shows |
+| --- | --- |
+| `agent_thought_chunk` | the collapsible reasoning panel (`thinking`) |
+| `agent_message_chunk` | streamed answer text (`delta`) |
+| `tool_call` | a tool chip with its status — never executed by this app |
+| `session/prompt` result | `done` with elapsed time, chars and `reasoning_chars` |
+
+Rules that do not bend:
+
+* **loopback only.** The ref is refused with an explanation on a hosted
+  deployment: the agent is a process on *your* machine.
+* **no silent tools.** Permission requests are answered `cancelled` unless the
+  request carries `allow_tools: true`; the page does not send it, so the agent
+  cannot edit files because you typed a question.
+* **honest failures.** Not installed → the `npm i -g @qoder-ai/qodercli` line.
+  Installed but signed out → *"run `qodercli login`"*. Both arrive as an `error`
+  event with a `fix`, not as an empty answer.
+* **one turn, one process.** Each message starts a fresh `qodercli`, sends the
+  system prompt plus the latest user message, and closes the session. Prior
+  turns are not replayed into the agent yet — that is the next step, and it is
+  called out here rather than implied.
+
+Verified end to end on this machine (`qodercli` 1.1.78, not signed in):
+
+```
+data: {"type":"phase","phase":"contacting","ref":"agent::qodercli"}
+data: {"type":"phase","phase":"agent","detail":"Qoder CLI 1.1.78"}
+data: {"type":"error","state":"auth","error":"qodercli is installed but not signed in…",
+       "fix":"Run `qodercli login` on this machine, or set QODER_PERSONAL_ACCESS_TOKEN."}
+```
+
 ## The GitHub Action
 
 `qoder op:"action.workflow"` returns a workflow for `.github/workflows/qoder.yml`
