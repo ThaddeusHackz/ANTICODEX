@@ -1,0 +1,13 @@
+[relay] asset codex-cli https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip
+[relay] codex-cli downloaded codex-x86_64-pc-windows-msvc.exe.zip 164128567 B
+[relay] codex-cli: 164128567 B, 47 entries
+[relay] codex-cli: 8 PE report(s)
+[relay] asset chatgpt-win https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix
+[relay] chatgpt-win downloaded ChatGPT-x64.msix 979994720 B
+[relay] chatgpt-win: 979994720 B, 3665 entries
+[relay] chatgpt-win: unpacking asar 640129388 B
+[relay] FAILED chatgpt-win: The value of "position" is out of range. It must be an integer. Received NaN
+[relay] wrote relay/out/assets.json 166022 B
+[relay] wrote relay/out/assets.json 166022 B
+[relay] wrote relay/out/run.json 172101 B
+[relay] done
