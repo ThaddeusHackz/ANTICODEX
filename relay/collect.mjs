@@ -12,6 +12,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 const OUT = 'relay/out';
 const WORK = 'relay/work';
@@ -25,6 +27,10 @@ const only = (process.env.RELAY_ONLY || readIf('relay/only.txt') || '').split(',
 const wants = (k) => only.length === 0 || only.includes(k);
 const say = (...a) => console.log('[relay]', ...a);
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+function progress(line) {
+  say(line);
+  try { fs.appendFileSync(path.join(OUT, 'progress.log'), `${new Date().toISOString()} ${line}\n`); } catch { /* scratch only */ }
+}
 const writeOut = (name, obj) => {
   const file = path.join(OUT, name);
   fs.writeFileSync(file, JSON.stringify(obj, null, 1));
@@ -333,6 +339,7 @@ function reaEvidence(dir, label) {
   const args = [
     '-y', 'rea-agents@latest', 'analyze-javascript-application', dir,
     '--format', 'json',
+    '--max-semantic-nodes', '40000',
     '--filter-output', 'evidence_id,subject,limitations,normalized_result.summary,normalized_result.statistics'
   ];
   try {
@@ -362,11 +369,17 @@ function peReport(file) {
 // Installer download + unpack
 // ---------------------------------------------------------------------------
 
+/** Stream to disk: a 1 GB installer must never be one JS string or one Buffer. */
 async function download(url, dest) {
-  const r = await get(url);
-  if (r.status !== 200) throw new Error(`HTTP ${r.status} for ${url}`);
-  fs.writeFileSync(dest, r.buf);
-  return { bytes: r.buf.length, sha256: sha(r.buf), headers: r.headers };
+  const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': UA } });
+  if (res.status !== 200) throw new Error(`HTTP ${res.status} for ${url}`);
+  const hash = crypto.createHash('sha256');
+  let bytes = 0;
+  const sink = fs.createWriteStream(dest);
+  const source = Readable.fromWeb(res.body);
+  source.on('data', (chunk) => { hash.update(chunk); bytes += chunk.length; });
+  await pipeline(source, sink);
+  return { bytes, sha256: hash.digest('hex'), headers: Object.fromEntries(res.headers) };
 }
 
 function unzip(file, dest) {
@@ -391,7 +404,11 @@ async function acquire(url, label) {
   const meta = await download(url, file);
   say(label, 'downloaded', name, meta.bytes, 'B');
 
-  const magic = fs.readFileSync(file).subarray(0, 2).toString('latin1');
+  const fd = fs.openSync(file, 'r');
+  const magicBuf = Buffer.alloc(2);
+  fs.readSync(fd, magicBuf, 0, 2, 0);
+  fs.closeSync(fd);
+  const magic = magicBuf.toString('latin1');
   const extracted = path.join(rawDir, 'x');
   let listing = [];
   if (magic === 'MZ') {
@@ -413,7 +430,13 @@ async function acquire(url, label) {
 // Main
 // ---------------------------------------------------------------------------
 
-const report = { started_at: new Date().toISOString(), runner: { node: process.version, platform: process.platform, arch: process.arch }, targets: {} };
+const report = {
+  started_at: new Date().toISOString(),
+  relay_version: 3,
+  features: ['streaming-download', 'lazy-text', 'go-buildinfo', 'rust-bun-electron', 'rea-filtered'],
+  runner: { node: process.version, platform: process.platform, arch: process.arch },
+  targets: {}
+};
 
 if (wants('resolve')) {
   say('resolving installers…');
@@ -451,19 +474,26 @@ if (wants('assets')) {
   const planFile = process.env.RELAY_PLAN || (fs.existsSync('relay/plan.json') ? 'relay/plan.json' : path.join(OUT, 'plan.json'));
   const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
   for (const job of plan) {
-    say('asset', job.label, job.url);
+    if (job.skip) { progress(`skip ${job.label}`); continue; }
+    progress(`asset ${job.label} ${job.url}`);
+    const entry = { label: job.label, url: job.url };
     try {
       const got = await acquire(job.url, job.label);
-      const entry = { label: job.label, url: job.url, bytes: got.bytes, sha256: got.sha256, extracted: got.extracted, listing: got.listing.length };
+      progress(`${job.label}: ${got.bytes} B, ${got.listing.length} entries`);
+      entry.bytes = got.bytes;
+      entry.sha256 = got.sha256;
+      entry.extracted = got.extracted;
+      entry.listing = got.listing.length;
       const asars = got.listing.filter((f) => /app\.asar$/i.test(f.path));
       const exes = got.listing.filter((f) => /\.exe$/i.test(f.path));
       if (asars.length) {
         const target = asars.sort((a, b) => b.size - a.size)[0];
-        say('unpacking asar', target.path, target.size);
+        progress(`${job.label}: unpacking asar ${target.size} B`);
         const dir = path.join(WORK, `${job.label}-asar`);
         entry.asar = { file: path.basename(target.path), size: target.size, ...unpackAsar(target.path, dir) };
-        entry.asar_facts = factsFromTree(dir);
-        entry.asar_rea = reaEvidence(dir, `${job.label}-asar`);
+        try { entry.asar_facts = factsFromTree(dir); }
+        catch (e) { entry.asar_facts = { error: String(e.message || e).slice(0, 300) }; }
+        if (!job.skip_rea) entry.asar_rea = reaEvidence(dir, `${job.label}-asar`);
         fs.rmSync(dir, { recursive: true, force: true });
       }
       entry.pe = exes
@@ -471,13 +501,17 @@ if (wants('assets')) {
         .sort((a, b) => b.size - a.size)
         .slice(0, 10)
         .map((f) => peReport(f.path));
+      progress(`${job.label}: ${entry.pe.length} PE report(s)`);
       entry.other_large = got.listing.filter((f) => f.size > 5 * 1024 * 1024).sort((a, b) => b.size - a.size).slice(0, 25).map((f) => ({ path: path.relative(got.extracted, f.path), size: f.size }));
       report.targets[job.label] = entry;
       fs.rmSync(got.extracted, { recursive: true, force: true });
       fs.rmSync(path.dirname(got.file), { recursive: true, force: true });
     } catch (e) {
-      report.targets[job.label] = { label: job.label, url: job.url, error: String(e.message || e) };
-      say('FAILED', job.label, e.message);
+      entry.error = String(e.message || e);
+      entry.stack = String(e.stack || '').split('\n').slice(0, 6);
+      progress(`FAILED ${job.label}: ${e.message}`);
+      report.targets[job.label] = entry;
+      writeOut('assets.json', report.targets);
     }
   }
   writeOut('assets.json', report.targets);
