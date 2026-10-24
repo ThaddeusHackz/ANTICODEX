@@ -125,6 +125,14 @@ export const pairing = {
 /** Adopt the config this machine already has (Codex config.toml, Claude settings). */
 export const importConfig = (payload) => api('import_config', payload);
 
+export const workspace = {
+  context: (p) => api('workspace', { op: 'context', ...p }),
+  set: (p) => api('workspace', { op: 'set', ...p })
+};
+
+/** Write a Codex-compatible `config.toml` from what this device knows. */
+export const exportConfig = (state) => api('export_config', { state });
+
 export const policy = {
   get: () => api('policy', { op: 'get' }),
   set: (patch) => api('policy', { op: 'set', patch })

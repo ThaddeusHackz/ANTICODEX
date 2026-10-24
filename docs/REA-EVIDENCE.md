@@ -246,9 +246,91 @@ ANTICODEX's own custom-gateway support expects.
 
 ---
 
+## 9. `openai/codex` — source (Apache-2.0), cloned and read
+
+Checked before cloning, via the GitHub API — **seen**:
+
+```
+openai/codex    license=Apache-2.0  size=696831KB  stars=130767
+openai/chatgpt  HTTP 404
+```
+
+So **Codex is Apache-2.0 and may be cloned and studied**; **there is no
+`openai/chatgpt` repository** — the chatgpt.com web app has no open-source release,
+and a search for repositories named `chatgpt.com` returns unrelated community
+projects (`chatgpt-comparison-detection`, `command_line_chatgpt`, …), none of them
+OpenAI's. Anything claiming to be "the chatgpt.com source" is not.
+
+`git clone --depth 1 --filter=blob:none` → 137 MB working tree, `LICENSE` is the
+Apache License 2.0 — **seen**. `docs/*.md` are three-line stubs that redirect to
+`developers.openai.com` (unreachable from this sandbox), so **the source is the
+evidence**; everything below is read from `.rs` files.
+
+### The two enums (`codex-rs/protocol/src/protocol.rs`) — **seen**
+
+```rust
+pub enum AskForApproval {
+    UnlessTrusted,                 // serde "untrusted"
+    OnRequest,                     // default, alias "on-failure"
+    Granular(GranularApprovalConfig),
+    Never,
+}
+
+pub enum SandboxPolicy {
+    DangerFullAccess,                                  // "danger-full-access"
+    ReadOnly { network_access: bool },                 // "read-only"
+    ExternalSandbox { network_access: NetworkAccess }, // "external-sandbox"
+    WorkspaceWrite {                                   // "workspace-write"
+        writable_roots: Vec<AbsolutePathBuf>,
+        network_access: bool,
+        exclude_tmpdir_env_var: bool,
+        exclude_slash_tmp: bool,
+    },
+}
+```
+
+`GranularApprovalConfig` (`protocol.rs:1124`) has five switches — **seen**:
+`sandbox_approval`, `rules`, `skill_approval`, `request_permissions`,
+`mcp_elicitations`. Its documented semantics: *true* = let that class of prompt
+reach the user, *false* = reject automatically instead of asking.
+
+Also **seen**, in the same file: `WritableRoot` exists specifically so that
+`.codex`, `.git` and especially `.git/hooks` stay read-only *inside* a writable
+root — a writable workspace is not a blanket grant.
+
+### AGENTS.md — **seen**
+
+* Search order (`tui/src/status/helpers.rs` test snapshot):
+  `~/.codex/AGENTS.md, ../AGENTS.md, AGENTS.md, nested/AGENTS.md` — global
+  first, then one document per directory from the project root down to the cwd,
+  then nested documents as the agent touches subdirectories.
+* Injection shape (`core/src/compact_tests.rs:430`): the merged text is sent as a
+  **user** message wrapped in `# AGENTS.md instructions for project` … `<INSTRUCTIONS>…</INSTRUCTIONS>`.
+* Budget: `project_doc_max_bytes`, default `32 * 1024`
+  (`thread-manager-sample/src/main.rs:330`), plus `project_doc_fallback_filenames`.
+
+### Implemented from this — `lib/workspace.js` + `action:"workspace"`
+
+| Codex evidence | ANTICODEX |
+|---|---|
+| `AskForApproval` / `SandboxPolicy` | same four modes, same wire spellings, the `on-failure` alias, and `serdeSandboxPolicy()` so a policy round-trips to `config.toml` |
+| `GranularApprovalConfig` | `granular` with the same five categories and the same true=prompt / false=deny reading |
+| `decideApproval()` | one matrix: `auto` / `prompt` / `deny` per action (`read` / `write` / `exec` / `network`) |
+| AGENTS.md order + wrapper + `project_doc_max_bytes` | `discoverAgentDocs()` reproduces the order, the exact wrapper, the 32 KiB budget, and reports truncation per document |
+| `WritableRoot` / `.git/hooks` caution | writable roots are explicit and never inherited from an unknown mode: an unrecognised sandbox string **coerces to workspace-write** rather than to full access, and says so (`coerced_from`) |
+
+**Not copied:** no Rust code, prompts, UI or assets were transplanted. What is
+reused is the *contract* (enum names and their meanings), which is what makes a
+`config.toml` mean the same thing in both products.
+
+Still **unknown** after reading the source: the model-facing prompt around the
+tools, the exact execpolicy DSL, and `codex cloud` behaviour — none of which this
+change depends on.
+
 ## 7. Unknowns (explicitly not established)
 
 * What `cobalt_plinth`, `cobalt_plinth_juniper`, `cobalt_plinth_bramble` are.
+* Codex's execpolicy DSL and its cloud behaviour (§9 covers the parts used here).
 * The inside of `app.asar` (582 MB, not downloaded) — routing, state management, component structure.
 * The rendering layer of either app: not observed, only the manifests and config.
 * Whether REA's browser tools work against either live site from a network that can reach them.
@@ -277,4 +359,15 @@ curl -s -X POST localhost:8787/api/bridge -H 'content-type: application/json' \
 
 # 4. the import engine
 node tests/test-import-config.mjs                    # 53 assertions
+node tests/test-workspace.mjs                        # 59 assertions (AGENTS.md + sandbox/approval)
+```
+
+## 10. The openai/codex clone
+
+```bash
+gh api repos/openai/codex --jq '.license.spdx_id'    # Apache-2.0
+git clone --depth 1 --filter=blob:none https://github.com/openai/codex
+rg -n "enum SandboxPolicy|enum AskForApproval" -A 22 codex-rs/protocol/src/protocol.rs
+rg -n "AGENTS.md instructions" -B2 -A6 codex-rs/core/src/compact_tests.rs
+```
 ```

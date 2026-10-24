@@ -288,6 +288,27 @@ REA_E2E=1 node tests/test-mcp-stdio.mjs        # 31 assertions incl. the real se
 A hosted (Vercel) deployment answers honestly instead of pretending: *"this MCP server runs on your
 machine, so it needs the desktop app or a local `npm start`"*.
 
+### Codex parity: AGENTS.md, sandbox and approval
+
+`openai/codex` is Apache-2.0 (verified via the GitHub API before cloning), so its
+**contract** is reused rather than guessed at — not its code:
+
+* **AGENTS.md** — `~/.codex/AGENTS.md` first, then one document per directory from
+  the project root down to the cwd, then nested documents as the agent touches
+  subdirectories; merged under `project_doc_max_bytes` (32 KiB) and wrapped in the
+  exact `# AGENTS.md instructions for <project>` / `<INSTRUCTIONS>` block Codex
+  sends. The workspace page shows which files were loaded and what the model gets.
+* **Sandbox** — `read-only`, `workspace-write`, `external-sandbox`,
+  `danger-full-access`, with writable roots and `network_access`. An unrecognised
+  mode coerces to `workspace-write` and says so; it never silently escalates.
+* **Approval** — `untrusted`, `on-request` (the old `on-failure` spelling is
+  accepted), `granular` with the same five categories, and `never`. One matrix
+  answers `auto` / `prompt` / `deny` for each of read, write, exec and network.
+* **Export** — the same `config.toml` shape can be written back out, so adopting
+  ANTICODEX is not a one-way door.
+
+`node tests/test-workspace.mjs` pins 59 of those behaviours.
+
 ### Bring your setup
 
 `lib/configimport.js` parses the config schemas recovered from the two shipped desktop apps — the whole

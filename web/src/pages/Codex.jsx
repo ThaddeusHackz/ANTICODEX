@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { chat as chatApi } from '../lib/api.js';
+import { chat as chatApi, workspace as workspaceApi } from '../lib/api.js';
 import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -13,10 +13,19 @@ const SEED_FS = {
   'README.md': `# Sandbox project\n\nEverything here runs in the ANTICODEX virtual sandbox (desktop app: real sandboxed exec via the companion service, modeled on codex-windows-sandbox-service).\n`
 };
 
+// These are the real Codex approval policies (codex-rs protocol `AskForApproval`)
+// paired with the sandbox each one implies — not invented names. `on-failure` is
+// the old spelling of `on-request`, and both are accepted by the server.
 const MODES = [
-  { id: 'suggest', label: 'Suggest', desc: 'Agent proposes edits; you apply each one.' },
-  { id: 'auto-edit', label: 'Auto-edit', desc: 'Agent applies file edits automatically; commands still ask.' },
-  { id: 'auto-run', label: 'Auto-run', desc: 'Full auto — edits and commands run without approval.' }
+  { id: 'suggest', label: 'Suggest', approval: 'untrusted', sandbox: 'read-only', desc: 'Nothing runs without your approval. Codex calls this untrusted + read-only.' },
+  { id: 'auto-edit', label: 'Auto-edit', approval: 'on-request', sandbox: 'workspace-write', desc: 'Writes inside the workspace; anything outside it asks. Codex: on-request + workspace-write.' },
+  { id: 'auto-run', label: 'Auto-run', approval: 'never', sandbox: 'danger-full-access', desc: 'No approvals and no sandbox. Codex: never + danger-full-access — throwaway machines only.' }
+];
+
+const SANDBOXES = [
+  { id: 'read-only', label: 'read-only' },
+  { id: 'workspace-write', label: 'workspace-write' },
+  { id: 'danger-full-access', label: 'danger-full-access' }
 ];
 
 export default function CodexPage() {
@@ -30,6 +39,11 @@ export default function CodexPage() {
   const [fs, setFs] = useState(() => readFs(fsKey));
   const [active, setActive] = useState('src/index.js');
   const [mode, setMode] = useState('suggest');
+  const [sandbox, setSandbox] = useState('read-only');
+  const [net, setNet] = useState(false);
+  const [agents, setAgents] = useState(null);
+  const [cwd, setCwd] = useState(() => localStorage.getItem('acx_workspace_cwd') || '');
+  const [showAgents, setShowAgents] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -42,6 +56,23 @@ export default function CodexPage() {
   useEffect(() => { setFs(readFs(fsKey)); }, [fsKey]);
   useEffect(() => { try { localStorage.setItem(fsKey, JSON.stringify(fs)); } catch { /* quota */ } }, [fs, fsKey]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, term]);
+
+  useEffect(() => {
+    const m = MODES.find((x) => x.id === mode);
+    if (m) setSandbox(m.sandbox);
+  }, [mode]);
+
+  async function loadAgents() {
+    try {
+      const r = await workspaceApi.context({ cwd: cwd || undefined, sandbox: { mode: sandbox, network_access: net } });
+      setAgents(r);
+      setShowAgents(true);
+      if (r.ok) {
+        notify(`${r.documents.length} AGENTS.md file(s) · ${r.bytes}/${r.max_bytes} bytes · ${r.describe}`);
+        if (cwd) localStorage.setItem('acx_workspace_cwd', cwd);
+      } else notify(r.error || 'Could not read AGENTS.md');
+    } catch (e) { notify('Could not read AGENTS.md: ' + e.message); }
+  }
 
   function runTerm(cmd) {
     const line = cmd.trim();
@@ -73,11 +104,14 @@ export default function CodexPage() {
     setMessages(next);
     try {
       const fileContext = Object.entries(fs).map(([k, v]) => `--- ${k} ---\n${v.slice(0, 600)}`).join('\n\n');
+      const projectBlock = agents?.ok && agents.instructions ? agents.instructions : '';
       const r = await chatApi({
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
         system: `You are the ANTICODEX Codex agent (mode: ${mode}). Working files:\n${fileContext}\nWhen proposing changes, output a fenced "diff" block with +/- lines and the file name first.`,
-        messages: [...messages, { role: 'user', content }]
+        messages: projectBlock
+          ? [{ role: 'user', content: projectBlock }, ...messages, { role: 'user', content }]
+          : [...messages, { role: 'user', content }]
       });
       const full = r.error ? `⚠ ${r.error}${r.settings_link ? ' — fix it in Settings → Providers' : ''}` : (r.text || '(no response)');
       let shown = '';
@@ -118,13 +152,28 @@ export default function CodexPage() {
           </button>
         ))}
         <div className="tiny" style={{ padding: '8px 10px' }}>{MODES.find((m) => m.id === mode)?.desc}</div>
+        <div className="nav-section">Sandbox</div>
+        {SANDBOXES.map((sb) => (
+          <button key={sb.id} className={`file-item ${sandbox === sb.id ? 'active' : ''}`} onClick={() => setSandbox(sb.id)}>
+            {sandbox === sb.id ? '◉' : '○'} {sb.label}
+          </button>
+        ))}
+        <label className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px' }}>
+          <input type="checkbox" checked={net} onChange={(e) => setNet(e.target.checked)} /> allow network
+        </label>
+        <div className="nav-section">AGENTS.md</div>
+        <input value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder="workspace path (blank = app dir)"
+          style={{ margin: '0 8px 6px', width: 'calc(100% - 16px)' }} />
+        <button className="file-item" onClick={loadAgents}>
+          ⇩ {agents?.ok ? `reload (${agents.documents.length} found)` : 'load project docs'}
+        </button>
       </div>
 
       <div className="editor-pane">
         <div className="row between" style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-soft)' }}>
           <b style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>{active}</b>
           <div className="row">
-            <Pill kind="ok">sandbox</Pill>
+            <Pill kind={sandbox === 'danger-full-access' ? 'warn' : 'ok'}>{sandbox}{net ? ' · net' : ''}</Pill>
             <CopyBtn text={fs[active] || ''} />
           </div>
         </div>
@@ -160,6 +209,29 @@ export default function CodexPage() {
           <b style={{ fontSize: 13 }}>Codex agent</b>
           <Pill>{mode}</Pill>
         </div>
+        {agents && (
+          <div style={{ borderBottom: '1px solid var(--border-soft)', padding: '8px 12px', fontSize: 12 }}>
+            {agents.ok ? (
+              <>
+                <div className="row between">
+                  <span className="tiny">
+                    {agents.documents.length} AGENTS.md · {agents.bytes}/{agents.max_bytes} bytes
+                    {agents.truncated ? ' · truncated' : ''} · {agents.describe}
+                  </span>
+                  <button className="btn small ghost" onClick={() => setShowAgents((v) => !v)}>{showAgents ? 'hide' : 'show'}</button>
+                </div>
+                {agents.documents.map((d) => (
+                  <div key={d.path} className="tiny mono" style={{ opacity: .75 }}>{d.display} · {d.scope} · {d.bytes}B</div>
+                ))}
+                {showAgents && (
+                  <pre className="term" style={{ marginTop: 6, maxHeight: 180, whiteSpace: 'pre-wrap' }}>{agents.instructions || '(no instructions)'}</pre>
+                )}
+              </>
+            ) : (
+              <div className="tiny">⚠ {agents.error}{agents.needs_local ? ' Open the desktop app to read project docs.' : ''}</div>
+            )}
+          </div>
+        )}
         <div className="messages" style={{ flex: 1, overflowY: 'auto' }}>
           {messages.length === 0 && (
             <div className="muted" style={{ padding: 12, fontSize: 13 }}>

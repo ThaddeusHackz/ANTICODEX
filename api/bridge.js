@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { json, readBody } from '../lib/util.js';
 import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
@@ -8,8 +9,9 @@ import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
-import { buildImportPlan, planToRows } from '../lib/configimport.js';
-import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows } from '../lib/policy.js';
+import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
+import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
+import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
@@ -123,6 +125,8 @@ export default async function handler(req, res) {
       case 'mcp': return await handleMcp(body, res, req);
       case 'policy': return await handlePolicy(req, body, res);
       case 'import_config': return await handleImportConfig(req, body, res);
+      case 'workspace': return await handleWorkspace(req, body, res);
+      case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
@@ -704,6 +708,90 @@ async function handleMcp(body, res, req) {
 }
 
 // --- policy ----------------------------------------------------------------
+
+// --- workspace (AGENTS.md, sandbox, approval) --------------------------------
+//
+// Reading a caller-supplied directory is a filesystem read on *this* machine, so
+// it is gated exactly like a local MCP server: loopback + a process-capable host.
+// A hosted deployment answers with `needs_local` instead of reading the server's
+// own disk for a remote caller.
+
+async function handleWorkspace(req, body, res) {
+  const op = body.op || 'context';
+  const user = await currentUser(req, body);
+
+  if (op === 'context') {
+    const cwd = body.cwd || process.cwd();
+    if (!canSpawnLocalMcp() || !isLoopback(req)) {
+      return json(res, 200, {
+        ok: false, needs_local: true,
+        error: 'Reading AGENTS.md is a filesystem read on your machine — it needs the desktop app or a local `npm start`.',
+        sandbox_modes: SANDBOX_MODES, approval_modes: APPROVAL_MODES
+      });
+    }
+    let isDir = false;
+    try { isDir = fs.statSync(cwd).isDirectory(); } catch { isDir = false; }
+    if (!isDir) return json(res, 400, { ok: false, error: `not a directory: ${cwd}` });
+
+    const found = discoverAgentDocs({
+      cwd,
+      codexHome: body.codex_home,
+      stopAt: body.root,
+      nestedPaths: Array.isArray(body.nested_paths) ? body.nested_paths : []
+    });
+    const policy = await getPolicy(user?.email);
+    const sandbox = body.sandbox ? normalizeSandboxPolicy(body.sandbox) : policy.defaults.sandbox_policy;
+    const approval = body.approval ? normalizeApprovalPolicy(body.approval) : policy.defaults.approval_policy;
+    return json(res, 200, {
+      ok: true,
+      cwd,
+      documents: found.docs,
+      instructions: found.instructions,
+      composed: found.composed,
+      bytes: found.bytes,
+      truncated: found.truncated,
+      max_bytes: found.max_bytes,
+      sandbox,
+      approval,
+      describe: describePolicy({ sandbox, approval }),
+      sandbox_modes: SANDBOX_MODES,
+      approval_modes: APPROVAL_MODES,
+      decisions: {
+        read: decideApproval({ sandbox, approval, action: 'read' }),
+        write: decideApproval({ sandbox, approval, action: 'write' }),
+        exec: decideApproval({ sandbox, approval, action: 'exec' }),
+        network: decideApproval({ sandbox, approval, action: 'network' })
+      }
+    });
+  }
+
+  if (op === 'set') {
+    if (!user) return json(res, 401, { error: 'sign in to save workspace policy' });
+    const current = await getPolicy(user.email);
+    const patch = {
+      ...current,
+      defaults: {
+        ...current.defaults,
+        ...(body.sandbox !== undefined ? { sandbox_policy: normalizeSandboxPolicy(body.sandbox) } : {}),
+        ...(body.approval !== undefined ? { approval_policy: normalizeApprovalPolicy(body.approval) } : {})
+      }
+    };
+    const saved = await savePolicy(user.email, normalizePolicy(patch));
+    return json(res, 200, { ok: true, ...saved, describe: describeWorkspacePolicy(saved.policy) });
+  }
+
+  return json(res, 400, { error: 'unknown workspace op' });
+}
+
+/** Emit a `~/.codex/config.toml` body from what this product already knows. */
+function handleExportConfig(body, res) {
+  try {
+    const toml = exportCodexConfig(body.state || body);
+    return json(res, 200, { ok: true, filename: 'config.toml', toml, bytes: Buffer.byteLength(toml) });
+  } catch (e) {
+    return json(res, 200, { ok: false, error: String(e.message || e) });
+  }
+}
 
 async function handlePolicy(req, body, res) {
   const user = await currentUser(req, body);
