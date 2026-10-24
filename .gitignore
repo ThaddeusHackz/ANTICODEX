@@ -24,3 +24,4 @@ coverage/
 # connector downloads (Drive/attachments) are staged here, never committed
 google_drive/
 relay/work/
+.rea-scan/
