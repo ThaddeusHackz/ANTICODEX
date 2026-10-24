@@ -610,3 +610,31 @@ enable state kept per account rather than per browser.
 Config, a name+description filter, per-account enable toggles, the roots that were
 searched (missing ones dimmed), refused skills, and shadowed duplicates. Its Plugins
 tab is the artifact template grid from §12.2, i.e. the same data the picker uses.
+
+### 12.6 The websites, finally (relay run 8, web stage only)
+
+`chatgpt.com` was never a bot wall — its shell carries **one inline 581 620 B
+bootstrap script** that names the chunk files, and the earlier regex only looked at
+`<script src>`. Saving inline blocks took the site from 1 file / 597 KB to
+**26 files / 14.8 MB of text**, and `claude.ai` from 2 files to **42 files / 7.0 MB**.
+
+| Fact | `chatgpt.com` | `claude.ai` |
+|---|---|---|
+| chunks fetched | 25 (`/cdn/assets/<id>.<hash>.js`, incl. a 1 131 621 B one) | 41 (`assets-proxy.anthropic.com/…/assets/v1/…`) |
+| MCP tool names | `mcp__codex_apps__hotline` | `mcp__claude_browser__`, `mcp__computer`, `mcp__cowork__allow_cowork_file_delete`, `mcp__cowork__request_cowork_directory`, `mcp__elicit__present_options`, `mcp__secrets__request_secret`, `mcp__visualize__` |
+| skill surface | `skills/list`, `skills/changed`, `skills/config`, `skills/manage`, `skills/plugins`, `skill/read` — the same names as the desktop app | `skills/list-skills`, `skills/list-org-skills` |
+| routes | `/v1/environment-configs/{configId}`, `/auth/login?next=/codex/cloud`, `/dots`, `/dots/start` | `/api/chat_snapshots/{id}?rendering_mode=messages&render_all_tools=true`, `/api/published_artifacts/{id}`, `/api/organizations/{uuid}/cowork/remote_devices`, `/api/event_logging/v2/batch` |
+| persisted state | `environment-catalog-cache-v2`, `codex.debug.dialogLayout`, `connector_oauth_classic_states` | `spa:locale`, `rq-cache-confirmed-account`, `conversation-store:unsaved:`, `conversation-store:clear-pending`, `claude:stale_entry_clock_suspect` |
+| model ids in the bundle | `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-6-luna`, `gpt-6-astra`, `gpt-5.4` | `claude-ai`, `claude-code-desktop`, `claude-dot` |
+| hosts | chatgpt.com 90, persistent.oaistatic.com 58, help.openai.com 23 | assets-proxy.anthropic.com 1 452, claude.ai 45, js.hcaptcha.com 20 |
+
+Two conclusions worth keeping:
+
+1. **The `mcp__<server>__<tool>` naming is a shared convention**, not a Claude
+   quirk — `lib/mcp.js` already mangles tools to exactly that shape
+   (`mcp__${conn.id}__${t.name}`, non-`\w` → `_`, 64 chars), which is why the same
+   connection works for both families of model.
+2. **The skill channel names are identical on the web and in the desktop app**
+   (`skills/list`, `skills/manage`, `skills/config`, `skills/plugins`,
+   `skills/changed`), so the `/skills` page built in §12.5 is the right shape for
+   both surfaces rather than a desktop-only convenience.
