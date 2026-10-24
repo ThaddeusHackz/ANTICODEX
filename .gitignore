@@ -20,3 +20,6 @@ coverage/
 
 # local reverse-engineering workdir (downloaded evidence, never shipped)
 .rea-work/
+
+# connector downloads (Drive/attachments) are staged here, never committed
+google_drive/

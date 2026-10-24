@@ -1,18 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { chat as chatApi } from '../lib/api.js';
+import { chat as chatApi, skills as skillsApi } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { modelLabel } from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
-import { Pill, Field, CopyBtn } from '../ui.jsx';
-
-const SKILLS = [
-  { name: 'reverse-engineer-anything', src: 'REA v42', desc: 'Native, managed, Electron/JS, firmware, browser targets' },
-  { name: 'leanrea', src: 'leanrea', desc: 'Fast-path RE with plain CLI tools, no MCP needed' },
-  { name: 'rea-tool-design', src: 'REA', desc: 'Design RE tooling and workflows' },
-  { name: 'rea-ci-tests-audit', src: 'REA', desc: 'CI/test auditing methodology' },
-  { name: 'code-review-plugin', src: 'claude-desktop', desc: 'Structured code review (from .claude plugins)' },
-  { name: 'plans-and-file-history', src: 'claude-desktop', desc: 'Plans / file-history / shell-snapshots workflow' }
-];
+import { Pill, Field, CopyBtn, Switch } from '../ui.jsx';
 
 export default function ClaudePage() {
   const { model, notify } = useApp();
@@ -30,7 +21,48 @@ export default function ClaudePage() {
   const [toolLog, setToolLog] = useState([
     { tool: 'memory.read', args: 'ANTICODEX.md', ok: true }
   ]);
+  const [skills, setSkills] = useState([]);
+  const [skillErrors, setSkillErrors] = useState([]);
+  const [skillNote, setSkillNote] = useState(null);
+  const [activeSkills, setActiveSkills] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('acx_active_skills') || '[]'); } catch { return []; }
+  });
+  const [installing, setInstalling] = useState(false);
+  // Installing writes to this machine, so it is offered only where the app can
+  // reach the filesystem — the desktop build, not a hosted page.
+  const canInstall = typeof window !== 'undefined' && Boolean(window.anticodexDesktop?.installSkill);
   const bottomRef = useRef(null);
+
+  function installSkill() {
+    setInstalling(true);
+    window.anticodexDesktop.installSkill()
+      .then((r) => {
+        if (r?.canceled) return;
+        if (!r?.ok) throw new Error(r?.error || 'install failed');
+        notify(`Installed ${r.name}`);
+        return skillsApi.list().then((list) => {
+          setSkills(list.skills || []); setSkillErrors(list.errors || []); setSkillNote(list.note || null);
+          if (!activeSkills.includes(r.name)) toggleSkill(r.name);
+        });
+      })
+      .catch((e) => notify('Install failed: ' + e.message))
+      .finally(() => setInstalling(false));
+  }
+
+  // Skills are read from disk by the bridge (Codex's rules: a root is a `skills`
+  // dir, a skill is a SKILL.md, a broken one is an error row, and the first root
+  // to define a name wins).
+  useEffect(() => {
+    skillsApi.list()
+      .then((r) => { setSkills(r.skills || []); setSkillErrors(r.errors || []); setSkillNote(r.note || null); })
+      .catch((e) => notify('Could not load skills: ' + e.message));
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('acx_active_skills', JSON.stringify(activeSkills)); } catch { /* quota */ }
+  }, [activeSkills]);
+
+  const toggleSkill = (name) => setActiveSkills((cur) => cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name]);
 
   useEffect(() => { localStorage.setItem('acx_memory', memory); }, [memory]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -43,9 +75,26 @@ export default function ClaudePage() {
     setMessages(next);
     setToolLog((l) => [...l, { tool: 'plan.update', args: content.slice(0, 60), ok: true }]);
     try {
+      // Active skills + any $mention in the message, resolved from the registry
+      // rather than from a hardcoded list.
+      let skillBlock = '';
+      try {
+        const mentioned = await skillsApi.resolve(content);
+        const names = new Set([...activeSkills, ...(mentioned.matched || []).map((m) => m.name)]);
+        const blocks = [];
+        for (const n of names) {
+          const g = await skillsApi.get(n).catch(() => null);
+          if (g?.ok) blocks.push(g.instructions);
+        }
+        if (blocks.length) {
+          skillBlock = '\n\n' + blocks.join('\n\n');
+          setToolLog((l) => [...l, { tool: 'skills.load', args: [...names].join(', '), ok: true }]);
+        }
+      } catch { /* skills are optional */ }
+
       const r = await chatApi({
         model,
-        system: `You are the ANTICODEX Agent Studio (Claude-Code-style). Project memory:\n${memory}\nCurrent plan:\n${plan.join('\n')}\nCite tools you would use in [tool:name] brackets.`,
+        system: `You are the ANTICODEX Agent Studio (Claude-Code-style). Project memory:\n${memory}\nCurrent plan:\n${plan.join('\n')}\nCite tools you would use in [tool:name] brackets.${skillBlock}`,
         messages: [...messages, { role: 'user', content }]
       });
       const full = r.text || '(no response)';
@@ -95,15 +144,52 @@ export default function ClaudePage() {
         <div className="card">
           <h3>Skills & plugins</h3>
           <p className="sub">REA / leanrea installed, plus Claude-desktop skill surfaces.</p>
-          {SKILLS.map((s) => (
-            <div key={s.name} className="perm-row">
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>{s.name}</div>
-                <div className="tiny">{s.desc}</div>
+          {skills.map((s) => (
+            <div key={s.name + (s.archive || '')} className="perm-row">
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>
+                  {s.name} <span className="tiny mono">{s.bytes}B</span>
+                </div>
+                <div className="tiny">{s.short_description || s.description}</div>
+                {s.packaged && (
+                  <div className="tiny mono" style={{ opacity: 0.75 }}>
+                    {s.archive_files} file(s) in {Math.round((s.archive_bytes || 0) / 1024)} KB
+                    {s.license ? ` · ${s.license}` : ''}
+                  </div>
+                )}
               </div>
-              <Pill>{s.src}</Pill>
+              <div className="row" style={{ gap: 6 }}>
+                {s.packaged && <Pill kind="ok">.skill</Pill>}
+                {s.tier && <Pill>{s.tier}</Pill>}
+                <Pill>{s.scope}</Pill>
+                <Switch on={activeSkills.includes(s.name)} onChange={() => toggleSkill(s.name)} />
+              </div>
             </div>
           ))}
+          {skills.length === 0 && !skillErrors.length && <div className="tiny">Scanning skill roots…</div>}
+          {skillErrors.map((e) => (
+            <div key={e.path} className="perm-row">
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>⚠ {e.code}</div>
+                <div className="tiny mono">{e.path}</div>
+                <div className="tiny">{e.message}</div>
+              </div>
+              <Pill kind="warn">invalid</Pill>
+            </div>
+          ))}
+          {canInstall && (
+            <div className="row" style={{ marginTop: 10, gap: 8 }}>
+              <button className="btn ghost small" onClick={installSkill} disabled={installing}>
+                {installing ? 'Installing…' : 'Install .skill…'}
+              </button>
+              <span className="tiny">a packaged skill is a ZIP with &lt;name&gt;/SKILL.md</span>
+            </div>
+          )}
+          <div className="tiny" style={{ marginTop: 8 }}>
+            {skills.length} skill(s) from {new Set(skills.map((s) => s.scope)).size} scope(s)
+            {activeSkills.length ? ` · ${activeSkills.length} active` : ''} · mention one with <span className="mono">$name</span>
+            {skillNote ? ` — ${skillNote}` : ''}
+          </div>
         </div>
       </div>
 

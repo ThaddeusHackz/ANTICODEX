@@ -1,4 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { json, readBody } from '../lib/util.js';
 import { listProviders, chat, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { webSearch } from '../lib/search.js';
@@ -10,6 +13,7 @@ import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, 
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
+import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
 import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
 import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
@@ -126,6 +130,7 @@ export default async function handler(req, res) {
       case 'policy': return await handlePolicy(req, body, res);
       case 'import_config': return await handleImportConfig(req, body, res);
       case 'workspace': return await handleWorkspace(req, body, res);
+      case 'skills': return await handleSkills(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
@@ -708,6 +713,127 @@ async function handleMcp(body, res, req) {
 }
 
 // --- policy ----------------------------------------------------------------
+
+// --- skills -----------------------------------------------------------------
+//
+// Discovery follows Codex's model: a root is a directory named `skills`, a skill
+// is a subdirectory with a `SKILL.md`, a broken one is an error entry rather than
+// a silent omission, and an earlier root shadows a later one by name.
+//
+// The repository's own `skills/` is part of the deployment, so it is readable
+// anywhere. This machine's `~/.codex` and `~/.claude` are a filesystem read on
+// the host, so — like AGENTS.md — they are only included for a loopback caller.
+
+const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+async function handleSkills(req, body, res) {
+  const op = body.op || 'list';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const extra = [path.join(REPO_ROOT, 'skills')];
+  if (local && Array.isArray(body.extra_roots)) {
+    for (const r of body.extra_roots.slice(0, 10)) if (typeof r === 'string') extra.push(r);
+  }
+
+  // Packaged `.skill` archives are read from a directory the caller names (and,
+  // for a local caller, from this repo's own `skills/`). Listing never extracts
+  // anything; `install` is the only op that writes.
+  const archives = [path.join(REPO_ROOT, 'skills')];
+  if (local && Array.isArray(body.archive_roots)) {
+    for (const r of body.archive_roots.slice(0, 10)) if (typeof r === 'string') archives.push(r);
+  }
+
+  const loaded = loadSkills({
+    cwd: local ? (body.cwd || REPO_ROOT) : null,
+    codexHome: local ? body.codex_home : null,
+    claudeHome: local ? body.claude_home : null,
+    extra,
+    archives
+  });
+
+  if (op === 'list') {
+    return json(res, 200, {
+      ok: true,
+      local,
+      count: loaded.count,
+      skills: loaded.skills.map((s) => ({
+        name: s.name, description: s.description, short_description: s.short_description ?? null,
+        scope: s.scope, root_label: s.root_label, path: s.path_to_skills_md,
+        bytes: s.bytes, allow_implicit_invocation: s.allow_implicit_invocation,
+        dependencies: s.dependencies, products: s.products,
+        packaged: Boolean(s.packaged), archive: s.archive || null,
+        archive_bytes: s.archive_bytes ?? null, archive_files: s.archive_files ?? null,
+        tier: s.tier ?? null, license: s.license ?? null
+      })),
+      errors: loaded.errors,
+      duplicates: loaded.duplicates,
+      roots: loaded.roots,
+      note: local ? null : 'Only the bundled repository skills are visible here — open the desktop app (or run locally) to see this machine\'s ~/.codex and ~/.claude skills.'
+    });
+  }
+
+  if (op === 'get') {
+    const skill = loaded.skills.find((s) => s.name === body.name);
+    if (!skill) return json(res, 404, { ok: false, error: `no skill named ${body.name}` });
+    return json(res, 200, { ok: true, skill, instructions: skillInstructions(skill) });
+  }
+
+  if (op === 'resolve') {
+    const matched = resolveSkillMentions(body.text || '', loaded.skills);
+    return json(res, 200, {
+      ok: true,
+      matched: matched.map((s) => ({ name: s.name, instructions: skillInstructions(s) }))
+    });
+  }
+
+  // Inspect one archive without installing it (size, entries, manifest entry).
+  if (op === 'archive') {
+    if (!local) return needsLocal(res, 'Reading a .skill file is a filesystem read on your machine.');
+    const file = String(body.file || '');
+    if (!path.isAbsolute(file) || !file.toLowerCase().endsWith('.skill')) {
+      return json(res, 400, { ok: false, error: 'file must be an absolute path to a .skill archive' });
+    }
+    const one = readSkillArchive(file);
+    return json(res, 200, {
+      ok: one.errors.length === 0, archive: file,
+      skills: one.skills.map((s) => ({ name: s.name, description: s.description, tier: s.tier, license: s.license, files: s.archive_files, bytes: s.bytes })),
+      errors: one.errors
+    });
+  }
+
+  // Install a `.skill` archive into this machine's skill root. This writes, so it
+  // is desktop/local-only, and it refuses to overwrite an existing skill unless
+  // the caller says so explicitly.
+  if (op === 'install') {
+    if (!local) return needsLocal(res, 'Installing a .skill writes to this machine, so it needs the desktop app or a local `npm start`.');
+    const file = String(body.file || '');
+    if (!path.isAbsolute(file) || !file.toLowerCase().endsWith('.skill')) {
+      return json(res, 400, { ok: false, error: 'file must be an absolute path to a .skill archive' });
+    }
+    const dest = body.dest ? String(body.dest) : path.join(os.homedir(), '.codex', 'skills');
+    if (!path.isAbsolute(dest)) return json(res, 400, { ok: false, error: 'dest must be an absolute directory' });
+    try {
+      const result = extractSkillArchive(file, dest, { overwrite: body.overwrite === true });
+      return json(res, 200, { ok: true, ...result, dest });
+    } catch (e) {
+      return json(res, e.code === 'Exists' ? 409 : 400, { ok: false, code: e.code || 'InstallFailed', error: String(e.message || e) });
+    }
+  }
+
+  if (op === 'manifest') {
+    if (!local) return needsLocal(res, 'Reading a skills manifest is a filesystem read on your machine.');
+    const dir = body.dir ? String(body.dir) : path.join(REPO_ROOT, 'skills');
+    if (!path.isAbsolute(dir)) return json(res, 400, { ok: false, error: 'dir must be absolute' });
+    const text = (() => { try { return fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'); } catch { return null; } })();
+    return json(res, 200, { ok: true, dir, manifest: parseSkillsManifest(text) });
+  }
+
+  return json(res, 400, { error: 'unknown skills op' });
+}
+
+/** One shape for "this needs a real machine" refusals. */
+function needsLocal(res, error) {
+  return json(res, 200, { ok: false, needs_local: true, error });
+}
 
 // --- workspace (AGENTS.md, sandbox, approval) --------------------------------
 //

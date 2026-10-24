@@ -125,6 +125,18 @@ export const pairing = {
 /** Adopt the config this machine already has (Codex config.toml, Claude settings). */
 export const importConfig = (payload) => api('import_config', payload);
 
+export const skills = {
+  list: (p) => api('skills', { op: 'list', ...p }),
+  get: (name) => api('skills', { op: 'get', name }),
+  resolve: (text) => api('skills', { op: 'resolve', text }),
+  // A `.skill` is a ZIP holding `<name>/SKILL.md` — the packaged form the shipped
+  // desktop apps use. `archive` inspects one, `install` extracts it into this
+  // machine's ~/.codex/skills (local only), `manifest` reads a bundled manifest.
+  archive: (file) => api('skills', { op: 'archive', file }),
+  install: (file, p = {}) => api('skills', { op: 'install', file, ...p }),
+  manifest: (dir) => api('skills', { op: 'manifest', dir })
+};
+
 export const workspace = {
   context: (p) => api('workspace', { op: 'context', ...p }),
   set: (p) => api('workspace', { op: 'set', ...p })

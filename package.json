@@ -10,7 +10,7 @@
     "build": "npm run build --prefix web",
     "build:web": "npm run build --prefix web",
     "start": "node server.mjs",
-    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs && node tests/test-import-config.mjs && node tests/test-mcp-stdio.mjs && node tests/test-workspace.mjs && node tests/test-desktop.mjs",
+    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs && node tests/test-import-config.mjs && node tests/test-mcp-stdio.mjs && node tests/test-workspace.mjs && node tests/test-skills.mjs && node tests/test-desktop.mjs",
     "test:desktop": "node tests/test-desktop.mjs",
     "test:api": "node tests/test-api.mjs",
     "package:win": "node desktop/package-win.mjs",
@@ -20,7 +20,8 @@
     "seed:owner": "node scripts/seed-owner.mjs",
     "test:import": "node tests/test-import-config.mjs",
     "test:mcp": "node tests/test-mcp-stdio.mjs",
-    "test:workspace": "node tests/test-workspace.mjs"
+    "test:workspace": "node tests/test-workspace.mjs",
+    "test:skills": "node tests/test-skills.mjs"
   },
   "engines": {
     "node": ">=20"

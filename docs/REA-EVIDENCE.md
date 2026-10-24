@@ -371,3 +371,141 @@ rg -n "enum SandboxPolicy|enum AskForApproval" -A 22 codex-rs/protocol/src/proto
 rg -n "AGENTS.md instructions" -B2 -A6 codex-rs/core/src/compact_tests.rs
 ```
 ```
+
+---
+
+## 11. The Drive folder, actually opened (2026-10-24, second pass)
+
+The user's instruction was to stop treating the large artifacts as blocked and work from
+Drive instead. Drive turned out to hold the **unpacked Windows packages themselves**, which
+is what made this pass possible:
+
+```
+ANTICODEX/                                   1ILynWHvqLaCACzMSo9nt23_KDKBi1-p7
+├── CHATGPT files to reverse engineer /      1U8EaCGic8J3BLuKCF9Buj-On7adG16YG
+│   ├── AppxManifest.xml                     8 671 B     (OpenAI.Codex, DisplayName "ChatGPT")
+│   ├── app/  (35 entries)                   ChatGPT.exe, Codex.exe, chrome.dll, resources/
+│   ├── .codex/                              Codex home shipped with the package
+│   └── resources.pri, AppxBlockMap.xml, AppxSignature.p7x …
+└── CLAUDE files to reverse engineer /       1TlnGmESxW4aZVrHM3ohii4AD6uarcwV9
+    ├── AppxManifest.xml                     9 898 B     (Claude 2.42304.0)
+    ├── app/  (19 entries)                   claude.exe 245 756 240 B, resources/
+    └── .claude/                             Claude home shipped with the package
+```
+
+**seen** — Drive listings above; file sizes as returned by the Drive API.
+
+### 11.1 What the ChatGPT package says about itself
+
+| Fact | Value | Where |
+|---|---|---|
+| Package identity | `OpenAI.Codex`, publisher `CN=50BDFD77-…`, version `26.1013.4894.0` | `AppxManifest.xml` |
+| Display name | `ChatGPT` — the ChatGPT app *is* the Codex shell | `AppxManifest.xml` |
+| Electron runtime | `owl` (`runtimeName`), built from `codex/codex-apps/electron/out/Codex-win32-x64` | `resources/owl-electron-app.json` |
+| App version / data dir | `26.1013.40934`, user-data directory named `Codex` | `resources/owl-app.ini` |
+| Local listeners | TCP 1455 and 1457 (app), 3128–3159 and 8081–8112 (codex.exe proxies) | manifest firewall rules |
+| Proxy origin | `https://codex-portals.api.openai.com` | `resources/masque-proxy-origins.txt` |
+| Deep link | protocol `codex`, single-instance argument `%1` | manifest |
+| File associations | `spreadsheet` → csv/docx/pptx/tsv/xls/xlsm/xlsx; **`.skill`** → skill install | manifest |
+| Chrome integration | native-messaging host alias `codex-chrome-native-host.exe`, registered under `HKCU\Software\Google\Chrome\NativeMessagingHosts` | manifest |
+| Bundled skill root | `resources/skills/.curated/{hatch-pet,onboard-new-user}/SKILL.md` (86 445 B and 16 162 B) | Drive listing of `resources/skills` |
+
+**seen**. The interesting part is the last two rows: a skill is a *file type* the OS hands to
+the app, and curated skills ship inside the package next to the binary.
+
+### 11.2 What the Claude package says about itself
+
+`app.asar` from the Claude package is **49 315 901 B** — under the connector's 100 MB inline
+cap, so unlike the ChatGPT bundle it could be fetched whole and unpacked.
+
+```
+CLAUDE files …/app/resources/app.asar   49 315 901 B
+  → 506 files, 79 851 163 B uncompressed (header parsed locally, no npm asar package)
+  .vite/build/                 Electron main + 400+ chunks (aboutWindow, buddy,
+                               computerUseTeach, computerUseWatchRecord, coworkArtifact,
+                               designWindow, findInPage, file-index-worker, heavy-work-worker)
+  .vite/renderer/              about_window, buddy_window, find_in_page, local_exec_consent,
+                               main_window …
+  resources/bundled-skills/    manifest.json + 6 × .skill   ← the contract we adopted
+  resources/{artifact-libs,github-mcp,office365-mcp}/
+  package.json                 @ant/desktop 2.42304.0, main .vite/build/index.pre.js
+```
+
+REA (`analyze_javascript_application`, `--artifact-format directory`) over that tree:
+
+| Result | Value |
+|---|---|
+| Evidence id | `ev_7407f525c6fc80494533def77d9dc2cbaabe8e7d5febf08fc12cc542e51f48cf` |
+| Subject digest | `sha256:57eb5abf…d564` (`format: directory`, `authority: shipped-artifact`) |
+| Files | 453 relevant, 432 parsed, 0 parse failures, 5 skipped, 0 invalid UTF-8 |
+| Volume | 40 601 712 B of text, 9 072 261 AST nodes visited, 6 805 findings, 78 modules |
+| Graph | 1 704 nodes / 33 092 relations, 43 647 semantic nodes, 7 557 fingerprints |
+| Electron surface | 15 browser windows, 41 explicit web preferences, 52 contextBridge APIs, 37 exposed members |
+| IPC | 1 535 operations — only **10 literal channels**, 1 524 dynamic; 1 301 renderer transmissions, 231 renderer listeners, 3 main handlers |
+| Utilities | 3 utility processes, 0 resolved entrypoints; 0 native addon bindings |
+| Limitations | 855, almost all "Resource constraint … exceeds the parent's remaining result budget" |
+| Unknowns | 31 959 |
+
+**seen** (numbers quoted from the bundle). **Inferred**: 1 524 dynamic IPC channel operations
+means the channel name is computed at runtime, so static analysis can name the *shape* of the
+IPC surface but not its channels; that is why the numbers are reported rather than the names.
+
+### 11.3 The packaged-skill contract (adopted)
+
+`resources/bundled-skills/manifest.json` — **seen**:
+
+```json
+{ "agentSkillsRef": "1792020044",
+  "skills": [ { "name": "docx", "description": "Use this skill whenever …", "tier": "always" }, … ] }
+```
+
+Each `*.skill` is a ZIP — **seen** by walking the central directory:
+
+| Archive | Bytes | Entries | Shape |
+|---|---|---|---|
+| `docx.skill` | 163 372 | 61 | `docx/SKILL.md`, `docx/LICENSE.txt`, `docx/scripts/*.py`, `docx/scripts/office/…` |
+| `pptx.skill` | 173 007 | 57 | `pptx/SKILL.md`, `pptx/scripts/{apply_theme.js,thumbnail.py,…}`, `office/` |
+| `xlsx.skill` | 155 709 | 53 | `xlsx/SKILL.md`, `xlsx/scripts/recalc.py`, `office/validators/` |
+| `pdf.skill` | 21 600 | 12 | `pdf/SKILL.md`, `REFERENCE.md`, `FORMS.md`, `pdf/scripts/*.py` |
+| `frontend-design.skill` | 8 125 | 2 | `frontend-design/SKILL.md`, `LICENSE.txt` |
+| `pdf-reading.skill` | 7 997 | 3 | `pdf-reading/SKILL.md`, `REFERENCE.md`, `LICENSE.txt` |
+
+The `SKILL.md` frontmatter is the same three fields Codex uses, plus `license`:
+
+```yaml
+---
+name: frontend-design
+description: Guidance for distinctive, intentional visual design …
+license: Complete terms in LICENSE.txt
+---
+```
+
+**seen**. Contract adopted into `lib/skills.js`: a `.skill` is *a container for the same
+`SKILL.md` a directory root holds*. Nothing was executed, no prompt text or script copied.
+
+### 11.4 What was built from this pass
+
+| Change | File | What it does |
+|---|---|---|
+| `.skill` reader | `lib/skills.js` — `readZipEntries`, `readZipFile`, `readSkillArchive` | parses a ZIP (stored + deflate) in-process, no dependency; a broken archive is an error row |
+| manifest | `parseSkillsManifest`, `loadSkillArchives` | reads `{agentSkillsRef, skills[{name,description,tier}]}` beside the archives |
+| registry merge | `loadSkills({archives})` | directory roots first, packaged archives last, so an editable copy always wins |
+| archive-backed reads | `readSkillContents`, `skillInstructions` | `get`/`resolve` read the body straight out of the ZIP |
+| install | `extractSkillArchive` | path-checked extraction to `<root>/<name>`; refuses traversal, multi-root archives and silent overwrite |
+| bridge | `api/bridge.js` `skills` ops `archive` / `install` / `manifest` | local-only writes, absolute `.skill` paths only |
+| website | `web/src/pages/Claude.jsx` | live registry, `.skill` + tier pills, licence and entry count, "Install .skill…" (desktop only) |
+| desktop | `desktop/main.mjs` `acx:skillInstall`, `desktop/preload.mjs` | native file picker → the same extractor → `~/.codex/skills`, replace prompt on a name clash |
+| tests | `tests/test-skills.mjs` (65), `tests/test-desktop.mjs` (90) | includes a ZIP built in-test, a traversal archive, and a two-root archive |
+
+### 11.5 What is still not reachable
+
+| Target | Why | Status |
+|---|---|---|
+| `chatgpt.com`, `claude.ai` over the network | sandbox egress is allowlisted to npm/PyPI/GitHub; both return `000` | **unknown**, not analysed |
+| ChatGPT `app.asar` (582 072 504 B) | above the connector's 100 MB inline download cap | **not analysed** |
+| `codex.exe` (341 312 816 B), `claude.exe` (245 756 240 B) | same cap; and no disassembler engine is installed | **not analysed** |
+| Claude `.vite/build` semantic detail for 400+ chunks | REA's result budget: 855 resource-constraint limitations | static facts only |
+| Claude's `$BROWSER` shim (`claude-browser-shim.js`, 6 770 B) | read, not yet implemented | backlog: a URL handed to the OS browser should open in an in-app pane |
+
+The honest summary: the *desktop packages* were reverse-engineered from Drive; the *websites*
+were not, and were never reachable from this environment.
