@@ -194,6 +194,16 @@ button { font-family: inherit; }
 /* ---------- generic pages / legacy page classes ---------- */
 .content { padding: 24px 28px; overflow-y: auto; flex: 1; }
 .content-wide { padding: 18px 22px; overflow-y: auto; flex: 1; }
+/* A plain document page (Skills): the shell already scrolls, so a page is just a
+   centred column that does not fight the sidebar. */
+.page {
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+  overflow-y: auto;
+}
+
 .card {
   background: var(--bg-elev); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 18px;

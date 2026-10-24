@@ -357,6 +357,16 @@ try {
     fs.rmSync(fixture, { recursive: true, force: true });
     ok('the picker is reachable from the chat composer', /api\.artifacts\.list/.test(read('web/src/pages/Chat.jsx')));
 
+    // The ChatGPT webview's skill channels (skills/list, skills/manage,
+    // skills/config, skills/plugins) are one page here, and both of its data
+    // sources have to be the real endpoints.
+    ok('the Skills route exists', /path="\/skills"/.test(read('web/src/App.jsx')) && /SkillsPage/.test(read('web/src/App.jsx')));
+    const skillsPage = read('web/src/pages/Skills.jsx');
+    ok('…and reads the registry', /skillsApi\.list/.test(skillsPage));
+    ok('…and the template roots for the plugins tab', /artifactsApi\.list/.test(skillsPage));
+    ok('…with per-account toggles rather than per-browser ones', /userKey\('acx_enabled_skills'/.test(skillsPage));
+    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /duplicates/.test(skillsPage));
+
     // Installing a packaged skill is a write to this machine, so it goes through
     // the main process (file picker + the registry's own extractor), never the page.
     const main = read('desktop/main.mjs');

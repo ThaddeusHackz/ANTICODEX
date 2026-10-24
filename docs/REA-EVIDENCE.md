@@ -502,7 +502,7 @@ license: Complete terms in LICENSE.txt
 | Target | Why | Status |
 |---|---|---|
 | `chatgpt.com`, `claude.ai` over the network | sandbox egress is allowlisted to npm/PyPI/GitHub; both return `000` | **unknown**, not analysed |
-| ChatGPT `app.asar` (582 072 504 B) | above the connector's 100 MB inline download cap | **not analysed yet** — the relay retries it with a streamed download; a crash in the download path is now a per-target error with a stack, not a lost run |
+| ChatGPT `app.asar` | above the connector's 100 MB inline download cap | **analysed by the relay** — 640 129 388 B, 21 789 files, 21 789 fact rows (§12.5) |
 | `codex.exe` (341 312 816 B), `claude.exe` (245 756 240 B) | above the connector's inline cap | **analysed by the relay** — PE headers, imports, capabilities and toolchain in `relay/out/assets.json` (§12.4) |
 | Claude `.vite/build` semantic detail for 400+ chunks | REA's result budget: 855 resource-constraint limitations | static facts only |
 | Claude's `$BROWSER` shim (`claude-browser-shim.js`, 6 770 B) | read, not yet implemented | backlog: a URL handed to the OS browser should open in an in-app pane |
@@ -571,3 +571,42 @@ record. Runs 2–4 collected the Claude MSIX, the Codex release and the Claude C
 binary; the ChatGPT MSIX (1 GB) failed twice on V8's ~512 MB string limit before the
 download became a streamed pipeline (`Readable.fromWeb` → file, sha256 incremental, no
 string for anything over 32 MiB) and the PE reader used a 2-byte `readSync`.
+
+### 12.5 The ChatGPT Windows app, finally
+
+The 979 994 720 B MSIX took four relay runs to get through, and every failure was
+a different, honest error rather than a lost target:
+
+| Run | Result | Root cause |
+|---|---|---|
+| 2 | `Cannot create a string longer than 0x1fffffe8` | unconditional `buf.toString('utf8')` on the whole installer |
+| 3–5 | same error, no output at all | a crash in the stage killed the process, and `node … \| tee` reported success |
+| 6 | `position … Received NaN` | asar entries for files in `app.asar.unpacked/` carry **no offset** |
+| 7 | **ok** | streamed download, fd-based asar walk, unpacked files copied in |
+
+Facts from run 7 (`relay/out/assets.json` → `chatgpt-win`):
+
+| Field | Value |
+|---|---|
+| installer | 979 994 720 B, 3 665 entries |
+| `app/resources/app.asar` | 640 129 388 B → **21 789 files**, 647 973 137 B unpacked, 8 unpacked entries, 0 invalid |
+| top-level | `.vite/`, `webview/`, `node_modules/`, `native-menu-locales/`, `package.json` |
+| file mix | 15 736 `.js`, 2 393 `.svg`, 999 `.json`, 937 `.webp`, 712 `.png`, 375 `.css`, 136 `.ts`, 62 `.md`, 50 `.rpt_desc` |
+| text scanned | 336 181 840 B |
+| main process | `codex.exe` 354 661 168 B — toolchain **bun + electron + rust**, pdb `codex.pdb` |
+| siblings | `codex-windows-sandbox-service.exe` 56 033 584, `codex-computer-use-swift.exe` 56 534 320 (`cua_node/bin/node_modules/@oai/sky/bin/windows/swift/x64/`), `tectonic.exe` 55 059 760 (TeX), `node_repl.exe`, `codex-command-runner.exe` 8 743 216 (rust), `ChatGPT.exe` 4 719 920 (launcher) |
+| skill surface | 736 files mention `SKILL.md`; `skills/remote-skills`, `skills/list`, `skills/config`, `skills/plugins`, `skills/editor`, `skills/manage`, `skills/changed` |
+| persisted keys | `codex.conversation_snapshot_cache.persisted`, `codex.browser.pendingAccountPinReset`, `oai/apps/closedpromocode` |
+| routes | `/api/auth/session`, `/api/auth/csrf`, `/backend-api/…`, `/backend-api/multiplayer/documents/`, `/backend-api/aip/ledger/links` |
+| accelerators | `CmdOrCtrl+S`, `Escape`, `CmdOrCtrl+C`/`V`, `ArrowUp/Down/Left/Right`, `Enter` |
+
+The renderer is a chunked webview bundle (no `ipcRenderer.invoke("…")` survived
+minification, which is why the `ipc-handler` group is empty — an honest zero, not a
+missing file). What *did* survive is the **skill channel names**, which is what the
+new `/skills` page is modelled on: list / manage / config / plugins, with the
+enable state kept per account rather than per browser.
+
+**Built from this:** `web/src/pages/Skills.jsx` — Installed / Remote / Plugins /
+Config, a name+description filter, per-account enable toggles, the roots that were
+searched (missing ones dimmed), refused skills, and shadowed duplicates. Its Plugins
+tab is the artifact template grid from §12.2, i.e. the same data the picker uses.

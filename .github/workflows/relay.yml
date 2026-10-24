@@ -69,7 +69,12 @@ jobs:
           set -o pipefail
           mkdir -p relay/out
           df -h / | tail -1
-          node --max-old-space-size=6144 relay/collect.mjs 2>&1 | tee relay/out/collect.log
+          # REA streams per-file progress; keeping it in the published log made an
+          # 880 KB file for a 90-line run. Progress lines go to the ephemeral copy.
+          node --max-old-space-size=6144 relay/collect.mjs 2>&1 \
+            | tee /tmp/collect.full.log \
+            | grep -v '"rea_progress"' > relay/out/collect.log || true
+          tail -c 400000 relay/out/collect.log > /tmp/collect.trim && mv /tmp/collect.trim relay/out/collect.log
           df -h / | tail -1
 
       - uses: actions/upload-artifact@v4

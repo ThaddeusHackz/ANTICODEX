@@ -10,6 +10,7 @@ import ClaudePage from './pages/Claude.jsx';
 import ImagesPage from './pages/Images.jsx';
 import VideoPage from './pages/Video.jsx';
 import McpPage from './pages/Mcp.jsx';
+import SkillsPage from './pages/Skills.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
@@ -26,6 +27,7 @@ const NAV = [
   { to: '/video', icon: '▶', label: 'Video' },
   { to: '/mcp', icon: '⇄', label: 'Connectors' },
   { to: '/computer', icon: '▣', label: 'Computer Use' },
+  { to: '/skills', icon: '✦', label: 'Skills' },
   { to: '/setup', icon: '⇪', label: 'Bring your setup' }
 ];
 
@@ -200,6 +202,7 @@ export default function App() {
         <Route path="/claude" element={<Shell><Guarded><ClaudePage /></Guarded></Shell>} />
         <Route path="/images" element={<Shell><Guarded><ImagesPage /></Guarded></Shell>} />
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
+        <Route path="/skills" element={<Shell><Guarded><SkillsPage /></Guarded></Shell>} />
         <Route path="/mcp" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />
