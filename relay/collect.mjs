@@ -329,15 +329,29 @@ async function siteFacts(label, urls) {
       if (v && !v.startsWith('data:')) rawScripts.add(v);
     }
   }
-  const scripts = [...rawScripts]
+  const candidates = [...rawScripts];
+  const scripts = candidates
     .filter((x) => /\.js(\?|$)/.test(x))
     .slice(0, 60)
     .map((x) => (x.startsWith('http') ? x : new URL(x, html.url).href));
+  // A single-page app can ship its whole bootstrap inline. Those blocks are the
+  // only place the chunk names appear when the shell has no <script src> at all,
+  // which is what chatgpt.com looked like ("0 scripts" was not a parsing bug, it
+  // was an unsaved inline bundle).
+  const inline = [];
+  for (const m of html.text.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]{200,})?<\/script>/g)) {
+    if (m[1] && m[1].trim().length > 200) inline.push(m[1]);
+  }
   const base = new URL(html.url);
   const dir = path.join(WORK, `web-${label}`);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'index.html'), html.text);
   const fetched = [];
+  inline.slice(0, 6).forEach((body, i) => {
+    const name = `inline-${i}.js`;
+    fs.writeFileSync(path.join(dir, name), body);
+    fetched.push({ src: `inline:${i}`, status: 200, bytes: Buffer.byteLength(body), saved: name, inline: true });
+  });
   for (const src of scripts.slice(0, 24)) {
     const r = await tryGet(src);
     if (r.status !== 200 || r.buf.length > 8 * 1024 * 1024) { fetched.push({ src, status: r.status, bytes: r.buf.length }); continue; }
@@ -367,7 +381,19 @@ async function siteFacts(label, urls) {
   }
   const facts = factsFromTree(dir);
   return {
-    label, origin: base.origin, attempts, html_bytes: html.buf.length, scripts: fetched, facts,
+    label,
+    origin: base.origin,
+    attempts,
+    html_bytes: html.buf.length,
+    discovery: {
+      raw_candidates: candidates.length,
+      js_shaped: scripts.length,
+      inline_blocks: inline.length,
+      // Kept so a zero is explainable from the record alone.
+      sample_candidates: candidates.slice(0, 12)
+    },
+    scripts: fetched,
+    facts,
     meta: extractMeta(html.text), head_sample: html.text.slice(0, 4000), dir
   };
 }
