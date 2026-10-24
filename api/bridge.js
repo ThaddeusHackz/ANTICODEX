@@ -32,6 +32,7 @@ import {
   qcaEvents,
   qcaPage,
   qcaRequest,
+  qcaStream,
   qcaUrl,
   qoderActionWorkflow,
   qoderCliStatus,
@@ -1516,17 +1517,18 @@ async function handleQoder(req, body, res) {
     const budget = Math.min(Math.max(Number(body.ms) || 8000, 1000), 20000);
     const timer = setTimeout(() => controller.abort(), budget);
     try {
-      // Built from a re-validated id and then proved to stay on the QCA origin:
-      // the host is never allowed to come from the request.
+      // Built from a re-validated id and opened through `qcaStream`, which
+      // asserts the origin: the host is never allowed to come from the request.
       const streamPath = `sessions/${encodeURIComponent(qoderId(body.session_id, 'session_id'))}/events/stream`;
-      const streamUrl = new URL(streamPath.replace(/^\/+/, ''), `${QCA_BASE.forward}/`);
-      if (streamUrl.origin !== new URL(QCA_BASE.forward).origin) {
-        return json(res, 400, { ok: false, error: 'That session id would address another host.' });
+      let res2;
+      try {
+        res2 = await qcaStream('forward', streamPath, {
+          headers: { Authorization: `Bearer ${pat}` }, signal: controller.signal
+        });
+      } catch (e) {
+        if (e?.status === 400) return json(res, 400, { ok: false, error: 'That session id would address another host.' });
+        throw e;
       }
-      const res2 = await fetch(streamUrl.toString(), {
-        headers: { Authorization: `Bearer ${pat}`, Accept: 'text/event-stream' },
-        signal: controller.signal
-      });
       if (!res2.ok) return json(res, 200, { ok: false, status: res2.status, error: `Qoder returned ${res2.status}` });
       const collected = [];
       for await (const event of qcaEvents(res2, { signal: controller.signal })) {

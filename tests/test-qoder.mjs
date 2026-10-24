@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   ACP_PROTOCOL_VERSION, QCA_BASE, QODER_AGENT_REF, agentPrompt, agentProviderDef, createAcpClient,
-  createSseParser, explainAcpError, isAgentRef, qcaPage, qcaRequest, qcaUrl,
+  createSseParser, explainAcpError, isAgentRef, qcaStream, qcaPage, qcaRequest, qcaUrl,
   qoderActionWorkflow, qoderStatus, resolveQoderToken, streamAcpAnswer
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally } from '../lib/qoder-repos.js';
@@ -213,6 +213,15 @@ section('ACP: a real JSON-RPC peer, driven to completion');
   ok('the same prompt still completes either way', allowed.result.stopReason === 'end_turn');
   ok('ACP protocol version is 1', ACP_PROTOCOL_VERSION === 1);
   fs.rmSync(fixture, { force: true });
+}
+
+// ---------------------------------------------------------------------------
+section('a cloud stream cannot be pointed at another host');
+{
+  let refused = null;
+  try { await qcaStream('forward', '/../../evil.example.com/x', {}); } catch (e) { refused = e; }
+  ok('a path that escapes the base is refused before a socket opens', refused?.status === 400, String(refused?.message));
+  ok('…and no other mode is invented', (await qcaStream('nope', 'x', {}).catch((e) => e)).message.includes('unknown QCA mode'));
 }
 
 // ---------------------------------------------------------------------------
