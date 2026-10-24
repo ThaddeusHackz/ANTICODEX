@@ -696,3 +696,34 @@ plan first and returns **409 with the new plan** if the fingerprint moved, so wh
 written is always what was shown. Verify is two independent proofs (the config file
 names the server **and** a real MCP handshake lists its tools) rather than a green
 tick from the thing that just did the writing.
+
+### 13.4 The run, recorded (2026-10-24, this machine)
+
+Approved through the surface the previous section describes, not by hand:
+
+| step | answer | what proves it |
+|---|---|---|
+| `plan` | `fc2bc1f2a7c48eff`, 2 actions | `configure_client:codex` (create), `install_skill` |
+| `apply` | `ok: true`, `status: ready`, 2.0 s | both actions executed, plan fingerprint unchanged |
+| `verify` | `ok: true`, 12.0 s | `registration.present: true` **and** handshake `ok: true` |
+| `register` | `ok: true`, 207 tools | connection row `rea` / `stdio:rea` / `connected` |
+
+What is on disk afterwards:
+
+```
+~/.codex/config.toml                                  125 B
+  [mcp_servers.rea]
+  command = "npx"
+  args = [ "-y", "rea-agents@6.7.0", "mcp" ]
+  startup_timeout_sec = 30
+  tool_timeout_sec = 450
+~/.agents/skills/reverse-engineer-anything/SKILL.md  23,523 B  (+ references/, 92K total)
+```
+
+The handshake reports server `rea 6.7.0`, protocol `2025-06-18`, 207 tools — the
+first of them static (`annotate_native_function`, `inspect_native_load_image`,
+`resolve_native_call_targets`) and the rest addressed at a live IDA/Ghidra session,
+which is why nothing here claims a binary was analysed. Node `v22.22.3` satisfies
+the `>= 22.19` gate. Two things this boundary deliberately does *not* do: it does
+not install REA's own MCP server on our side (it registers the same command with
+Codex), and it does not touch a target binary.
