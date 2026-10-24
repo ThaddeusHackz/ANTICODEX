@@ -23,6 +23,7 @@ import {
   nodeSatisfies,
   nodeStatus,
   buildDoctorArgs,
+  envOnlyEngines,
   missingEngines,
   parseCsvRow,
   parseDoctorOutput,
@@ -238,6 +239,17 @@ section('doctor: what can actually take a binary apart');
   ok('…and steps to follow', engines.every((e) => e.steps.length >= 3));
   ok('the hyphenated check names map to help', engines.find((e) => e.engine === 'JADX').env === 'REA_JADX_MCP_JAR'
     && engines.find((e) => e.engine === 'Kuna').env === 'REA_KUNA_COMMAND');
+  // Wakaru is not a doctor check: REA only says so when the tool runs. The card
+  // has to know about it anyway, or "all configured" would be half a sentence.
+  const opt = envOnlyEngines({});
+  ok('an engine outside doctor is still listed', opt.length === 1 && opt[0].engine === 'Wakaru');
+  ok('…with the variable that fixes it', opt[0].env === 'REA_WAKARU_COMMAND');
+  ok('…saying it is not configured', opt[0].configured === false);
+  ok('…and which call needs it', opt[0].when === 'recover_javascript_sources');
+  ok('setting the variable flips it', envOnlyEngines({ REA_WAKARU_COMMAND: '/opt/wakaru' })[0].configured === true);
+  ok('an empty variable is not configured', envOnlyEngines({ REA_WAKARU_COMMAND: '   ' })[0].configured === false);
+  ok('it is not mistaken for a doctor check', missingEngines({ checks: [] }).length === 0 && opt[0].env_only === undefined);
+
   ok('a healthy machine reports no missing engines', missingEngines({ checks: [{ name: 'node', ok: true, classification: 'healthy' }] }).length === 0);
   ok('an engine REA adds later is still reported', missingEngines({ checks: [{ name: 'radare', ok: false, classification: 'missing_analysis_engine', detail: 'x' }] }).length === 1);
 

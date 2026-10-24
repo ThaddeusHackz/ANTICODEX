@@ -266,6 +266,26 @@ export default function ReaPage() {
                   {e.remediation && <div className="tiny" style={{ marginTop: 4, opacity: 0.75 }}>REA says: {e.remediation}</div>}
                 </div>
               ))}
+              {(engines.optional || []).map((e) => (
+                <div key={`opt-${e.name}`} style={{ marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 10 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                    <b>{e.engine}</b>
+                    <Pill kind={e.configured ? 'ok' : ''}>{e.configured ? 'configured' : 'optional'}</Pill>
+                    <button className="btn small ghost" onClick={() => copySteps(e)}>Copy steps</button>
+                  </div>
+                  <div className="tiny" style={{ marginTop: 4 }}>
+                    {e.what}{e.when ? <> — only needed for <span className="kbd">{e.when}</span></> : null}
+                  </div>
+                  {!e.configured && (
+                    <ol className="tiny" style={{ margin: '6px 0 0 18px', lineHeight: 1.75 }}>
+                      {(e.steps || []).map((step) => <li key={step}>{step}</li>)}
+                    </ol>
+                  )}
+                  {!e.configured && e.env && (
+                    <div className="tiny" style={{ marginTop: 6 }}>Variable: <span className="kbd">{e.env}</span></div>
+                  )}
+                </div>
+              ))}
               {engines.note && <div className="tiny" style={{ marginTop: 10, lineHeight: 1.6 }}>{engines.note}</div>}
             </>
           )}

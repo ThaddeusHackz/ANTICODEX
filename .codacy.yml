@@ -1,0 +1,14 @@
+# Codacy's security patterns flag every `path.join()` with a computed filename
+# and every `fetch()` that is handed a built URL. That is most of a
+# static-analysis harness, where names come from a constant table and paths are
+# joined to a fixed output directory.
+#
+# The exemptions are narrow and named. Everything the server actually runs on a
+# request stays scanned:
+#
+#   scripts/  local tooling — clones a repo into tmp, writes its evidence
+#   tests/    fixtures, fake CLIs and stub upstreams
+exclude_paths:
+  - "scripts/**"
+  - "tests/**"
+  - "web/dist/**"

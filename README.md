@@ -271,6 +271,17 @@ The REA skill pack (morluto/rea) and leanrea (aicodeking/leanrea) are installed 
 and were used to drive the forensic sweeps documented in [`docs/FORENSIC-REPORT.md`](docs/FORENSIC-REPORT.md)
 and [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md).
 
+### Analysis engines (what REA cannot decompile without)
+
+REA will not install a decompiler for you — each is a large third-party binary with its own
+licence — so the app reports the gap instead of hiding it: `rea op:"engines"` runs
+`rea doctor`, parses `scope_checks[]`, and the REA page lists every missing engine with the exact
+variable and steps that fix it, plus the ones doctor never mentions (Wakaru, which REA only reports
+the first time `recover_javascript_sources` runs). Ghidra needs `GHIDRA_INSTALL_DIR` and Java 21+,
+JADX needs `REA_JADX_MCP_JAR`, and so on — see [`docs/REA-ENGINES.md`](docs/REA-ENGINES.md), which
+also records exactly which of them can and cannot be installed in a sandbox with no release-asset
+egress, and why nothing was faked to turn the check green.
+
 ### REA as a connector (local stdio MCP)
 
 REA ships as an MCP server (`npx -y rea-agents mcp`) with **207 tools / 6 prompts**. Until now the

@@ -13,6 +13,7 @@ import {
   buildDoctorArgs as reaDoctorArgs,
   checkRegistration,
   describeAction as describeReaAction,
+  envOnlyEngines,
   missingEngines,
   nodeStatus as reaNodeStatus,
   parseDoctorOutput,
@@ -1138,6 +1139,9 @@ async function handleRea(req, body, res) {
       // The answer to "so how do I fix it?": every engine REA knows about, with
       // the variable it reads. Shown even when all of them are configured.
       help: ENGINE_HELP,
+      // Not doctor-checkable, but still an engine you need: listed separately so
+      // "all configured" never means "the half we could check".
+      optional: envOnlyEngines(),
       note: missing.length
         ? `${missing.length} analysis engine${missing.length === 1 ? '' : 's'} not configured — REA's file inspectors still work, but it cannot decompile without one.`
         : 'Every analysis engine REA knows about is configured on this machine.',
@@ -1512,7 +1516,14 @@ async function handleQoder(req, body, res) {
     const budget = Math.min(Math.max(Number(body.ms) || 8000, 1000), 20000);
     const timer = setTimeout(() => controller.abort(), budget);
     try {
-      const res2 = await fetch(qcaUrl('forward', `sessions/${qoderId(body.session_id, 'session_id')}/events/stream`), {
+      // Built from a re-validated id and then proved to stay on the QCA origin:
+      // the host is never allowed to come from the request.
+      const streamPath = `sessions/${encodeURIComponent(qoderId(body.session_id, 'session_id'))}/events/stream`;
+      const streamUrl = new URL(streamPath.replace(/^\/+/, ''), `${QCA_BASE.forward}/`);
+      if (streamUrl.origin !== new URL(QCA_BASE.forward).origin) {
+        return json(res, 400, { ok: false, error: 'That session id would address another host.' });
+      }
+      const res2 = await fetch(streamUrl.toString(), {
         headers: { Authorization: `Bearer ${pat}`, Accept: 'text/event-stream' },
         signal: controller.signal
       });
