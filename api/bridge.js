@@ -14,6 +14,7 @@ import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
 import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
+import { startEgressProxy, checkEgress, normalizeEgressPolicy, EGRESS_MODES, DEFAULT_ALLOW, egressEnv } from '../lib/egress.js';
 import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
 import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
@@ -131,6 +132,7 @@ export default async function handler(req, res) {
       case 'import_config': return await handleImportConfig(req, body, res);
       case 'workspace': return await handleWorkspace(req, body, res);
       case 'skills': return await handleSkills(req, body, res);
+      case 'egress': return await handleEgress(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
@@ -713,6 +715,85 @@ async function handleMcp(body, res, req) {
 }
 
 // --- policy ----------------------------------------------------------------
+
+
+// --- egress ---------------------------------------------------------------
+//
+// The sandboxed-work story both desktop apps ship at a different layer: Codex
+// gives the command runner a reduced token, Claude's `cowork-svc` gives it its
+// own user-mode network. Here it is an allowlisting HTTP/CONNECT proxy plus the
+// environment that points a spawned process at it. Starting one binds a port on
+// this machine, so it is gated exactly like a local MCP server.
+
+let egressProxy = null;
+
+async function handleEgress(req, body, res) {
+  try {
+    return await egressOp(req, body, res);
+  } catch (e) {
+    // A bad mode or host is the caller's mistake, not ours: say which field.
+    return json(res, 400, { ok: false, code: e.code || 'InvalidPolicy', error: String(e.message || e) });
+  }
+}
+
+async function egressOp(req, body, res) {
+  const op = body.op || 'status';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+
+  if (op === 'presets') {
+    return json(res, 200, { ok: true, modes: EGRESS_MODES, default_allow: DEFAULT_ALLOW, local });
+  }
+
+  if (op === 'check') {
+    const policy = normalizeEgressPolicy({ mode: body.mode || 'allowlist', allow: body.allow || DEFAULT_ALLOW, deny: body.deny || [] });
+    return json(res, 200, { ok: true, host: body.host, ...checkEgress(policy, body.host) });
+  }
+
+  if (op === 'status') {
+    return json(res, 200, {
+      ok: true,
+      running: Boolean(egressProxy),
+      local,
+      url: egressProxy ? egressProxy.url : null,
+      env: egressProxy ? egressProxy.env : egressEnv(0),
+      ...(egressProxy ? egressProxy.stats() : { policy: normalizeEgressPolicy({ mode: 'off' }), allowed: 0, denied: 0, open_tunnels: 0, last: [] }),
+      note: local ? null : 'Starting an egress proxy listens on the machine that runs the app — open the desktop build or a local `npm start`.'
+    });
+  }
+
+  if (!local) {
+    return needsLocal(res, 'An egress proxy listens on this machine, so it needs the desktop app or a local `npm start`.');
+  }
+
+  if (op === 'start') {
+    const wanted = normalizeEgressPolicy({
+      mode: body.mode || 'allowlist',
+      allow: body.allow && body.allow.length ? body.allow : DEFAULT_ALLOW,
+      deny: body.deny || []
+    });
+    if (egressProxy) {
+      return json(res, 200, { ok: true, reused: true, url: egressProxy.url, port: egressProxy.port, env: egressProxy.env, ...egressProxy.stats(), policy: egressProxy.setPolicy(wanted) });
+    }
+    egressProxy = await startEgressProxy({ policy: wanted, port: Number(body.port) || 0 });
+    return json(res, 200, { ok: true, url: egressProxy.url, port: egressProxy.port, env: egressProxy.env, ...egressProxy.stats() });
+  }
+
+  if (op === 'update') {
+    if (!egressProxy) return json(res, 409, { ok: false, error: 'egress is not running' });
+    const next = egressProxy.setPolicy({ mode: body.mode || 'allowlist', allow: body.allow || [], deny: body.deny || [] });
+    return json(res, 200, { ok: true, policy: next, ...egressProxy.stats() });
+  }
+
+  if (op === 'stop') {
+    if (!egressProxy) return json(res, 200, { ok: true, stopped: false });
+    const stats = egressProxy.stats();
+    await egressProxy.close();
+    egressProxy = null;
+    return json(res, 200, { ok: true, stopped: true, allowed: stats.allowed, denied: stats.denied });
+  }
+
+  return json(res, 400, { error: 'unknown egress op' });
+}
 
 // --- skills -----------------------------------------------------------------
 //

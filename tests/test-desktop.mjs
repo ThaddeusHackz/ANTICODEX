@@ -315,6 +315,21 @@ try {
       (await call(local.base, 'skills', { op: 'get', name: 'reverse-engineer-anything' })).data.instructions.startsWith('# Skill: reverse-engineer-anything'));
     ok('the page reaches the registry through the same bridge action', /api\('skills'/.test(read('web/src/lib/api.js')));
 
+    // Network policy is a running proxy, so it has to work through the same
+    // in-process bridge the packaged app uses — and stop cleanly.
+    const started = await call(local.base, 'egress', { op: 'start', mode: 'allowlist', allow: ['api.openai.com'] });
+    ok('the desktop bridge starts an egress proxy', started.status === 200 && started.data.port > 0);
+    ok('…and returns the environment a child process needs', started.data.env?.HTTPS_PROXY === started.data.url);
+    ok('…with loopback excluded so local calls still work', /127\.0\.0\.1/.test(started.data.env?.NO_PROXY || ''));
+    const runningStatus = await call(local.base, 'egress', { op: 'status' });
+    ok('the status is readable while it runs', runningStatus.data.running === true && runningStatus.data.local === true);
+    const verdict = await call(local.base, 'egress', { op: 'check', host: 'example.com', mode: 'allowlist', allow: ['api.openai.com'] });
+    ok('a host off the list is refused with a reason', verdict.data.allowed === false && /allowlist/.test(verdict.data.reason));
+    const stopped = await call(local.base, 'egress', { op: 'stop' });
+    ok('it stops on request', stopped.data.stopped === true && (await call(local.base, 'egress', { op: 'status' })).data.running === false);
+    ok('a bad mode is a 400, not a 500', (await call(local.base, 'egress', { op: 'start', mode: 'yolo' })).status === 400);
+    ok('the network switch drives the proxy, not a label', /toggleNet[\s\S]{0,400}egressApi\.start/.test(read('web/src/pages/Codex.jsx')));
+
     // Installing a packaged skill is a write to this machine, so it goes through
     // the main process (file picker + the registry's own extractor), never the page.
     const main = read('desktop/main.mjs');

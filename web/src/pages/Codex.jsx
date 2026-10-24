@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { chat as chatApi, workspace as workspaceApi } from '../lib/api.js';
+import { chat as chatApi, workspace as workspaceApi, egress as egressApi } from '../lib/api.js';
 import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -41,6 +41,12 @@ export default function CodexPage() {
   const [mode, setMode] = useState('suggest');
   const [sandbox, setSandbox] = useState('read-only');
   const [net, setNet] = useState(false);
+  // The network switch is a policy, not a label: turning it on starts an
+  // allowlisting proxy on this machine and hands its environment to the work the
+  // agent spawns (see lib/egress.js — Codex reduces the token, Claude's cowork-svc
+  // gives the sandbox its own user-mode stack; this is the same boundary at the
+  // layer available here).
+  const [egress, setEgress] = useState({ running: false, local: true, allowed: 0, denied: 0 });
   const [agents, setAgents] = useState(null);
   const [cwd, setCwd] = useState(() => localStorage.getItem('acx_workspace_cwd') || '');
   const [showAgents, setShowAgents] = useState(false);
@@ -61,6 +67,21 @@ export default function CodexPage() {
     const m = MODES.find((x) => x.id === mode);
     if (m) setSandbox(m.sandbox);
   }, [mode]);
+
+  useEffect(() => {
+    egressApi.status().then((r) => { setEgress(r); if (r.running) setNet(true); }).catch(() => {});
+  }, []);
+
+  async function toggleNet(on) {
+    try {
+      setEgress(await (on ? egressApi.start({ mode: 'allowlist' }) : egressApi.stop()));
+      setNet(on);
+      if (on === false) setEgress((e) => ({ ...e, running: false, allowed: 0, denied: 0 }));
+    } catch (e) {
+      notify('Egress: ' + e.message);
+      setNet(false);
+    }
+  }
 
   async function loadAgents() {
     try {
@@ -159,8 +180,15 @@ export default function CodexPage() {
           </button>
         ))}
         <label className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px' }}>
-          <input type="checkbox" checked={net} onChange={(e) => setNet(e.target.checked)} /> allow network
+          <input type="checkbox" checked={net} onChange={(e) => toggleNet(e.target.checked)} /> allow network
         </label>
+        <div className="tiny mono" style={{ padding: '0 10px 8px', opacity: 0.8 }}>
+          {egress.running
+            ? `${egress.url} · ${egress.allowed || 0} allowed / ${egress.denied || 0} denied · ${egress.policy?.mode || 'allowlist'}`
+            : egress.local === false
+              ? 'egress needs the desktop app or a local start'
+              : 'off — spawned work gets no proxy'}
+        </div>
         <div className="nav-section">AGENTS.md</div>
         <input value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder="workspace path (blank = app dir)"
           style={{ margin: '0 8px 6px', width: 'calc(100% - 16px)' }} />

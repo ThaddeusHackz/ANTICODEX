@@ -125,6 +125,17 @@ export const pairing = {
 /** Adopt the config this machine already has (Codex config.toml, Claude settings). */
 export const importConfig = (payload) => api('import_config', payload);
 
+// Egress policy: an allowlisting proxy a spawned process is pointed at. Starting
+// one listens on this machine, so every write op is desktop/local only.
+export const egress = {
+  status: () => api('egress', { op: 'status' }),
+  presets: () => api('egress', { op: 'presets' }),
+  check: (host, p = {}) => api('egress', { op: 'check', host, ...p }),
+  start: (p = {}) => api('egress', { op: 'start', ...p }),
+  update: (p = {}) => api('egress', { op: 'update', ...p }),
+  stop: () => api('egress', { op: 'stop' })
+};
+
 export const skills = {
   list: (p) => api('skills', { op: 'list', ...p }),
   get: (name) => api('skills', { op: 'get', name }),
