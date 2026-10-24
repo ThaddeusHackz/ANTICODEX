@@ -1,0 +1,1983 @@
+{
+ "web-chatgpt": {
+  "label": "chatgpt",
+  "origin": "https://chatgpt.com",
+  "attempts": [
+   {
+    "url": "https://chatgpt.com/",
+    "status": 200,
+    "bytes": 597014,
+    "final": "https://chatgpt.com/"
+   }
+  ],
+  "html_bytes": 597014,
+  "scripts": [],
+  "facts": {
+   "root": "relay/work/web-chatgpt",
+   "files": 1,
+   "bytes": 597014,
+   "text_bytes_scanned": 596502,
+   "extensions": [
+    [
+     ".html",
+     1
+    ]
+   ],
+   "ranked": {
+    "ipc-handler": [],
+    "ipc-invoke": [],
+    "context-bridge": [],
+    "accelerator": [],
+    "menu-role": [],
+    "protocol": [],
+    "storage-key": [],
+    "feature-flag": [],
+    "mcp-tool": [],
+    "skill": [],
+    "host": [
+     {
+      "value": "persistent.oaistatic.com",
+      "n": 29
+     },
+     {
+      "value": "help.openai.com",
+      "n": 8
+     },
+     {
+      "value": "chatgpt.com",
+      "n": 6
+     },
+     {
+      "value": "developers.openai.com",
+      "n": 2
+     },
+     {
+      "value": "accounts.google.com",
+      "n": 2
+     },
+     {
+      "value": "openai.com",
+      "n": 2
+     },
+     {
+      "value": "www.box.com",
+      "n": 2
+     },
+     {
+      "value": "auth.openai.com",
+      "n": 1
+     },
+     {
+      "value": "id.atlassian.com",
+      "n": 1
+     }
+    ],
+    "route": [
+     {
+      "value": "/auth/login?next=/dots\\",
+      "n": 1
+     },
+     {
+      "value": "/auth/login?next=/codex/cloud\\",
+      "n": 1
+     },
+     {
+      "value": "/auth/login?next=/dots/start\\",
+      "n": 1
+     },
+     {
+      "value": "/auth/teachers/plan\\",
+      "n": 1
+     },
+     {
+      "value": "/auth/teachers/invite\\",
+      "n": 1
+     },
+     {
+      "value": "/auth/students\\",
+      "n": 1
+     },
+     {
+      "value": "/api/auth/link-session?source=feather\\",
+      "n": 1
+     },
+     {
+      "value": "/api/checkout-tax-types\\",
+      "n": 1
+     }
+    ],
+    "proc": [],
+    "shell": [],
+    "perm": [],
+    "window": [],
+    "asar": [],
+    "model-id": [
+     {
+      "value": "gpt-5.6-luna",
+      "n": 5
+     },
+     {
+      "value": "gpt-6-luna",
+      "n": 4
+     },
+     {
+      "value": "gpt-5.6-terra",
+      "n": 4
+     },
+     {
+      "value": "gpt-5.6-sol",
+      "n": 2
+     },
+     {
+      "value": "gpt-5.4",
+      "n": 2
+     },
+     {
+      "value": "gpt-6-astra",
+      "n": 1
+     },
+     {
+      "value": "gpt-6-sol",
+      "n": 1
+     },
+     {
+      "value": "gpt-5.5",
+      "n": 1
+     },
+     {
+      "value": "gpt-5.4-mini",
+      "n": 1
+     },
+     {
+      "value": "gpt-5.3-codex",
+      "n": 1
+     },
+     {
+      "value": "gpt-5.2",
+      "n": 1
+     },
+     {
+      "value": "gpt-5-5-instant",
+      "n": 1
+     },
+     {
+      "value": "gpt-5-5-pro",
+      "n": 1
+     },
+     {
+      "value": "gpt-5-5-thinking",
+      "n": 1
+     },
+     {
+      "value": "gpt-5-6-pro",
+      "n": 1
+     },
+     {
+      "value": "gpt-4o",
+      "n": 1
+     },
+     {
+      "value": "gpt-5-5-mini",
+      "n": 1
+     },
+     {
+      "value": "gpt-4o-mini-transcribe-dict-tapioca-7-api-ev3",
+      "n": 1
+     },
+     {
+      "value": "gpt-5-nano",
+      "n": 1
+     }
+    ],
+    "sqlite": [],
+    "env": []
+   },
+   "hits": {
+    "ipc-handler": [],
+    "ipc-invoke": [],
+    "context-bridge": [],
+    "accelerator": [],
+    "menu-role": [],
+    "protocol": [],
+    "storage-key": [],
+    "feature-flag": [],
+    "mcp-tool": [],
+    "skill": [],
+    "host": [
+     {
+      "value": "chatgpt.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "auth.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "developers.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "accounts.google.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "accounts.google.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "id.atlassian.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "persistent.oaistatic.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "chatgpt.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "chatgpt.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "chatgpt.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "chatgpt.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "chatgpt.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "www.box.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "www.box.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "help.openai.com",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "developers.openai.com",
+      "file": "index.html",
+      "line": 110
+     }
+    ],
+    "route": [
+     {
+      "value": "/auth/login?next=/dots\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/auth/login?next=/codex/cloud\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/auth/login?next=/dots/start\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/auth/teachers/plan\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/auth/teachers/invite\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/auth/students\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/api/auth/link-session?source=feather\\",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "/api/checkout-tax-types\\",
+      "file": "index.html",
+      "line": 110
+     }
+    ],
+    "proc": [],
+    "shell": [],
+    "perm": [],
+    "window": [],
+    "asar": [],
+    "model-id": [
+     {
+      "value": "gpt-6-astra",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-6-sol",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-sol",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-terra",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.5",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.4",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.4-mini",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.3-codex",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.2",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.4",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-terra",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-luna",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-terra",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-terra",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5-5-instant",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5-5-pro",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5-5-thinking",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5-6-pro",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-4o",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5.6-sol",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5-5-mini",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-4o-mini-transcribe-dict-tapioca-7-api-ev3",
+      "file": "index.html",
+      "line": 110
+     },
+     {
+      "value": "gpt-5-nano",
+      "file": "index.html",
+      "line": 110
+     }
+    ],
+    "sqlite": [],
+    "env": []
+   },
+   "biggest": [
+    {
+     "path": "index.html",
+     "size": 597014,
+     "sha256": "b5ca36d2258889920bee36dd49afe6f4962a314e745294c7ab64f31e17def947"
+    }
+   ]
+  },
+  "meta": {
+   "title": "ChatGPT",
+   "hosts": [
+    "chatgpt.com",
+    "auth.openai.com",
+    "developers.openai.com",
+    "accounts.google.com",
+    "id.atlassian.com",
+    "help.openai.com",
+    "persistent.oaistatic.com",
+    "openai.com",
+    "www.box.com"
+   ]
+  }
+ },
+ "web-claude": {
+  "label": "claude",
+  "origin": "https://claude.ai",
+  "attempts": [
+   {
+    "url": "https://claude.ai/",
+    "status": 200,
+    "bytes": 149846,
+    "final": "https://claude.ai/login"
+   }
+  ],
+  "html_bytes": 149846,
+  "scripts": [
+   {
+    "src": "https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-621UU-7S.js",
+    "status": 200,
+    "bytes": 14075,
+    "saved": "index-621UU-7S.js"
+   }
+  ],
+  "facts": {
+   "root": "relay/work/web-claude",
+   "files": 2,
+   "bytes": 163921,
+   "text_bytes_scanned": 161525,
+   "extensions": [
+    [
+     ".js",
+     1
+    ],
+    [
+     ".html",
+     1
+    ]
+   ],
+   "ranked": {
+    "ipc-handler": [],
+    "ipc-invoke": [],
+    "context-bridge": [],
+    "accelerator": [],
+    "menu-role": [],
+    "protocol": [],
+    "storage-key": [
+     {
+      "value": "spa:locale",
+      "n": 3
+     },
+     {
+      "value": "claudeai.chatreloadmark.v1",
+      "n": 1
+     },
+     {
+      "value": "__jt_handoff",
+      "n": 1
+     },
+     {
+      "value": "login_timing_hop_t0",
+      "n": 1
+     },
+     {
+      "value": "claude:stale_entry_clock_suspect",
+      "n": 1
+     },
+     {
+      "value": "spa:rqcacheretention",
+      "n": 1
+     },
+     {
+      "value": "conversation-store:clear-pending",
+      "n": 1
+     },
+     {
+      "value": "conversation-store:unsaved:",
+      "n": 1
+     },
+     {
+      "value": "spa:cai_cheerful_prism",
+      "n": 1
+     },
+     {
+      "value": "oauth_return_to",
+      "n": 1
+     },
+     {
+      "value": "__ml_handoff",
+      "n": 1
+     },
+     {
+      "value": "spa:fizzy-lake",
+      "n": 1
+     },
+     {
+      "value": "rq-cache-confirmed-account",
+      "n": 1
+     },
+     {
+      "value": "composer-card-latch",
+      "n": 1
+     },
+     {
+      "value": "korea-disclosure-paint-latch",
+      "n": 1
+     },
+     {
+      "value": "client_health_lockout",
+      "n": 1
+     }
+    ],
+    "feature-flag": [],
+    "mcp-tool": [],
+    "skill": [],
+    "host": [
+     {
+      "value": "assets-proxy.anthropic.com",
+      "n": 82
+     },
+     {
+      "value": "claude.ai",
+      "n": 4
+     },
+     {
+      "value": "js.hcaptcha.com",
+      "n": 2
+     },
+     {
+      "value": "www.w3.org",
+      "n": 2
+     },
+     {
+      "value": "assets.claude.ai",
+      "n": 1
+     },
+     {
+      "value": "newassets.hcaptcha.com",
+      "n": 1
+     },
+     {
+      "value": "accounts.google.com",
+      "n": 1
+     },
+     {
+      "value": "schema.org",
+      "n": 1
+     },
+     {
+      "value": "claude.com",
+      "n": 1
+     },
+     {
+      "value": "www.anthropic.com",
+      "n": 1
+     },
+     {
+      "value": "x.com",
+      "n": 1
+     },
+     {
+      "value": "www.linkedin.com",
+      "n": 1
+     },
+     {
+      "value": "www.youtube.com",
+      "n": 1
+     },
+     {
+      "value": "www.ftc.go.kr",
+      "n": 1
+     }
+    ],
+    "route": [
+     {
+      "value": "/api/published_artifacts/${e}",
+      "n": 1
+     },
+     {
+      "value": "/api/chat_snapshots/${e}?rendering_mode=messages&render_all_tools=true",
+      "n": 1
+     }
+    ],
+    "proc": [],
+    "shell": [],
+    "perm": [],
+    "window": [],
+    "asar": [],
+    "model-id": [
+     {
+      "value": "claude-ai",
+      "n": 80
+     },
+     {
+      "value": "claude-approvals",
+      "n": 1
+     },
+     {
+      "value": "claude-conversation-store",
+      "n": 1
+     },
+     {
+      "value": "claude-ai-pending-login-email",
+      "n": 1
+     }
+    ],
+    "sqlite": [],
+    "env": []
+   },
+   "hits": {
+    "ipc-handler": [],
+    "ipc-invoke": [],
+    "context-bridge": [],
+    "accelerator": [],
+    "menu-role": [],
+    "protocol": [],
+    "storage-key": [
+     {
+      "value": "claudeai.chatReloadMark.v1",
+      "file": "index-621UU-7S.js",
+      "line": 2
+     },
+     {
+      "value": "__jt_handoff",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "login_timing_hop_t0",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude:stale_entry_clock_suspect",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "spa:rqCacheRetention",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "conversation-store:clear-pending",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "conversation-store:unsaved:",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "spa:cai_cheerful_prism",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "oauth_return_to",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "spa:locale",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "spa:locale",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "__ml_handoff",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "spa:fizzy-lake",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "rq-cache-confirmed-account",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "spa:locale",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "composer-card-latch",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "korea-disclosure-paint-latch",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "client_health_lockout",
+      "file": "index.html",
+      "line": 36
+     }
+    ],
+    "feature-flag": [],
+    "mcp-tool": [],
+    "skill": [],
+    "host": [
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index-621UU-7S.js",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index-621UU-7S.js",
+      "line": 1
+     },
+     {
+      "value": "claude.ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "claude.ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "claude.ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "assets.claude.ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "js.hcaptcha.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "newassets.hcaptcha.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "accounts.google.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "js.hcaptcha.com",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "schema.org",
+      "file": "index.html",
+      "line": 8
+     },
+     {
+      "value": "claude.com",
+      "file": "index.html",
+      "line": 14
+     },
+     {
+      "value": "www.anthropic.com",
+      "file": "index.html",
+      "line": 19
+     },
+     {
+      "value": "claude.ai",
+      "file": "index.html",
+      "line": 20
+     },
+     {
+      "value": "x.com",
+      "file": "index.html",
+      "line": 22
+     },
+     {
+      "value": "www.linkedin.com",
+      "file": "index.html",
+      "line": 23
+     },
+     {
+      "value": "www.youtube.com",
+      "file": "index.html",
+      "line": 24
+     },
+     {
+      "value": "www.w3.org",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "www.ftc.go.kr",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "www.w3.org",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "assets-proxy.anthropic.com",
+      "file": "index.html",
+      "line": 36
+     }
+    ],
+    "route": [
+     {
+      "value": "/api/published_artifacts/${e}",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "/api/chat_snapshots/${e}?rendering_mode=messages&render_all_tools=true",
+      "file": "index.html",
+      "line": 7
+     }
+    ],
+    "proc": [],
+    "shell": [],
+    "perm": [],
+    "window": [],
+    "asar": [],
+    "model-id": [
+     {
+      "value": "claude-ai",
+      "file": "index-621UU-7S.js",
+      "line": 1
+     },
+     {
+      "value": "claude-ai",
+      "file": "index-621UU-7S.js",
+      "line": 1
+     },
+     {
+      "value": "claude-approvals",
+      "file": "index-621UU-7S.js",
+      "line": 2
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 1
+     },
+     {
+      "value": "claude-conversation-store",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai-pending-login-email",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 7
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 36
+     },
+     {
+      "value": "claude-ai",
+      "file": "index.html",
+      "line": 36
+     }
+    ],
+    "sqlite": [],
+    "env": []
+   },
+   "biggest": [
+    {
+     "path": "index.html",
+     "size": 149846,
+     "sha256": "53a2ec1bb0177b2aacc60798f8d1997afba7f5e100ac274fb9cab7cdbce50fed"
+    },
+    {
+     "path": "index-621UU-7S.js",
+     "size": 14075,
+     "sha256": "786d78a18d7be4edaf5122684a62f12353076c71ea1293d93319b16c1743a5ca"
+    }
+   ]
+  },
+  "meta": {
+   "title": "Claude",
+   "description": "Claude is Anthropic's AI, built for problem solvers. Tackle complex challenges, analyze data, write code, and think through your hardest work.",
+   "hosts": [
+    "claude.ai",
+    "assets-proxy.anthropic.com",
+    "assets.claude.ai",
+    "js.hcaptcha.com",
+    "newassets.hcaptcha.com",
+    "accounts.google.com",
+    "schema.org",
+    "claude.com",
+    "www.anthropic.com",
+    "x.com",
+    "www.linkedin.com",
+    "www.youtube.com",
+    "www.w3.org",
+    "www.ftc.go.kr"
+   ]
+  }
+ }
+}

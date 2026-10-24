@@ -1,0 +1,114 @@
+{
+ "chatgptIds": {
+  "status": 200,
+  "bytes": 194651,
+  "ids": [
+   "9MV0B5HZVK9Z"
+  ]
+ },
+ "claudeIds": {
+  "status": 200,
+  "bytes": 194651,
+  "ids": [
+   "9MV0B5HZVK9Z"
+  ]
+ },
+ "winget": [
+  {
+   "moniker": "o/OpenAI/ChatGPT",
+   "latest": "26.1021.3705.0",
+   "installers": [
+    "OpenAI.ChatGPT.installer.yaml"
+   ],
+   "urls": [
+    {
+     "file": "OpenAI.ChatGPT.installer.yaml",
+     "url": "https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-x64.msix"
+    },
+    {
+     "file": "OpenAI.ChatGPT.installer.yaml",
+     "url": "https://persistent.oaistatic.com/codex-app-prod/releases/26.1021.3705.0/ChatGPT-arm64.msix"
+    }
+   ]
+  },
+  {
+   "moniker": "o/OpenAI/Codex",
+   "latest": "0.161.0",
+   "installers": [
+    "OpenAI.Codex.installer.yaml"
+   ],
+   "urls": [
+    {
+     "file": "OpenAI.Codex.installer.yaml",
+     "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-x86_64-pc-windows-msvc.exe.zip"
+    },
+    {
+     "file": "OpenAI.Codex.installer.yaml",
+     "url": "https://github.com/openai/codex/releases/download/rust-v0.161.0/codex-aarch64-pc-windows-msvc.exe.zip"
+    }
+   ]
+  },
+  {
+   "moniker": "o/OpenAI/ChatGPT.Desktop",
+   "error": "404 https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenAI/ChatGPT.Desktop"
+  },
+  {
+   "moniker": "a/Anthropic/Claude",
+   "latest": "2.42304.2",
+   "installers": [
+    "Anthropic.Claude.installer.yaml"
+   ],
+   "urls": [
+    {
+     "file": "Anthropic.Claude.installer.yaml",
+     "url": "https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix"
+    },
+    {
+     "file": "Anthropic.Claude.installer.yaml",
+     "url": "https://downloads.claude.ai/releases/win32/arm64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix"
+    },
+    {
+     "file": "Anthropic.Claude.installer.yaml",
+     "url": "https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.exe"
+    },
+    {
+     "file": "Anthropic.Claude.installer.yaml",
+     "url": "https://downloads.claude.ai/releases/win32/arm64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.exe"
+    }
+   ]
+  },
+  {
+   "moniker": "a/Anthropic/Claude.Desktop",
+   "error": "404 https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/Anthropic/Claude.Desktop"
+  },
+  {
+   "moniker": "a/Anthropic/ClaudeCode",
+   "latest": "2.1.302",
+   "installers": [
+    "Anthropic.ClaudeCode.installer.yaml"
+   ],
+   "urls": [
+    {
+     "file": "Anthropic.ClaudeCode.installer.yaml",
+     "url": "https://downloads.claude.ai/claude-code-releases/2.1.302/win32-x64/claude.exe"
+    },
+    {
+     "file": "Anthropic.ClaudeCode.installer.yaml",
+     "url": "https://downloads.claude.ai/claude-code-releases/2.1.302/win32-arm64/claude.exe"
+    }
+   ]
+  }
+ ],
+ "storeLinks": [
+  {
+   "pid": "9MV0B5HZVK9Z",
+   "status": 403,
+   "links": []
+  },
+  {
+   "pid": "9MV0B5HZVK9Z",
+   "status": 403,
+   "links": []
+  }
+ ]
+}
