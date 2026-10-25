@@ -3,7 +3,7 @@
 const hasDesktop = () => typeof window !== 'undefined' && window.anticodexDesktop;
 
 // Actions the desktop main process runs itself (no CORS, keychain keys attached).
-const DESKTOP_PROXY = ['chat', 'search', 'image', 'video_start', 'video_status'];
+const DESKTOP_PROXY = ['chat', 'search', 'image', 'video_start', 'video_status', 'mcp'];
 // Listing / testing / syncing models must also see the desktop keychain, or the
 // app shows "needs key" for a key that is actually installed on this machine.
 const DESKTOP_KEYS = ['models', 'sync_models', 'test_endpoint', 'config'];
@@ -52,8 +52,8 @@ export async function api(action, payload = {}) {
     body: JSON.stringify(body)
   };
   if (token) opts.headers.Authorization = `Bearer ${token}`;
-  const adminToken = localStorage.getItem('acx_admin_token');
-  if (adminToken) opts.headers['X-Admin-Token'] = adminToken;
+  const adminToken = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('acx_admin_token') : null;
+  if (adminToken && (action === 'admin' || action === 'save_provider_key')) opts.headers['X-Admin-Token'] = adminToken;
 
   const res = await fetch('/api/bridge', opts);
   const data = await res.json().catch(() => ({}));
@@ -201,7 +201,7 @@ export const mcp = {
   list: () => api('mcp', { op: 'list' }),
   save: (connection) => api('mcp', { op: 'save', connection }),
   remove: (id) => api('mcp', { op: 'delete', id }),
-  probe: (url, token) => api('mcp', { op: 'probe', url, token }),
+  probe: (url, token) => api('mcp', { op: 'probe', url, mcp_token: token }),
   connectBegin: (p) => api('mcp', { op: 'connect_begin', ...p }),
   connectCallback: (p) => api('mcp', { op: 'connect_callback', ...p }),
   test: (connection_id) => api('mcp', { op: 'test', connection_id }),
@@ -214,7 +214,8 @@ export const admin = {
   users: (token) => api('admin', { op: 'users', token }),
   getKeys: (token) => api('admin', { op: 'get_keys', token }),
   setKeys: (token, keys) => api('admin', { op: 'set_keys', token, ...keys }),
-  broadcast: (token, message) => api('admin', { op: 'broadcast', token, message })
+  broadcast: (token, message) => api('admin', { op: 'broadcast', token, message }),
+  logout: (token) => api('admin', { op: 'logout', token })
 };
 
 export const pairing = {
@@ -313,6 +314,7 @@ export const skills = {
   list: (p) => api('skills', { op: 'list', ...p }),
   get: (name) => api('skills', { op: 'get', name }),
   resolve: (text) => api('skills', { op: 'resolve', text }),
+  configure: (name, enabled) => api('skills', { op: 'configure', name, enabled }),
   // A `.skill` is a ZIP holding `<name>/SKILL.md` — the packaged form the shipped
   // desktop apps use. `archive` inspects one, `install` extracts it into this
   // machine's ~/.codex/skills (local only), `manifest` reads a bundled manifest.

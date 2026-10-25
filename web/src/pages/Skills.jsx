@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { skills as skillsApi, artifacts as artifactsApi } from '../lib/api.js';
-import { useApp, userKey } from '../lib/state.jsx';
+import { useApp } from '../lib/state.jsx';
 import { Pill } from '../ui.jsx';
 
 // Skill management.
@@ -17,8 +17,7 @@ import { Pill } from '../ui.jsx';
 //   Plugins   — artifact templates shipped by plugins (document/deck/sheet)
 //   Config    — the roots that were searched, and what failed to parse
 //
-// "Enabled" is per account, not per browser: two people sharing a machine must
-// not inherit each other's toggles, which is why it goes through userKey().
+// Enabled state is persisted by the bridge per authenticated account.
 
 const TABS = [
   { id: 'installed', label: 'Installed' },
@@ -34,14 +33,11 @@ const KINDS = [
 ];
 
 export default function SkillsPage() {
-  const { notify, user } = useApp();
-  const enabledKey = userKey('acx_enabled_skills', user?.id);
+  const { notify } = useApp();
   const [tab, setTab] = useState('installed');
   const [query, setQuery] = useState('');
   const [state, setState] = useState({ loading: true, skills: [], errors: [], duplicates: [], roots: [], local: false, note: null });
-  const [enabled, setEnabled] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem(enabledKey) || '[]')); } catch { return new Set(); }
-  });
+  const [enabled, setEnabled] = useState(() => new Set());
   const [kind, setKind] = useState('document');
   const [templates, setTemplates] = useState({ loading: false, cards: [], note: null });
   const [open, setOpen] = useState(null);
@@ -49,20 +45,15 @@ export default function SkillsPage() {
   useEffect(() => {
     let gone = false;
     skillsApi.list()
-      .then((r) => { if (!gone) setState({ loading: false, skills: r.skills || [], errors: r.errors || [], duplicates: r.duplicates || [], roots: r.roots || [], local: Boolean(r.local), note: r.note || null }); })
+      .then((r) => {
+        if (gone) return;
+        const list = r.skills || [];
+        setState({ loading: false, skills: list, errors: r.errors || [], duplicates: r.duplicates || [], roots: r.roots || [], local: Boolean(r.local), note: r.note || null });
+        setEnabled(new Set(list.filter((skill) => skill.enabled !== false).map((skill) => skill.name)));
+      })
       .catch((e) => { if (!gone) setState((s) => ({ ...s, loading: false, note: e.message })); });
     return () => { gone = true; };
   }, []);
-
-  useEffect(() => {
-    try { localStorage.setItem(enabledKey, JSON.stringify([...enabled])); } catch { /* quota */ }
-  }, [enabled, enabledKey]);
-
-  useEffect(() => {
-    setEnabled(() => {
-      try { return new Set(JSON.parse(localStorage.getItem(enabledKey) || '[]')); } catch { return new Set(); }
-    });
-  }, [enabledKey]);
 
   async function loadTemplates(nextKind = kind) {
     setKind(nextKind);
@@ -80,12 +71,23 @@ export default function SkillsPage() {
     return state.skills.filter((s) => (tab === 'remote' ? s.packaged : true)).filter((s) => !q || s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q));
   }, [state.skills, query, tab]);
 
-  const toggle = (name) => {
+  const toggle = async (name) => {
+    const nextEnabled = !enabled.has(name);
     setEnabled((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name); else next.add(name);
+      if (nextEnabled) next.add(name); else next.delete(name);
       return next;
     });
+    try {
+      await skillsApi.configure(name, nextEnabled);
+    } catch (error) {
+      setEnabled((prev) => {
+        const next = new Set(prev);
+        if (nextEnabled) next.delete(name); else next.add(name);
+        return next;
+      });
+      notify(error.message || 'Could not save skill setting', 'error');
+    }
   };
 
   return (

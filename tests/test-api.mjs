@@ -75,7 +75,7 @@ let passed = 0, failed = 0;
 async function api(action, payload = {}, headers = {}) {
   const res = await fetch(`${BASE}/api/bridge`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', 'x-anticodex-local': 'test-local-token-0123456789abcdef', ...headers },
     body: JSON.stringify({ action, ...payload })
   });
   const data = await res.json().catch(() => ({}));
@@ -91,7 +91,7 @@ async function main() {
   const server = spawn('node', ['server.mjs'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
-      ...process.env, PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true',
+      ...process.env, ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-only-password-123', ADMIN_SESSION_SECRET: 'test-session-secret-32-bytes-minimum', OWNER_EMAIL: 'owner@example.test', OWNER_PASSWORD: 'test-only-password-123', OWNER_NAME: 'Test Owner', PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true', ANTICODEX_LOCAL_TOKEN: 'test-local-token-0123456789abcdef',
       // A gateway we control, registered the same way a user's custom provider
       // would be: proves per-account keys, model sync and id substitution.
       CUSTOM_PROVIDERS: JSON.stringify([{
@@ -232,23 +232,23 @@ async function main() {
   r = await api('mcp', { op: 'catalog' });
   ok('mcp catalog', r.status === 200 && r.data.catalog.length >= 15 && r.data.catalog.some((c) => c.id === 'github'));
   ok('mcp gateways present', r.data.gateways?.some((g) => g.id === 'zapier'));
-  r = await api('mcp', { op: 'save', connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
+  r = await api('mcp', { op: 'save', token: token2, connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
   ok('mcp connection saved', r.status === 200);
-  r = await api('mcp', { op: 'probe', url: 'https://example.invalid/mcp' });
+  r = await api('mcp', { op: 'probe', token: token2, url: 'https://example.invalid/mcp' });
   ok('mcp probe fails gracefully', r.status === 200 && r.data.ok === false && r.data.error);
-  r = await api('mcp', { op: 'connect_begin', url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: 'http://localhost:8787/mcp/callback' });
+  r = await api('mcp', { op: 'connect_begin', token: token2, url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: `${BASE}/mcp/callback` });
   ok('connect_begin reports unreachable server', r.status === 200 && r.data.ok === false);
-  r = await api('mcp', { op: 'list' });
+  r = await api('mcp', { op: 'list', token: token2 });
   ok('mcp list', r.status === 200 && r.data.connections.some((c) => c.id === 'mcp_t1'));
-  r = await api('mcp', { op: 'call', connection_id: 'mcp_t1', tool: 'x' });
+  r = await api('mcp', { op: 'call', token: token2, connection_id: 'mcp_t1', tool: 'x' });
   ok('mcp call reports failure', r.status === 200);
   r = await api('mcp', { op: 'delete', id: 'mcp_t1' });
   ok('mcp delete', r.status === 200);
 
   console.log('— admin —');
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'wrong' });
+  r = await api('admin', { op: 'login', username: 'test-admin', password: 'wrong' });
   ok('admin wrong creds rejected', r.status === 401);
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: 'test-admin', password: 'test-only-password-123' });
   ok('admin login', r.status === 200 && r.data.token);
   const at = r.data.token;
   r = await api('admin', { op: 'stats', token: at });
@@ -261,7 +261,7 @@ async function main() {
   ok('admin bad token rejected', r.status === 401);
 
   console.log('— owner account (second admin: app sign-in, not the console) —');
-  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner signs in to the app', r.status === 200 && r.data.ok && r.data.token);
   ok('owner is flagged admin', r.data.user?.role === 'admin' && r.data.role === 'admin');
   ok('owner display name', r.data.user?.name === 'Thaddeus');
@@ -269,7 +269,7 @@ async function main() {
   ok('owner account cannot be re-registered over', r.data.ok === false && /already exists/i.test(r.data.error || ''));
   r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'nope-nope-nope' });
   ok('owner password is still required', r.data.ok === false && /wrong email or password/i.test(r.data.error || ''));
-  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner email is NOT an admin-console login', r.status === 401);
   r = await api('admin', { op: 'ensure_owner', token: at });
   ok('admin can re-materialise the owner row', r.status === 200 && r.data.ok && r.data.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
@@ -402,18 +402,18 @@ async function main() {
   console.log('— pairing & updates —');
   r = await api('pair', { op: 'create' });
   ok('pair code', r.status === 200 && r.data.code?.length === 6);
-  const pairCode = r.data.code;
-  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u1', user_token: 'acx_linked', user: { name: 'Linked', email: 'l@x.com' } });
-  ok('pair claim', r.status === 200 && r.data.token === 'acx_linked');
+  const pairCode = r.data.code; const deviceSecret = r.data.device_secret;
+  r = await api('pair', { op: 'claim', code: pairCode, user_token: 'forged', user: { email: 'victim@example.com' } });
+  ok('unauthenticated pairing claim rejected', r.status === 401);
+  r = await api('pair', { op: 'claim', code: pairCode, user_token: tokenLive, user: { email: 'victim@example.com' } });
+  ok('authenticated pair claim succeeds', r.status === 200 && r.data.ok);
   r = await api('pair', { op: 'status', code: pairCode });
-  ok('pair status returns linked account', r.status === 200 && r.data.claimed === true && r.data.token === 'acx_linked' && r.data.user?.email === 'l@x.com');
-  // The GitHub exchange links the code server-side, so the browser's follow-up
-  // claim is refused. The code must still *report* the claim, or the website
-  // (and the desktop polling it) would treat a successful link as a failure.
-  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u2', user_token: 'acx_second' });
-  ok('a used code cannot be re-claimed', r.status === 400 && /expired/i.test(r.data.error));
-  r = await api('pair', { op: 'status', code: pairCode });
-  ok('…and the first link survives, so the hand-off is idempotent', r.data.claimed === true && r.data.token === 'acx_linked');
+  ok('pair polling requires device proof', r.status === 403);
+  r = await api('pair', { op: 'status', code: pairCode, device_secret: deviceSecret });
+  ok('pair binds verified account, ignores forged profile', r.status === 200 && r.data.claimed && r.data.token === tokenLive && r.data.user?.email === email);
+  ok('pair never exports service keys', !('service_keys' in r.data));
+  r = await api('pair', { op: 'status', code: pairCode, device_secret: deviceSecret });
+  ok('pair collection is one-time', r.status === 404);
   r = await api('update_check');
   ok('update check runs', r.status === 200);
 

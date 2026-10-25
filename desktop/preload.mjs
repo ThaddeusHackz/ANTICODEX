@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('anticodexDesktop', {
   api: (action, payload) => ipcRenderer.invoke('acx:api', action, payload),
   computer: (cmd, args) => ipcRenderer.invoke('acx:computer', cmd, args),
   state: (patch) => ipcRenderer.invoke('acx:state', patch),
+  config: () => ipcRenderer.invoke('acx:config'),
   pair: (code) => ipcRenderer.invoke('acx:pair', code),
   githubLogin: () => ipcRenderer.invoke('acx:githubLogin'),
   pairWait: (code) => ipcRenderer.invoke('acx:pairWait', code),

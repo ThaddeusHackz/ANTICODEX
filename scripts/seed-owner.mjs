@@ -23,12 +23,12 @@ const args = Object.fromEntries(process.argv.slice(2)
   .filter((a) => a.startsWith('--'))
   .map((a) => { const [k, ...rest] = a.slice(2).split('='); return [k, rest.join('=') || 'true']; }));
 
-const email = String(args.email || getKey('OWNER_EMAIL') || 'tthaddeus75@gmail.com').trim().toLowerCase();
+const email = String(args.email || getKey('OWNER_EMAIL') || '').trim().toLowerCase();
 const name = String(args.name || getKey('OWNER_NAME') || email.split('@')[0]).trim();
 const role = String(args.role || getKey('OWNER_ROLE') || 'admin').trim();
 const password = String(args.password || getKey('OWNER_PASSWORD') || '');
 const force = args['reset-password'] === 'true';
-const isOwner = email === String(getKey('OWNER_EMAIL') || 'tthaddeus75@gmail.com').trim().toLowerCase();
+const isOwner = Boolean(getKey('OWNER_EMAIL')) && email === String(getKey('OWNER_EMAIL')).trim().toLowerCase();
 
 const mask = (v) => (v.length > 6 ? `${v.slice(0, 2)}••••${v.slice(-2)}` : '••••');
 
@@ -38,6 +38,10 @@ async function ledgerRow() {
 }
 
 async function main() {
+  if (!email || !email.includes('@')) {
+    console.error('✗ Set OWNER_EMAIL or pass --email=.');
+    process.exit(1);
+  }
   if (password.length < 8) {
     console.error('✗ The password (OWNER_PASSWORD or --password=) must be at least 8 characters.');
     process.exit(1);
