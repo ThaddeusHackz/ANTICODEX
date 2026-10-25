@@ -118,7 +118,7 @@ ok('desktop main loads the same bridge the website runs', /api\/bridge\.js|'brid
 }
 {
   const main = read('desktop/main.mjs');
-  const proxy = main.slice(main.indexOf("ipcMain.handle('acx:api'"), main.indexOf("ipcMain.handle('acx:computer'"));
+  const proxy = main.slice(main.indexOf("handleIpc('acx:api'"), main.indexOf("handleIpc('acx:computer'"));
   ok('every desktop request carries this machine’s keys', /provider_keys:\s*getKeychain\(\)\.load\(\)\.keys/.test(proxy));
   ok('…and its own gateway list', /provider_defs\s*=\s*state\.customProviders/.test(proxy));
   ok('…and the local token only to the in-process server', /base === apiBase.*x-anticodex-local/s.test(proxy.replace(/\n\s*/g, ' ')));
@@ -128,7 +128,7 @@ ok('desktop main loads the same bridge the website runs', /api\/bridge\.js|'brid
   const preload = read('desktop/preload.mjs');
   const main = read('desktop/main.mjs');
   const wanted = [...preload.matchAll(/invoke\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]);
-  const offered = new Set([...main.matchAll(/ipcMain\.handle\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]));
+  const offered = new Set([...main.matchAll(/(?:ipcMain\.handle|handleIpc)\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]));
   const missing = wanted.filter((c) => !offered.has(c));
   ok(`every channel the UI invokes is handled (${wanted.length} checked)`, missing.length === 0, `missing: ${missing.join(', ')}`);
   ok('the app version reaches the UI without reading from disk', /additionalArguments/.test(main) && /--anticodex-version=\$\{VERSION\}/.test(main) && /flag\('version'/.test(preload));
@@ -390,7 +390,7 @@ try {
     // The app opens the website to sign in, and the *website* mints the pairing
     // code, so the website owns the row the app has to read. Polling 127.0.0.1
     // first is the bug behind "signed in on the site, still signed out in the app".
-    const pairSrc = mainSrc.slice(mainSrc.indexOf('async function pairStatus'), mainSrc.indexOf("ipcMain.handle('acx:githubLogin'"));
+    const pairSrc = mainSrc.slice(mainSrc.indexOf('async function pairStatus'), mainSrc.indexOf("handleIpc('acx:githubLogin'"));
     ok('the app polls the website that minted the code', /siteBridge\(\{ action: 'pair', op: 'status', code \}\)/.test(pairSrc));
     ok('…then this machine, never the other way round', pairSrc.indexOf('siteBridge') < pairSrc.indexOf('localBridge') && /localBridge\(\{ action: 'pair', op: 'status', code \}\)/.test(pairSrc));
     ok('the pairing poll uses the shared status helper', /await pairStatus\(code\)/.test(mainSrc));

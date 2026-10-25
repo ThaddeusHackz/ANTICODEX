@@ -464,7 +464,7 @@ async function handleChat(body, res, req) {
         let out;
         try {
           out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools, effort });
-        } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
+        } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) })).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
         while (out.tool_calls?.length && rounds < 4) {
@@ -485,7 +485,7 @@ async function handleChat(body, res, req) {
           let next;
           try {
             next = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
-          } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
+          } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) })).payload); }
           Object.assign(out, next);
           if (!next.tool_calls?.length) break;
         }
@@ -497,7 +497,7 @@ async function handleChat(body, res, req) {
     const out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys });
     return json(res, 200, out);
   } catch (e) {
-    const { payload, retry_with } = await describeChatFailure(e, provider, model, keys);
+    const { payload, retry_with } = await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) });
     if (retry_with) {
       try {
         const again = await chat({ messages: msgs, model: retry_with, system: systemPrompt, temperature, max_tokens, provider, keys });
@@ -508,7 +508,7 @@ async function handleChat(body, res, req) {
           note: `${provider || 'that provider'} has no model called "${payload.model}" — answered with "${retry_with}" from its live list instead.`
         });
       } catch (e2) {
-        const second = await describeChatFailure(e2, provider, retry_with, keys);
+        const second = await describeChatFailure(e2, provider, retry_with, keys, { allowPrivate: isDesktopLocal(req) });
         return json(res, 200, { ...second.payload, tried_models: [payload.model, retry_with] });
       }
     }
@@ -521,7 +521,7 @@ async function handleChat(body, res, req) {
  *  the thing that fixes it — and when the *model* was the problem, look up an id
  *  the endpoint actually serves and offer it (retrying once ourselves below),
  *  because a catalog guess + a working key used to read as a broken key. */
-async function describeChatFailure(e, provider, model, keys) {
+async function describeChatFailure(e, provider, model, keys, { allowPrivate = false } = {}) {
   const ref = provider ? `${provider}::${model}` : String(model || '');
   let shown = ref.includes('::') ? ref.split('::').slice(1).join('::') : ref;
   const pid = provider || (ref.includes('::') ? ref.split('::')[0] : null);
@@ -542,7 +542,7 @@ async function describeChatFailure(e, provider, model, keys) {
     retry_with = pickLiveModel(pid, shown);
     if (!retry_with) {
       // Nothing cached for this provider — go ask it, then decide again.
-      const synced = await syncModels({ provider: pid, keys });
+      const synced = await syncModels({ provider: pid, keys, allowPrivate });
       if (synced && synced.ok) retry_with = pickLiveModel(pid, shown);
     }
     const alts = liveAlternatives(pid, shown);
@@ -1069,7 +1069,7 @@ async function handleChatStream(req, res, body) {
       stream.send({ type: 'aborted' });
       return stream.end();
     }
-    const { payload } = await describeChatFailure(e, provider, model, keys);
+    const { payload } = await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) });
     stream.send({ type: 'error', ...payload });
     return stream.end();
   }
@@ -1784,8 +1784,8 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 async function handleSkills(req, body, res) {
   const op = body.op || 'list';
   const user = await currentUser(req, body);
-  if (!user) return json(res, 401, { error: 'sign in to manage skills' });
-  const local = canSpawnLocalMcp() && isLoopback(req);
+  const local = (canSpawnLocalMcp() && isLoopback(req)) || isDesktopLocal(req);
+  if (!user && !local) return json(res, 401, { error: 'sign in to manage skills' });
   const extra = [path.join(REPO_ROOT, 'skills')];
   if (local && Array.isArray(body.extra_roots)) {
     for (const r of body.extra_roots.slice(0, 10)) if (typeof r === 'string') extra.push(r);
@@ -1806,11 +1806,12 @@ async function handleSkills(req, body, res) {
     extra,
     archives
   });
-  const skillStates = await getSkillSettings(user.id);
+  const skillStates = user ? await getSkillSettings(user.id) : {};
   loaded.skills = applySkillSettings(loaded.skills, skillStates);
   loaded.count = loaded.skills.length;
 
   if (op === 'configure') {
+    if (!user) return json(res, 401, { error: 'sign in to change skills' });
     try {
       const states = await setSkillEnabled(user.id, body.name, body.enabled === true);
       return json(res, 200, { ok: true, name: body.name, enabled: states[body.name] === true });

@@ -221,7 +221,7 @@ async function main() {
 
   r = await api('login', { email, password: 'newpass123' });
   ok('login with new password', r.status === 200 && r.data.token);
-  token2 = r.data.token;
+  const tokenAfterReset = r.data.token;
 
   r = await api('reset', { email, code: resetCode, new_password: 'again456' });
   ok('code is single-use', r.status === 200 && r.data.ok === false);
@@ -233,17 +233,17 @@ async function main() {
   r = await api('mcp', { op: 'catalog' });
   ok('mcp catalog', r.status === 200 && r.data.catalog.length >= 15 && r.data.catalog.some((c) => c.id === 'github'));
   ok('mcp gateways present', r.data.gateways?.some((g) => g.id === 'zapier'));
-  r = await api('mcp', { op: 'save', token: token2, connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
+  r = await api('mcp', { op: 'save', token: tokenAfterReset, connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
   ok('mcp connection saved', r.status === 200);
-  r = await api('mcp', { op: 'probe', token: token2, url: 'https://example.invalid/mcp' });
+  r = await api('mcp', { op: 'probe', token: tokenAfterReset, url: 'https://example.invalid/mcp' });
   ok('mcp probe fails gracefully', r.status === 200 && r.data.ok === false && r.data.error);
-  r = await api('mcp', { op: 'connect_begin', token: token2, url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: `${BASE}/mcp/callback` });
+  r = await api('mcp', { op: 'connect_begin', token: tokenAfterReset, url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: `${BASE}/mcp/callback` });
   ok('connect_begin reports unreachable server', r.status === 200 && r.data.ok === false);
-  r = await api('mcp', { op: 'list', token: token2 });
+  r = await api('mcp', { op: 'list', token: tokenAfterReset });
   ok('mcp list', r.status === 200 && r.data.connections.some((c) => c.id === 'mcp_t1'));
-  r = await api('mcp', { op: 'call', token: token2, connection_id: 'mcp_t1', tool: 'x' });
+  r = await api('mcp', { op: 'call', token: tokenAfterReset, connection_id: 'mcp_t1', tool: 'x' });
   ok('mcp call reports failure', r.status === 200);
-  r = await api('mcp', { op: 'delete', id: 'mcp_t1', token: token2 });
+  r = await api('mcp', { op: 'delete', id: 'mcp_t1', token: tokenAfterReset });
   ok('mcp delete', r.status === 200);
 
   console.log('— admin —');
@@ -419,7 +419,7 @@ async function main() {
   ok('update check runs', r.status === 200);
 
   console.log('— test_endpoint —');
-  r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai' });
+  r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai' }, { 'x-anticodex-local': '' });
   ok('endpoint test needs a session (it is an SSRF relay)', r.status === 401 && r.data.sign_in === '/login');
   r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai', token: tokenLive });
   ok('endpoint test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
@@ -455,7 +455,7 @@ async function main() {
       { id: '..bad..', name: 'Junk', type: 'openai', endpoint: 'http://127.0.0.1:9/v1' },
       { id: 'custom_ok', name: 'Public Box', type: 'openai', endpoint: 'https://gateway.example.com/v1', key_env: 'CUSTOM_OK_API_KEY' }
     ]
-  });
+  }, { 'x-anticodex-local': '' });
   const defIds = (r.data.providers || []).map((p) => p.id);
   ok('a device gateway with a public endpoint is usable', defIds.includes('custom_ok'), JSON.stringify(defIds));
   ok('a private one is dropped on a shared server', !defIds.includes('custom_lan'));
@@ -464,7 +464,7 @@ async function main() {
   r = await api('chat', {
     provider: 'custom_lan', model: 'anything', messages: [{ role: 'user', content: 'hi' }],
     provider_defs: [{ id: 'custom_lan', name: 'LAN vLLM', type: 'openai', endpoint: 'http://192.168.0.7:8000/v1' }]
-  });
+  }, { 'x-anticodex-local': '' });
   ok('a dropped gateway is named as dropped, not dialled', r.status === 200 && r.data.ok === false && r.data.verdict === 'blocked' && r.data.fix === 'desktop', JSON.stringify(r.data).slice(0, 200));
   ok('and it is never answered by quietly swapping in Demo Core', !/Demo Core/i.test(r.data.text || ''), JSON.stringify(r.data).slice(0, 120));
   r = await api('chat', {

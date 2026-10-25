@@ -54,8 +54,8 @@ for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer U
 }
 // Admin credentials live only on the server, never in the web bundle.
 const keysSrc = fs.readFileSync(path.join(root, 'lib', 'keys.js'), 'utf8');
-ok('admin creds defined server-side', keysSrc.includes('Thaddeusadmin') && keysSrc.includes('Thaddeusk12'));
-ok('admin creds NOT in web bundle', !js.includes('Thaddeusk12'));
+ok('admin password has no shipped default', /ADMIN_PASSWORD: ''/.test(keysSrc));
+ok('admin creds NOT in web bundle', !/ADMIN_(USERNAME|PASSWORD)\s*[:=]/.test(js));
 // The sanitizer is an allowlist now (tags + attributes + URL scheme), named in the
 // source; the minified bundle proves the URL allowlist shipped with it.
 const mdSrc = fs.readFileSync(path.join(root, 'web', 'src', 'lib', 'markdown.js'), 'utf8');
