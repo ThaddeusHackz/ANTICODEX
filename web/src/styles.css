@@ -506,6 +506,7 @@ h3 { font-size: 16px; }
 }
 .msg-fix { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-left: 2px solid var(--violet); border-radius: 10px; background: #ffffff0a; }
 .msg-fix a { text-decoration: none; }
+.msg-fix code { font-family: var(--mono); font-size: 11px; background: #ffffff14; padding: 1px 6px; border-radius: 6px; }
 /* --- proof, not promises: live vs catalog-guessed model ids --------------- */
 .mp-live { color: #4ade80; font-style: normal; font-weight: 800; }
 .mp-unver { color: #fbbf24; font-style: normal; font-weight: 800; cursor: help; }

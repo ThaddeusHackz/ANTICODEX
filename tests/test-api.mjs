@@ -407,6 +407,13 @@ async function main() {
   ok('pair claim', r.status === 200 && r.data.token === 'acx_linked');
   r = await api('pair', { op: 'status', code: pairCode });
   ok('pair status returns linked account', r.status === 200 && r.data.claimed === true && r.data.token === 'acx_linked' && r.data.user?.email === 'l@x.com');
+  // The GitHub exchange links the code server-side, so the browser's follow-up
+  // claim is refused. The code must still *report* the claim, or the website
+  // (and the desktop polling it) would treat a successful link as a failure.
+  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u2', user_token: 'acx_second' });
+  ok('a used code cannot be re-claimed', r.status === 400 && /expired/i.test(r.data.error));
+  r = await api('pair', { op: 'status', code: pairCode });
+  ok('…and the first link survives, so the hand-off is idempotent', r.data.claimed === true && r.data.token === 'acx_linked');
   r = await api('update_check');
   ok('update check runs', r.status === 200);
 

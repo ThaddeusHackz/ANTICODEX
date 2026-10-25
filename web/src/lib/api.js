@@ -288,7 +288,25 @@ export const rea = {
   verify: (p = {}) => api('rea', { op: 'verify', ...p }),
   register: () => api('rea', { op: 'register' }),
   tools: () => api('rea', { op: 'tools' }),
+  engines: () => api('rea', { op: 'engines' }),
   run: (tool, args) => api('rea', { op: 'run', tool, args })
+};
+
+// Qoder: the Cloud Agents APIs (server-side key) and the local qodercli agent.
+export const qoder = {
+  status: () => api('qoder', { op: 'status' }),
+  repos: () => api('qoder', { op: 'repos' }),
+  workflow: (p = {}) => api('qoder', { op: 'action.workflow', ...p }),
+  acpProbe: () => api('qoder', { op: 'acp.probe' }),
+  acpPrompt: (text, p = {}) => api('qoder', { op: 'acp.prompt', text, ...p }),
+  whoami: () => api('qoder', { op: 'cloud.whoami' }),
+  identities: (p = {}) => api('qoder', { op: 'cloud.identities', ...p }),
+  templates: (p = {}) => api('qoder', { op: 'cloud.templates', ...p }),
+  sessions: (p = {}) => api('qoder', { op: 'cloud.sessions', ...p }),
+  session: (session_id) => api('qoder', { op: 'cloud.session', session_id }),
+  events: (session_id, p = {}) => api('qoder', { op: 'cloud.events', session_id, ...p }),
+  send: (session_id, text) => api('qoder', { op: 'cloud.send', session_id, text }),
+  stream: (session_id, ms) => api('qoder', { op: 'cloud.stream', session_id, ms })
 };
 
 export const skills = {

@@ -40,6 +40,7 @@ cd desktop && npm install && npm run package:win
 | **Sandbox** | `/sandbox` runs the code — JavaScript, Python or shell — in a fresh directory with a scrubbed environment, a hard timeout (≤15 s), capped output and the files it wrote. “Write with Max” asks the model for a snippet and drops it in the editor; ▶ Run shows what it *actually* printed. Local-only by design: the desktop app (or a server you run) executes it, a remote visitor is told why not. |
 | **Codex Workspace** | File tree, editor, sandbox terminal, agent thread, diff proposals, approval modes (suggest / auto-edit / auto-run) — modeled on the Codex desktop app architecture found in the forensic sweep |
 | **Model health** | Every model the app has actually called is recorded (`data/model-health.json`): latency, first-token time, and the verdict. A provider that answers *“there is nothing like this model”* gets that id **hidden from the picker** — on the website and in the desktop app — until a call succeeds, 12 hours pass, or you forget the verdict. Settings → Model health lists what is hidden, why, and can test any id in eight tokens. |
+| **Qoder** | All 49 QoderAI repositories surveyed (`/qoder`); the seven with a machine-readable contract are implemented here — Cloud Agents (Forward/Managed) from the SDK repos, the ACP client that drives `qodercli --acp`, and the GitHub Action generator. The CLI is also pickable in **Chat** as a local agent, streaming its reasoning through the same SSE frames as a model. |
 | **REA** | Reverse Engineer Anything as a first-class surface (`/rea`): Node 22.19 check → **REA's own plan, shown before anything runs** (`npx rea-agents setup --dry-run`) → apply (the plan is fingerprinted; a plan that changed is refused) → verify (config file **and** a real MCP handshake listing its tools) → register it as the `rea` MCP server so chat and Codex can call all 207 tools. |
 | **Agent Studio** | Plans, persistent project memory (`ANTICODEX.md`), skills (REA + leanrea installed), live tool log — the Claude-Code/Claude-desktop agent pattern |
 | **Images** | Cloudflare Workers AI **Flux** (schnell/dev) |
@@ -269,6 +270,17 @@ to the GitHub Release).
 The REA skill pack (morluto/rea) and leanrea (aicodeking/leanrea) are installed under [`skills/`](skills/)
 and were used to drive the forensic sweeps documented in [`docs/FORENSIC-REPORT.md`](docs/FORENSIC-REPORT.md)
 and [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md).
+
+### Analysis engines (what REA cannot decompile without)
+
+REA will not install a decompiler for you — each is a large third-party binary with its own
+licence — so the app reports the gap instead of hiding it: `rea op:"engines"` runs
+`rea doctor`, parses `scope_checks[]`, and the REA page lists every missing engine with the exact
+variable and steps that fix it, plus the ones doctor never mentions (Wakaru, which REA only reports
+the first time `recover_javascript_sources` runs). Ghidra needs `GHIDRA_INSTALL_DIR` and Java 21+,
+JADX needs `REA_JADX_MCP_JAR`, and so on — see [`docs/REA-ENGINES.md`](docs/REA-ENGINES.md), which
+also records exactly which of them can and cannot be installed in a sandbox with no release-asset
+egress, and why nothing was faked to turn the check green.
 
 ### REA as a connector (local stdio MCP)
 

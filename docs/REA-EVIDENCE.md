@@ -742,3 +742,66 @@ which is why nothing here claims a binary was analysed. Node `v22.22.3` satisfie
 the `>= 22.19` gate. Two things this boundary deliberately does *not* do: it does
 not install REA's own MCP server on our side (it registers the same command with
 Codex), and it does not touch a target binary.
+
+---
+
+## 14. Re-run on a clean machine, and the engines (2026-10-24, second sandbox)
+
+The setup was repeated from scratch on a machine with no `~/.codex`, no `~/.agents`
+and no `data/`, using the same three step chain, and every number below comes from
+the bridge's own responses.
+
+### 14.1 Apply, verify, register again
+
+| step | answer | what proves it |
+|---|---|---|
+| `apply` (`npx -y rea-agents@6.7.0 setup --client codex --skill --yes`) | `appliedActions: [configured_codex, installed_skill]`, 2.7 s | `status: ready`, `codex: configured` |
+| file on disk | `~/.codex/config.toml`, 125 B | `[mcp_servers.rea]` → `npx -y rea-agents@6.7.0 mcp` |
+| skill on disk | `~/.agents/skills/reverse-engineer-anything/` | `SKILL.md` + `references/`, `installed_version: 42` |
+| `verify` | `ok: true`, 3.46 s | registration present **and** handshake `rea 6.7.0`, protocol `2025-06-18`, **207 tools** |
+| `register` | `ok: true`, 3.47 s, 207 tools | connection row `rea` / `stdio:rea` / `connected` / `local: true` |
+
+A real tool call, not just a tool list: `analyze_javascript_application` on this
+repository's own built frontend (`web/dist`, `format: directory`) returned an
+`evidence_id`, `analysis_profile`, `raw_result` and `normalized_result` with
+`coverage: complete-within-view` (1 of 5 files examined, the rest explicit
+unknowns) in 53 s. That evidence is what makes "installed" more than "it answered
+a handshake".
+
+### 14.2 Engines are the honest gap
+
+`rea doctor` on this machine: `healthy: false`, `environment_healthy: false`, and
+five `missing_analysis_engine` checks — Hopper, Ghidra, IDA, JADX, Kuna. REA's
+parsers inspect files without any of them; decompiling a native or Android binary
+needs one. REA deliberately does not download them, and this sandbox's egress is
+allowlisted to npm/PyPI/GitHub-source, so **no engine binary can be fetched here**
+(GitHub release assets 302 to `release-assets.githubusercontent.com`, which is
+blocked; the npm wrappers `pi-ghidra` and `jadx-headless-mcp` are thin shims that
+download from exactly there, and no PyPI package ships a Ghidra or jadx build).
+
+So the app now says it instead of guessing:
+
+* `rea op:"engines"` runs `npx -y rea-agents@latest doctor` (2.4 s), parses the
+  `scope_checks[]` table and returns the failures with the variable that fixes
+  each one.
+* `web/src/pages/Rea.jsx` renders **Analysis engines** on load: per-engine pill,
+  what it is for, what it needs, the exact steps, and the env var, with a copy
+  button. On a machine that has one, it says "all configured".
+* An unreadable doctor report is an error (`parse_error`), never "nothing missing" —
+  a table with a dropped row is reported as `7 check(s) but 6`.
+
+To finish the engine on your own machine (where GitHub is reachable):
+
+```bash
+# Ghidra (native binaries)
+curl -LO https://github.com/NationalSecurityAgency/ghidra/releases/download/<tag>/ghidra_<tag>_PUBLIC_<date>.zip
+unzip ghidra_<tag>_PUBLIC_<date>.zip -d ~/tools
+export GHIDRA_INSTALL_DIR=~/tools/ghidra_<tag>_PUBLIC        # Java 21+ required
+
+# JADX (Android)
+# download jadx-headless-mcp 0.7.1 from Samael-Z/jadx-headless-mcp releases
+export REA_JADX_MCP_JAR=/absolute/path/jadx-headless-mcp-0.7.1.jar
+```
+
+Then `rea op:"engines"` again — both should move to `ok: true` and
+`environment_healthy` should flip with them.

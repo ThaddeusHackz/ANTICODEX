@@ -50,6 +50,7 @@ export default function ReaPage() {
   const [applied, setApplied] = useState(null);
   const [verify, setVerify] = useState(null);
   const [tools, setTools] = useState(null);
+  const [engines, setEngines] = useState(null);
   const [filter, setFilter] = useState('');
   const [run, setRun] = useState({ tool: '', args: '{}', result: null, ms: null, error: null });
 
@@ -57,6 +58,23 @@ export default function ReaPage() {
     try { setStatus(await reaApi.status(c)); } catch (e) { setStatus({ ok: false, error: e.message }); }
   };
   useEffect(() => { loadStatus(client); }, [client]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // REA answers questions about any file without a decompiler, but it can only
+  // *take apart* a native or Android binary through one. The plan never mentions
+  // engines, so this asks `rea doctor` directly — otherwise "setup succeeded,
+  // healthy: true" reads as "everything works" when nothing can decompile.
+  async function loadEngines() {
+    setBusy('engines');
+    try { setEngines(await reaApi.engines()); } catch (e) { setEngines({ ok: false, error: e.message }); }
+    finally { setBusy(''); }
+  }
+
+  const copySteps = async (e) => {
+    const text = [`# ${e.engine}${e.what ? ` — ${e.what}` : ''}`, ...(e.steps || []), e.env ? `${e.env}=<path from above>` : '']
+      .filter(Boolean).join('\n');
+    try { await navigator.clipboard.writeText(text); notify('Steps copied'); }
+    catch { notify('Clipboard is blocked here — select the text instead', 'warn'); }
+  };
 
   async function makePlan() {
     setBusy('plan'); setApplied(null); setVerify(null);
@@ -122,6 +140,10 @@ export default function ReaPage() {
   }
 
   const nodeOk = status?.node?.ok;
+
+  useEffect(() => {
+    if (status?.local && nodeOk && !engines) loadEngines();
+  }, [status?.local, nodeOk]); // eslint-disable-line react-hooks/exhaustive-deps
   const shownTools = useMemo(() => {
     const list = tools?.tools || status?.connection ? (tools?.tools || []) : [];
     const q = filter.trim().toLowerCase();
@@ -195,6 +217,78 @@ export default function ReaPage() {
             Registration file: <span className="kbd">{status.registration?.file || 'n/a'}</span>
             {status.registration?.present === false ? ' — not written yet' : status.registration?.present ? ' — REA entry present' : ''}
           </div>
+        </div>
+      )}
+
+      {/* analysis engines */}
+      {status?.local && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="rea-card-head">
+            <b>Analysis engines</b>
+            <div className="row" style={{ gap: 6 }}>
+              {engines?.missing
+                ? <Pill kind={engines.missing.length ? 'warn' : 'ok'}>{engines.missing.length ? `${engines.missing.length} missing` : 'all configured'}</Pill>
+                : null}
+              <button className="btn small" onClick={loadEngines} disabled={Boolean(busy)}>
+                {busy === 'engines' ? 'Asking REA…' : 'Check engines'}
+              </button>
+            </div>
+          </div>
+          <div className="tiny" style={{ lineHeight: 1.7, marginTop: 6 }}>
+            REA inspects files with its own parsers, but decompiling a native or Android binary needs a
+            third-party engine. REA never downloads one — each is a large binary and a licence of its own —
+            so this is the list of what is missing on this machine and the exact line that fixes it.
+          </div>
+          {engines?.error && <div className="tiny" style={{ color: '#fca5a5', marginTop: 8 }}>{engines.error}</div>}
+          {engines && !engines.error && (
+            <>
+              <div className="tiny" style={{ marginTop: 8 }}>
+                <span className="kbd">{engines.command}</span> · {fmtMs(engines.ms)} · ready for decompiling:{' '}
+                <b>{engines.missing?.length ? 'no' : 'yes'}</b>
+              </div>
+              {(engines.missing || []).map((e) => (
+                <div key={e.name} style={{ marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 10 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                    <b>{e.engine}</b>
+                    <Pill kind="warn">not configured</Pill>
+                    <button className="btn small ghost" onClick={() => copySteps(e)}>Copy steps</button>
+                  </div>
+                  {e.what && <div className="tiny" style={{ marginTop: 4 }}>{e.what}</div>}
+                  {e.needs && <div className="tiny" style={{ marginTop: 2 }}>Needs: {e.needs}</div>}
+                  <ol className="tiny" style={{ margin: '6px 0 0 18px', lineHeight: 1.75 }}>
+                    {(e.steps || []).map((step) => <li key={step}>{step}</li>)}
+                  </ol>
+                  {e.env && (
+                    <div className="tiny" style={{ marginTop: 6 }}>
+                      Variable: <span className="kbd">{e.env}</span>
+                    </div>
+                  )}
+                  {e.remediation && <div className="tiny" style={{ marginTop: 4, opacity: 0.75 }}>REA says: {e.remediation}</div>}
+                </div>
+              ))}
+              {(engines.optional || []).map((e) => (
+                <div key={`opt-${e.name}`} style={{ marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 10 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                    <b>{e.engine}</b>
+                    <Pill kind={e.configured ? 'ok' : ''}>{e.configured ? 'configured' : 'optional'}</Pill>
+                    <button className="btn small ghost" onClick={() => copySteps(e)}>Copy steps</button>
+                  </div>
+                  <div className="tiny" style={{ marginTop: 4 }}>
+                    {e.what}{e.when ? <> — only needed for <span className="kbd">{e.when}</span></> : null}
+                  </div>
+                  {!e.configured && (
+                    <ol className="tiny" style={{ margin: '6px 0 0 18px', lineHeight: 1.75 }}>
+                      {(e.steps || []).map((step) => <li key={step}>{step}</li>)}
+                    </ol>
+                  )}
+                  {!e.configured && e.env && (
+                    <div className="tiny" style={{ marginTop: 6 }}>Variable: <span className="kbd">{e.env}</span></div>
+                  )}
+                </div>
+              ))}
+              {engines.note && <div className="tiny" style={{ marginTop: 10, lineHeight: 1.6 }}>{engines.note}</div>}
+            </>
+          )}
         </div>
       )}
 

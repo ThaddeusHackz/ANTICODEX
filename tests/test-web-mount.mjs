@@ -376,6 +376,29 @@ globalThis.__mount = (route) => {
   ok('the reply is not a blank bubble', last.length > 8, JSON.stringify(msgs));
   ok('a broken key says so instead of a bare error', /nvidia|API key|reach/i.test(last), last.slice(0, 160));
   ok('and points at the fix', Boolean(q('#root .msg-fix a[href="/settings"]')), q('#root .msg-fix')?.outerHTML?.slice(0, 160) || 'no .msg-fix row');
+
+  console.log('\n— a local agent that is not signed in says what to type —');
+  // The Qoder CLI agent fails with a sentence ("run `qodercli login`"), not a
+  // token like 'quota'. It used to fall through every branch of the fix row and
+  // show an error with no way forward.
+  chatStub = {
+    ok: false, state: 'auth',
+    error: 'qodercli is installed but not signed in. Run `qodercli login` (or set QODER_PERSONAL_ACCESS_TOKEN) and try again.',
+    fix: 'Run `qodercli login` on this machine, or set QODER_PERSONAL_ACCESS_TOKEN.'
+  };
+  win.eval(`localStorage.setItem('acx_model', 'agent::qodercli')`);
+  await mountAt('/', { token: reg.token, user: reg.user });
+  const agentBox = q('#root .composer textarea');
+  typeIn(agentBox, 'hello agent');
+  await settle(2);
+  click(q('#root .send-btn'));
+  await settle(40);
+  const fixRow = q('#root .msg-fix');
+  ok('the sentence fix is shown, not dropped', Boolean(fixRow && fixRow.querySelector('code')), fixRow?.outerHTML?.slice(0, 200) || 'no .msg-fix row');
+  ok('…and it names the command', /qodercli login/.test(fixRow?.textContent || ''));
+  const agentCall = bridgeCalls.filter((c) => c.action === 'chat_stream').slice(-1)[0] || {};
+  ok('the request really asked for the agent', /"provider":"agent"/.test(JSON.stringify(agentCall)) && /"model":"qodercli"/.test(JSON.stringify(agentCall)), JSON.stringify(agentCall).slice(0, 200));
+  chatStub = null;
   await fetch(`${BASE}/api/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'user_keys', op: 'delete', token: reg.token, key_env: 'NVIDIA_API_KEY' }) });
 
 
@@ -528,6 +551,15 @@ globalThis.__mount = (route) => {
     ok('the page renders', /Sandbox/.test(text) && /Run/.test(text), text.slice(0, 120));
     ok('it says what it will run', /JavaScript/.test(text) && /Python/.test(text));
     ok('…and what it will not do', /not a container|only for the person sitting/i.test(text), text.slice(-200));
+  }
+
+  console.log('\n— the Qoder page —');
+  {
+    const text = await mountAt('/qoder', { token: reg.token, user: reg.user });
+    ok('the page renders', /Qoder/.test(text) && /49 repositories/i.test(text), text.slice(0, 140));
+    ok('it says where the key goes, not the key itself', /QODER_PAT/.test(text) && !/qpat_/.test(text), text.slice(0, 200));
+    ok('the atlas is on screen', /integrated/.test(text) && /better-harness/.test(text), text.slice(-260));
+    ok('the local agent panel explains ACP', /qodercli --acp/.test(text), text.slice(-260));
   }
 
   console.log('\n— signed out —');

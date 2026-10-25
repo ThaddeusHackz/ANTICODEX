@@ -13,12 +13,13 @@ import VideoPage from './pages/Video.jsx';
 import McpPage from './pages/Mcp.jsx';
 import SkillsPage from './pages/Skills.jsx';
 import ReaPage from './pages/Rea.jsx';
+import QoderPage from './pages/Qoder.jsx';
 import SandboxPage from './pages/Sandbox.jsx';
 import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
 import SetupPage from './pages/Setup.jsx';
-import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler } from './pages/Auth.jsx';
+import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler, DesktopLinkHandler, DesktopDeepLinkHandler } from './pages/Auth.jsx';
 
 // Sidebar nav mirrors the reverse-engineered ChatGPT desktop rail (new chat,
 // search, library, codex) with ANTICODEX sections added below.
@@ -33,6 +34,7 @@ const NAV = [
   { to: '/computer', icon: '▣', label: 'Computer Use' },
   { to: '/skills', icon: '✦', label: 'Skills' },
   { to: '/rea', icon: '⟲', label: 'REA' },
+  { to: '/qoder', icon: '◈', label: 'Qoder' },
   { to: '/setup', icon: '⇪', label: 'Bring your setup' }
 ];
 
@@ -196,6 +198,8 @@ export default function App() {
   return (
     <>
       <EmailLinkHandler />
+      <DesktopLinkHandler />
+      <DesktopDeepLinkHandler />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
@@ -211,6 +215,7 @@ export default function App() {
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
         <Route path="/skills" element={<Shell><Guarded><SkillsPage /></Guarded></Shell>} />
         <Route path="/rea" element={<Shell><Guarded><ReaPage /></Guarded></Shell>} />
+        <Route path="/qoder" element={<Shell><Guarded><QoderPage /></Guarded></Shell>} />
         <Route path="/mcp" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />

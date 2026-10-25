@@ -22,7 +22,11 @@ import {
   describeAction,
   nodeSatisfies,
   nodeStatus,
+  buildDoctorArgs,
+  envOnlyEngines,
+  missingEngines,
   parseCsvRow,
+  parseDoctorOutput,
   parseSetupOutput,
   planFingerprint,
   registrationPath
@@ -164,6 +168,97 @@ section('registration is read, not rewritten');
   ok('a JSON registration is found too', checkRegistration('claude_code', { home: jsonHome }).present === true);
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(jsonHome, { recursive: true, force: true });
+}
+
+// Captured from `npx -y rea-agents@6.7.0 doctor` on a machine with no engines.
+const DOCTOR = `healthy: false
+environment_healthy: false
+scope:
+  mode: audit-wide
+  clients: []
+  providers: []
+  skill: false
+  target: null
+scope_checks[7]:
+  - name: node
+    ok: true
+    classification: healthy
+    detail: 22.22.3
+    details:
+      runtime: node
+      version: 22.22.3
+  - name: host
+    ok: true
+    classification: healthy
+    detail: debian 12
+  - name: hopper
+    ok: false
+    classification: missing_analysis_engine
+    remediation: "Run rea setup to install Hopper, or set HOPPER_LAUNCHER_PATH."
+  - name: ghidra
+    ok: false
+    classification: missing_analysis_engine
+    detail: GHIDRA_INSTALL_DIR is not set
+    remediation: Set GHIDRA_INSTALL_DIR to an extracted Ghidra 12.1.x release directory.
+  - name: ida-registration
+    ok: false
+    classification: missing_analysis_engine
+    detail: IDA MCP registration is not configured.
+    remediation: Set REA_IDA_MCP_CONFIG to your upstream IDA MCP registration JSON; see docs/ida-provider.md.
+  - name: jadx
+    ok: false
+    classification: missing_analysis_engine
+    detail: Set REA_JADX_MCP_JAR to the absolute path of a caller-supplied jadx-headless-mcp 0.7.1 JAR.
+    remediation: Set REA_JADX_MCP_JAR to the absolute path of a caller-supplied jadx-headless-mcp 0.7.1 JAR.
+  - name: kuna-installation
+    ok: false
+    classification: missing_analysis_engine
+    detail: "Set REA_KUNA_COMMAND to the absolute path of a caller-supplied kuna executable."
+    remediation: "Set REA_KUNA_COMMAND to the absolute path of a caller-supplied kuna executable."
+    details:
+      configured: false
+providerInspections[4]:
+  - id: ghidra
+    configured: false
+`;
+
+section('doctor: what can actually take a binary apart');
+{
+  const r = parseDoctorOutput(DOCTOR);
+  ok('the health flags are read', r.healthy === false && r.environment_healthy === false);
+  ok('…and the host', r.host === 'debian 12');
+  ok('every check is read, not just the failures', r.checks.length === 7, String(r.checks.length));
+  ok('a passing check keeps its detail', r.checks[0].name === 'node' && r.checks[0].detail === '22.22.3');
+  ok('the table ends before the next section', !r.checks.some((c) => c.name === 'ghidra' && c.ok === null) && r.parse_error === null);
+  ok('quoted remediations are unquoted', r.checks.find((c) => c.name === 'kuna-installation').remediation.startsWith('Set REA_KUNA_COMMAND'));
+
+  const engines = missingEngines(r);
+  ok('five engines are missing here', engines.length === 5, String(engines.length));
+  ok('…named for people, not for REA', engines.map((e) => e.engine).join(',') === 'Hopper,Ghidra,IDA Pro,JADX,Kuna');
+  ok('…each with the variable that fixes it', engines.every((e) => e.env && e.env === e.env.toUpperCase()));
+  ok('…and steps to follow', engines.every((e) => e.steps.length >= 3));
+  ok('the hyphenated check names map to help', engines.find((e) => e.engine === 'JADX').env === 'REA_JADX_MCP_JAR'
+    && engines.find((e) => e.engine === 'Kuna').env === 'REA_KUNA_COMMAND');
+  // Wakaru is not a doctor check: REA only says so when the tool runs. The card
+  // has to know about it anyway, or "all configured" would be half a sentence.
+  const opt = envOnlyEngines({});
+  ok('an engine outside doctor is still listed', opt.length === 1 && opt[0].engine === 'Wakaru');
+  ok('…with the variable that fixes it', opt[0].env === 'REA_WAKARU_COMMAND');
+  ok('…saying it is not configured', opt[0].configured === false);
+  ok('…and which call needs it', opt[0].when === 'recover_javascript_sources');
+  ok('setting the variable flips it', envOnlyEngines({ REA_WAKARU_COMMAND: '/opt/wakaru' })[0].configured === true);
+  ok('an empty variable is not configured', envOnlyEngines({ REA_WAKARU_COMMAND: '   ' })[0].configured === false);
+  ok('it is not mistaken for a doctor check', missingEngines({ checks: [] }).length === 0 && opt[0].env_only === undefined);
+
+  ok('a healthy machine reports no missing engines', missingEngines({ checks: [{ name: 'node', ok: true, classification: 'healthy' }] }).length === 0);
+  ok('an engine REA adds later is still reported', missingEngines({ checks: [{ name: 'radare', ok: false, classification: 'missing_analysis_engine', detail: 'x' }] }).length === 1);
+
+  // Silence must never read as success: an unreadable report is an error.
+  const garbage = parseDoctorOutput('boom');
+  ok('unreadable doctor output is an error', garbage.parse_error !== null && garbage.checks.length === 0);
+  const short = parseDoctorOutput(DOCTOR.replace(/\n  - name: jadx(?:\n    .*)*/, ''));
+  ok('a dropped row is reported, not ignored', /7 check\(s\) but 6/.test(short.parse_error || ''), String(short.parse_error));
+  ok('doctor is asked through the same pinned CLI', buildDoctorArgs().join(' ') === '-y rea-agents@latest doctor');
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
