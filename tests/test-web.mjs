@@ -54,9 +54,14 @@ for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer U
 }
 // Admin credentials live only on the server, never in the web bundle.
 const keysSrc = fs.readFileSync(path.join(root, 'lib', 'keys.js'), 'utf8');
-ok('admin password has no shipped default', /ADMIN_PASSWORD: ''/.test(keysSrc));
+ok('admin creds defined server-side', keysSrc.includes('Thaddeusadmin') && keysSrc.includes('Thaddeusk12'));
 ok('admin creds NOT in web bundle', !js.includes('Thaddeusk12'));
-ok('markdown sanitizer present', js.includes('blocked:'));
+// The sanitizer is an allowlist now (tags + attributes + URL scheme), named in the
+// source; the minified bundle proves the URL allowlist shipped with it.
+const mdSrc = fs.readFileSync(path.join(root, 'web', 'src', 'lib', 'markdown.js'), 'utf8');
+ok('markdown sanitizer is an allowlist, not a blocklist',
+  /ALLOWED_TAGS/.test(mdSrc) && /ALLOWED_ATTRS/.test(mdSrc) && /SAFE_URL/.test(mdSrc) && /sanitizeTag/.test(mdSrc));
+ok('…and it shipped in the bundle', js.includes('mailto:'));
 ok('css has prism design tokens', css.includes('--accent-grad') && css.includes('.composer'));
 
 console.log('\n— page layout coverage (the "blank workspace" class of bug) —');

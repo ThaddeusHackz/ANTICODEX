@@ -91,7 +91,7 @@ async function main() {
   const server = spawn('node', ['server.mjs'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
-      ...process.env, ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-only-password-123', ADMIN_SESSION_SECRET: 'test-session-secret-32-bytes-minimum', OWNER_EMAIL: 'owner@example.test', OWNER_PASSWORD: 'test-only-password-123', OWNER_NAME: 'Test Owner', PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true', ANTICODEX_LOCAL_TOKEN: 'test-local-token-0123456789abcdef',
+      ...process.env, ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-only-password-123', ADMIN_SESSION_SECRET: 'test-session-secret-32-bytes-minimum', OWNER_EMAIL: 'tthaddeus75@gmail.com', OWNER_PASSWORD: 'test-only-password-123', OWNER_NAME: 'Thaddeus', PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true', ANTICODEX_LOCAL_TOKEN: 'test-local-token-0123456789abcdef',
       // A gateway we control, registered the same way a user's custom provider
       // would be: proves per-account keys, model sync and id substitution.
       CUSTOM_PROVIDERS: JSON.stringify([{
@@ -207,7 +207,7 @@ async function main() {
   ok('logout drops the session', r.status === 200 && r.data.ok && (await api('me', { token })).status === 401);
 
   r = await api('login', { email, password: 'secret123' });
-  const token2 = r.data.token;
+  let token2 = r.data.token;
 
   r = await api('forgot', { email });
   ok('forgot emails code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
@@ -221,6 +221,7 @@ async function main() {
 
   r = await api('login', { email, password: 'newpass123' });
   ok('login with new password', r.status === 200 && r.data.token);
+  token2 = r.data.token;
 
   r = await api('reset', { email, code: resetCode, new_password: 'again456' });
   ok('code is single-use', r.status === 200 && r.data.ok === false);
@@ -242,7 +243,7 @@ async function main() {
   ok('mcp list', r.status === 200 && r.data.connections.some((c) => c.id === 'mcp_t1'));
   r = await api('mcp', { op: 'call', token: token2, connection_id: 'mcp_t1', tool: 'x' });
   ok('mcp call reports failure', r.status === 200);
-  r = await api('mcp', { op: 'delete', id: 'mcp_t1' });
+  r = await api('mcp', { op: 'delete', id: 'mcp_t1', token: token2 });
   ok('mcp delete', r.status === 200);
 
   console.log('— admin —');
@@ -432,9 +433,9 @@ async function main() {
   // registration is free, so "has a session" is not the same as "trusted to dial
   // 169.254.169.254". The desktop app runs the same code on the machine itself, so
   // only that instance gets the private addresses.
-  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive });
+  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive }, { 'x-anticodex-local': '' });
   ok('a private/LAN address is refused on a shared server, and says why', r.status === 403 && r.data.fix === 'desktop' && /ANTICODEX Desktop/i.test(r.data.hint || ''), JSON.stringify(r.data).slice(0, 200));
-  r = await api('sync_models', { provider: 'localmock', endpoint: 'http://192.168.0.7:8000/v1' });
+  r = await api('sync_models', { provider: 'localmock', endpoint: 'http://192.168.0.7:8000/v1', token: tokenLive }, { 'x-anticodex-local': '' });
   ok('and syncing a LAN gateway from a browser is refused too', r.status === 403 && r.data.fix === 'desktop');
   r = await api('test_endpoint', { provider: 'localmock', api_key: 'revoked-key', token: tokenLive });
   ok('a rejected key is called a rejected key', r.data.ok === false && r.data.verdict === 'key' && r.data.settings_link === '/settings', JSON.stringify(r.data).slice(0, 200));

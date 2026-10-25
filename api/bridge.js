@@ -136,9 +136,10 @@ export default async function handler(req, res) {
         });
       }
       case 'sync_models': {
+        const desktopLocal = isDesktopLocal(req);
         const user = await currentUser(req, body);
-        if (!user) return json(res, 401, { error: 'sign in to sync models', sign_in: '/login' });
-        const allowPrivate = Boolean(isDesktopLocal(req));
+        if (!user && !desktopLocal) return json(res, 401, { error: 'sign in to sync models', sign_in: '/login' });
+        const allowPrivate = desktopLocal;
         const keys = await mergedKeys(req, body);
         if (body.endpoint && isPrivateGateway(body.endpoint) && !allowPrivate) return privateEndpointRefusal(res);
         return json(res, 200, await syncModels({ ...body, keys, allowPrivate }));
@@ -162,9 +163,10 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true, key_env: body.key_env, persisted, message: persisted ? 'Saved to server config.' : 'This server is read-only, so the key lives in memory for now — restart and it is gone.' });
       }
       case 'test_endpoint': {
+        const desktopLocal = isDesktopLocal(req);
         const user = await currentUser(req, body);
-        if (!user) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
-        const allowPrivate = Boolean(isDesktopLocal(req));
+        if (!user && !desktopLocal) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
+        const allowPrivate = desktopLocal;
         if (body.endpoint && isPrivateGateway(body.endpoint) && !allowPrivate) return privateEndpointRefusal(res);
         return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body), allowPrivate }));
       }
@@ -353,7 +355,7 @@ async function mergedKeys(req, body) {
   const keys = { ...uKeys, ...(body?.provider_keys || {}) };
   // Gateways this device knows about (Ollama/LM Studio/vLLM on the LAN). Private
   // addresses are only honoured for the local desktop instance — see above.
-  const { defs, dropped, dropped_ids } = normalizeProviderDefs(body?.provider_defs, { allowPrivate: Boolean(user && isDesktopLocal(req)) });
+  const { defs, dropped, dropped_ids } = normalizeProviderDefs(body?.provider_defs, { allowPrivate: Boolean(isDesktopLocal(req)) });
   if (defs.length) keys[PROVIDER_DEFS_KEY] = defs;
   if (dropped) keys.__provider_defs_dropped__ = dropped;
   // A gateway this device named but that had to be ignored must never be answered
