@@ -221,7 +221,7 @@ export default function App() {
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />
         <Route path="/setup" element={<Shell><Guarded><SetupPage /></Guarded></Shell>} />
         <Route path="/settings" element={<Shell><Guarded><SettingsPage /></Guarded></Shell>} />
-        <Route path="/admin" element={<Shell><AdminPage /></Shell>} />
+        <Route path="/admin" element={<Shell><Guarded><AdminPage /></Guarded></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       {/* the prop used to be forgotten here, so notify() was invisible everywhere */}

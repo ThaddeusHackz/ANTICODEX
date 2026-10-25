@@ -11,6 +11,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createComputerUse } from './computer-use.mjs';
 import { createUpdater } from './updater.mjs';
 import { createKeychain } from './keychain.mjs';
+import {
+  executableAllowed,
+  filterStatePatch,
+  isTrustedSender,
+  navigationAllowed,
+  validateComputerArgs,
+  validatedAppUrl
+} from './security.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // One source of truth for the version: the packager stamps this same string into
@@ -33,6 +41,13 @@ const BRIDGE_CANDIDATES = [
   path.join(RES_ROOT, 'api', 'bridge.js')
 ];
 const STATE_FILE = path.join(app.getPath('userData'), 'anticodex-state.json');
+const DESKTOP_CONFIG_FILE = path.join(app.getPath('userData'), 'desktop-config.json');
+function desktopConfig() {
+  try { return JSON.parse(fs.readFileSync(DESKTOP_CONFIG_FILE, 'utf8')); } catch { return {}; }
+}
+const READ_ONLY_CONFIG = desktopConfig();
+const CONFIGURED_START_URL = validatedAppUrl(process.env.ANTICODEX_START_URL || READ_ONLY_CONFIG.startUrl);
+const CONFIGURED_API_BASE = validatedAppUrl(process.env.ANTICODEX_API_BASE || READ_ONLY_CONFIG.apiBase);
 
 // A `.skill` is a ZIP holding `<name>/SKILL.md` — the packaged form both shipped
 // desktop assistants exchange. The installer is the registry's own, so the app
@@ -112,6 +127,8 @@ async function startLocalServer() {
     if (!filePath.startsWith(WEB_DIST) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       filePath = path.join(WEB_DIST, 'index.html');
     }
+    res.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' https: wss:; font-src 'self' data:");
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     if (!fs.existsSync(filePath)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end('<!doctype html><html><body style="font-family:system-ui;background:#0b0d14;color:#e8ebf6;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h1>ANTICODEX</h1><p>Web bundle missing — reinstall the app.</p></div></body></html>');
@@ -127,7 +144,17 @@ async function startLocalServer() {
 
 let win = null;
 const computer = createComputerUse();
-const updater = createUpdater(VERSION);
+const updater = createUpdater(VERSION, {
+  confirmInstall: async ({ version, publisher }) => {
+    const options = {
+      type: 'warning', buttons: ['Install update', 'Cancel'], defaultId: 1, cancelId: 1,
+      message: `Install ANTICODEX ${version}?`,
+      detail: `Publisher: ${publisher}\nThe verified installer will open and may request Windows permission.`
+    };
+    const result = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+    return result.response === 0;
+  }
+});
 
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
@@ -161,19 +188,33 @@ function createWindow() {
     }
   });
 
-  const startUrl = loadState().startUrl;
+  const startUrl = CONFIGURED_START_URL;
   if (startUrl) win.loadURL(startUrl);
   else if (apiBase) win.loadURL(`${apiBase}/`);
   else if (fs.existsSync(path.join(WEB_DIST, 'index.html'))) win.loadFile(path.join(WEB_DIST, 'index.html'));
-  else win.loadURL('https://github.com/ThaddeusHackz/ANTICODEX');
 
+  const navigationPolicy = { appOrigin: apiBase, startUrl };
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!navigationAllowed(url, navigationPolicy)) event.preventDefault();
+  });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http')) shell.openExternal(url);
+    if (navigationAllowed(url, navigationPolicy)) return { action: 'deny' };
+    try {
+      const target = new URL(url);
+      if (target.protocol === 'https:') shell.openExternal(target.toString());
+    } catch { /* deny invalid targets */ }
     return { action: 'deny' };
   });
 }
 
 // --- IPC: bridge visible to the renderer as window.anticodexDesktop ----------
+
+function handleIpc(channel, listener) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedSender(event, apiBase || CONFIGURED_START_URL)) throw new Error('untrusted IPC sender');
+    return listener(event, ...args);
+  });
+}
 
 // --- provider keys on this machine -----------------------------------------
 // These used to sit in anticodex-state.json as readable JSON. They now go through
@@ -193,40 +234,40 @@ function getKeychain() {
   return keychain;
 }
 
-ipcMain.handle('acx:saveKeys', (_e, keys) => {
+handleIpc('acx:saveKeys', (_e, keys) => {
   const kc = getKeychain();
   const out = kc.save({ ...kc.load().keys, ...(keys || {}) });
   return { ...out, backend: kc.status().backend };
 });
 
-ipcMain.handle('acx:getKeys', () => getKeychain().load().keys);
+handleIpc('acx:getKeys', () => getKeychain().load().keys);
 
-ipcMain.handle('acx:keychainStatus', () => getKeychain().status());
+handleIpc('acx:keychainStatus', () => getKeychain().status());
 
 // Custom gateways (Ollama, LM Studio, a LAN vLLM box) belong to this machine, so
 // the main process keeps the list and attaches it to every request it makes. The
 // website has no reason to know they exist, and a public server must not be made
 // to dial them — the bridge only honours private addresses for a local instance.
-ipcMain.handle('acx:saveCustoms', (_e, list) => {
+handleIpc('acx:saveCustoms', (_e, list) => {
   const next = Array.isArray(list) ? list.slice(0, 40) : [];
   saveState({ customProviders: next });
   return { ok: true, count: next.length };
 });
 
-ipcMain.handle('acx:getCustoms', () => {
+handleIpc('acx:getCustoms', () => {
   const list = loadState().customProviders;
   return Array.isArray(list) ? list : [];
 });
 
-ipcMain.handle('acx:skillInstall', async () => {
+handleIpc('acx:skillInstall', async () => {
   try { return await installSkillArchive(); }
   catch (e) { return { ok: false, error: String(e?.message || e) }; }
 });
 
-ipcMain.handle('acx:api', async (_e, action, payload) => {
+handleIpc('acx:api', async (_e, action, payload) => {
   // Provider calls run in the main process — no CORS, keys stay local.
   const state = loadState();
-  const base = state.apiBase || apiBase || 'http://127.0.0.1:8787';
+  const base = CONFIGURED_API_BASE || apiBase || 'http://127.0.0.1:8787';
   const headers = { 'Content-Type': 'application/json' };
   // Carry the signed-in session through the proxy hop so /me, threads and
   // per-user keys authenticate exactly like they do in the browser.
@@ -256,9 +297,9 @@ ipcMain.handle('acx:api', async (_e, action, payload) => {
 // stream and a stale one) can never interleave.
 const streamControllers = new Map();
 
-ipcMain.handle('acx:api:stream', async (event, action, payload, streamId) => {
+handleIpc('acx:api:stream', async (event, action, payload, streamId) => {
   const state = loadState();
-  const base = state.apiBase || apiBase || 'http://127.0.0.1:8787';
+  const base = CONFIGURED_API_BASE || apiBase || 'http://127.0.0.1:8787';
   const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
   if (state.desktopToken) headers.Authorization = `Bearer ${state.desktopToken}`;
   if (apiBase && base === apiBase) headers['x-anticodex-local'] = process.env.ANTICODEX_LOCAL_TOKEN || '';
@@ -316,7 +357,7 @@ ipcMain.handle('acx:api:stream', async (event, action, payload, streamId) => {
   }
 });
 
-ipcMain.handle('acx:api:stream:abort', (_e, streamId) => {
+handleIpc('acx:api:stream:abort', (_e, streamId) => {
   const c = streamControllers.get(streamId);
   if (!c) return { ok: false };
   c.abort();
@@ -327,14 +368,61 @@ ipcMain.handle('acx:api:stream:abort', (_e, streamId) => {
 // Why the desktop can run REA: the setup command and the MCP server are local
 // processes, and the app is the thing that owns them. This is only a fact the
 // UI shows next to the Node version.
-ipcMain.handle('acx:reaEnv', () => ({
+handleIpc('acx:reaEnv', () => ({
   node: process.version,
   platform: process.platform,
   canSpawn: true,
   codexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
 }));
 
-ipcMain.handle('acx:computer', async (_e, cmd, args) => {
+const computerSessionGrants = new Set();
+function virtualScreenBounds() {
+  const displays = screen.getAllDisplays();
+  const left = Math.min(...displays.map((display) => display.bounds.x));
+  const top = Math.min(...displays.map((display) => display.bounds.y));
+  const right = Math.max(...displays.map((display) => display.bounds.x + display.bounds.width));
+  const bottom = Math.max(...displays.map((display) => display.bounds.y + display.bounds.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+async function computerConsent(actionClass, detail) {
+  if (computerSessionGrants.has(actionClass)) return true;
+  const options = {
+    type: 'warning',
+    buttons: ['Allow once', 'Allow for this session', 'Deny'],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+    message: `Allow ANTICODEX ${actionClass} control?`,
+    detail
+  };
+  const result = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  if (result.response === 1) computerSessionGrants.add(actionClass);
+  return result.response === 0 || result.response === 1;
+}
+
+handleIpc('acx:computer', async (_event, cmd, rawArgs) => {
+  let args;
+  try { args = validateComputerArgs(cmd, rawArgs || {}, virtualScreenBounds()); }
+  catch (error) { return { ok: false, error: String(error.message || error) }; }
+
+  const actionClass = ['click', 'type', 'key'].includes(cmd) ? 'keyboard and mouse input' : cmd;
+  if (['click', 'type', 'key', 'launch', 'shell'].includes(cmd)) {
+    if (cmd === 'shell' && process.env.ANTICODEX_ALLOW_SHELL !== '1') return { ok: false, error: 'Shell control is disabled. Set ANTICODEX_ALLOW_SHELL=1 to enable it.' };
+    if (cmd === 'launch') {
+      if (!fs.existsSync(args.target) || !fs.statSync(args.target).isFile()) return { ok: false, error: 'launch target does not exist' };
+      const allowlist = String(process.env.ANTICODEX_LAUNCH_ALLOWLIST || '').split(/[;,]/).filter(Boolean);
+      if (!executableAllowed(args.target, allowlist)) return { ok: false, error: 'launch target is not allowlisted' };
+    }
+    const detail = cmd === 'type'
+      ? `Type ${args.text.length} characters into the focused application.`
+      : cmd === 'shell' ? `Run this shell command:\n${args.command}`
+      : cmd === 'launch' ? `Launch ${args.target}`
+      : cmd === 'click' ? `Click ${args.button} at (${args.x}, ${args.y}) ${args.count} time(s).`
+      : `Send key combination ${args.combo}.`;
+    if (!await computerConsent(actionClass, detail)) return { ok: false, denied: true };
+  }
+
   switch (cmd) {
     case 'screenshot': {
       const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1600, height: 900 } });
@@ -342,36 +430,34 @@ ipcMain.handle('acx:computer', async (_e, cmd, args) => {
       return { image: img, width: 1600, height: 900 };
     }
     case 'move': return computer.moveMouse(args.x, args.y);
-    case 'click': return computer.click(args.x, args.y, args.button || 'left', args.count || 1);
-    case 'type': return computer.type(args.text || '');
-    case 'key': return computer.key(args.combo || '');
+    case 'click': return computer.click(args.x, args.y, args.button, args.count);
+    case 'type': return computer.type(args.text);
+    case 'key': return computer.key(args.combo);
     case 'windows': return computer.listWindows();
-    case 'launch': {
-      const okToRun = args.confirmed === true;
-      if (!okToRun) return { needsConfirmation: true, action: 'launch', target: args.target };
-      return computer.launch(args.target, args.args || []);
-    }
-    case 'shell': {
-      if (args.confirmed !== true) return { needsConfirmation: true, action: 'shell', command: args.command };
-      return computer.shell(args.command);
-    }
+    case 'launch': return computer.launch(args.target, args.args);
+    case 'shell': return computer.shell(args.command);
     default: return { error: `unknown computer command: ${cmd}` };
   }
 });
 
-ipcMain.handle('acx:state', (_e, patch) => {
-  const next = (patch ? saveState(patch) : loadState()) || {};
-  // Key material never travels on the generic state channel: the renderer reads it
-  // through acx:getKeys, which is where encryption is actually applied.
-  const { providerKeys, providerKeysEnc, ...rest } = next;
-  return { ...rest, keychain: getKeychain().status() };
+handleIpc('acx:state', (_event, patch) => {
+  if (patch && typeof patch === 'object') saveState(filterStatePatch(patch));
+  const state = filterStatePatch(loadState());
+  return { ...state, keychain: getKeychain().status() };
 });
+
+handleIpc('acx:config', () => ({
+  startUrl: CONFIGURED_START_URL,
+  apiBase: CONFIGURED_API_BASE,
+  localApiBase: apiBase
+}));
 
 // --- GitHub sign-in / account linking --------------------------------------
 // The desktop opens the SYSTEM browser at the website's GitHub login with a
 // pairing code; when the user finishes signing in there, the site claims the
 // code and the desktop picks up the linked account automatically.
-const SITE = process.env.ANTICODEX_SITE || 'https://anticodex.vercel.app';
+const SITE = (validatedAppUrl(process.env.ANTICODEX_SITE || 'https://anticodex.vercel.app') || 'https://anticodex.vercel.app/').replace(/\/$/, '');
+const pairingProofs = new Map();
 
 async function siteBridge(body) {
   const res = await fetch(`${SITE}/api/bridge`, {
@@ -384,11 +470,13 @@ async function siteBridge(body) {
 }
 
 async function localBridge(body) {
-  const base = loadState().apiBase || apiBase;
+  const base = CONFIGURED_API_BASE || apiBase;
   if (!base) return null;
+  const headers = { 'Content-Type': 'application/json' };
+  if (base === apiBase) headers['x-anticodex-local'] = process.env.ANTICODEX_LOCAL_TOKEN || '';
   const res = await fetch(`${base}/api/bridge`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000)
   });
@@ -404,11 +492,11 @@ async function localBridge(body) {
  * process watched a local table that never saw the claim — the app "opened the
  * browser and never logged in". Website first, this machine second.
  */
-async function pairStatus(code) {
+async function pairStatus(code, deviceSecret) {
   let lastError = null;
   for (const attempt of [
-    () => siteBridge({ action: 'pair', op: 'status', code }),
-    () => localBridge({ action: 'pair', op: 'status', code })
+    () => siteBridge({ action: 'pair', op: 'status', code, device_secret: deviceSecret }),
+    () => localBridge({ action: 'pair', op: 'status', code, device_secret: deviceSecret })
   ]) {
     try {
       const s = await attempt();
@@ -435,7 +523,7 @@ async function pairClaim(code, extra = {}) {
   return { ok: false, error: lastError || 'pairing unavailable' };
 }
 
-ipcMain.handle('acx:githubLogin', async () => {
+handleIpc('acx:githubLogin', async () => {
   // Preferred: sign in on the website, which claims a pairing code and hands
   // this install the session (plus the shared provider keys).
   let code = null;
@@ -443,9 +531,10 @@ ipcMain.handle('acx:githubLogin', async () => {
   try {
     const data = await siteBridge({ action: 'pair', op: 'create' });
     code = data?.code || null;
+    if (code && typeof data?.device_secret === 'string') pairingProofs.set(code, data.device_secret);
   } catch { online = false; }
 
-  if (code) {
+  if (code && pairingProofs.has(code)) {
     let url = `${SITE}/login?desktop=${code}&provider=github`;
     try {
       // Ask the site where GitHub sign-in points, so a half-configured server
@@ -477,36 +566,32 @@ ipcMain.handle('acx:githubLogin', async () => {
   };
 });
 
-ipcMain.handle('acx:pairWait', async (_e, code) => {
+handleIpc('acx:pairWait', async (_e, code) => {
+  const deviceSecret = pairingProofs.get(code);
+  if (!deviceSecret) return { ok: false, error: 'pairing proof unavailable — restart sign-in' };
   const deadline = Date.now() + 5 * 60 * 1000;
   while (Date.now() < deadline) {
     try {
-      const s = await pairStatus(code);
+      const s = await pairStatus(code, deviceSecret);
       if (s?.claimed) {
         saveState({ desktopToken: s.token, user: s.user, pairedAt: new Date().toISOString() });
         // Teach this install's own bridge about the linked session, otherwise
         // /me and /threads would 401 against the local copy of the ledger.
         try { await localBridge({ action: 'pair', op: 'adopt', token: s.token, user: s.user }); } catch { /* non-fatal */ }
-        // Bring the account's keys (NVIDIA, Tavily, Flux, MiniMax, ElevenLabs,
-        // Whisper, …) across so the desktop works exactly like the website. They
-        // land in this install's own keychain — which every provider call in this
-        // app resolves *first* — instead of being POSTed into the bridge as
-        // server-global config (an admin-level write that a paired user must not
-        // need, and that silently 401s now that global keys are admin-only).
-        const mirrored = s.service_keys ? Object.keys(s.service_keys) : [];
-        if (mirrored.length) getKeychain().save({ ...getKeychain().load().keys, ...s.service_keys });
+        pairingProofs.delete(code);
         return {
-          ok: true, token: s.token, user: s.user, synced_keys: mirrored.length,
+          ok: true, token: s.token, user: s.user,
           keys_encrypted: getKeychain().status().encrypted, keychain: getKeychain().status().backend
         };
       }
     } catch { /* network hiccup — keep polling */ }
     await new Promise((r) => setTimeout(r, 3000));
   }
+  pairingProofs.delete(code);
   return { ok: false, error: 'pairing timed out' };
 });
 
-ipcMain.handle('acx:pair', async (_e, code) => {
+handleIpc('acx:pair', async (_e, code) => {
   const data = await pairClaim(code, { user_id: 'desktop' });
   if (data.ok) {
     saveState({ desktopToken: data.token, pairedAt: new Date().toISOString() });
@@ -515,13 +600,13 @@ ipcMain.handle('acx:pair', async (_e, code) => {
   return data;
 });
 
-ipcMain.handle('acx:update', async () => {
+handleIpc('acx:update', async () => {
   const info = await updater.check();
   return info;
 });
 
-ipcMain.handle('acx:update:download', async () => {
-  return updater.downloadAndInstall(() => win);
+handleIpc('acx:update:download', async () => {
+  return updater.downloadAndInstall();
 });
 
 // --- lifecycle --------------------------------------------------------------

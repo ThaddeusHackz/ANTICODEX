@@ -1,7 +1,18 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  adminCredentials,
+  adminCredentialsMatch,
+  adminLoginStatus,
+  clearAdminLoginFailures,
+  issueAdminToken,
+  recordAdminLoginFailure,
+  revokeAdminToken,
+  verifyAdminToken
+} from '../lib/admin-auth.js';
 import { json, readBody } from '../lib/util.js';
 import { listProviders, chat, chatStream, probeModel, testEndpoint, directoryWithStatus, syncModels, resolveModelRef, modelIndex, explainProviderError, pickLiveModel, liveAlternatives, normalizeProviderDefs, isPrivateGateway, PROVIDER_DEFS_KEY } from '../lib/providers.js';
 import { allHealth, clearHealth, summary as healthSummary, modelRef } from '../lib/model-health.js';
@@ -51,6 +62,7 @@ import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
 import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
+import { applySkillSettings, getSkillSettings, setSkillEnabled } from '../lib/skill-settings.js';
 import { startEgressProxy, checkEgress, normalizeEgressPolicy, EGRESS_MODES, DEFAULT_ALLOW, egressEnv } from '../lib/egress.js';
 import {
   ARTIFACT_KINDS,
@@ -67,7 +79,9 @@ import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, des
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
-import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
+import { sha256, otp6, uid, clientIp } from '../lib/util.js';
+import { publicMcpConnection, redactSensitive, redactText } from '../lib/redact.js';
+import { consumeQuota } from '../lib/quota.js';
 
 // ---------------------------------------------------------------------------
 // Everything routes through /api/bridge with {action:...} so the same handlers
@@ -81,6 +95,12 @@ export default async function handler(req, res) {
   const pathOnly = raw.split('?')[0];
   const qs = new URLSearchParams(raw.slice(pathOnly.length + 1));
   const action = body.action || qs.get('action') || pathOnly.split('/').pop();
+  const quotaUser = await currentUser(req, body).catch(() => null);
+  const quota = consumeQuota({ action, ip: clientIp(req), userId: quotaUser?.id });
+  if (!quota.allowed) {
+    res.setHeader('Retry-After', String(quota.retryAfter));
+    return json(res, 429, { ok: false, error: 'rate limit exceeded', retry_after: quota.retryAfter });
+  }
   // Where this request is being served from — used to build OAuth callbacks so
   // preview deployments and the desktop app work without extra env vars.
   const origin = requestOrigin(req);
@@ -116,13 +136,13 @@ export default async function handler(req, res) {
         });
       }
       case 'sync_models': {
+        const desktopLocal = isDesktopLocal(req);
+        const user = await currentUser(req, body);
+        if (!user && !desktopLocal) return json(res, 401, { error: 'sign in to sync models', sign_in: '/login' });
+        const allowPrivate = desktopLocal;
         const keys = await mergedKeys(req, body);
-        // Same rule as test_endpoint: "ask this URL for its model list" is an open
-        // relay unless the address is one we can be told about. A browser may name a
-        // public gateway; only the desktop app on that same machine may name a
-        // private/LAN one (Ollama at 127.0.0.1, vLLM at 192.168.x.x).
-        if (body.endpoint && isPrivateGateway(body.endpoint) && !isDesktopLocal(req)) return privateEndpointRefusal(res);
-        return json(res, 200, await syncModels({ ...body, keys }));
+        if (body.endpoint && isPrivateGateway(body.endpoint) && !allowPrivate) return privateEndpointRefusal(res);
+        return json(res, 200, await syncModels({ ...body, keys, allowPrivate }));
       }
       case 'save_provider_key': {
         // This writes SERVER-WIDE config, so it belongs to the admin console
@@ -143,16 +163,12 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true, key_env: body.key_env, persisted, message: persisted ? 'Saved to server config.' : 'This server is read-only, so the key lives in memory for now — restart and it is gone.' });
       }
       case 'test_endpoint': {
-        // An open "fetch this URL for me" endpoint is an SSRF relay, so two things
-        // must be true: the caller is accountable (a signed-in account, or this
-        // machine's own desktop instance — a per-install secret that only a loopback
-        // peer can present, and any proxied request carries x-forwarded-for, so a
-        // forwarded "127.0.0.1" is never believed), and the address itself is not
-        // private unless the caller IS the machine behind that address.
-        const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
-        if (!auth && !isDesktopLocal(req)) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
-        if (body.endpoint && isPrivateGateway(body.endpoint) && !isDesktopLocal(req)) return privateEndpointRefusal(res);
-        return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body) }));
+        const desktopLocal = isDesktopLocal(req);
+        const user = await currentUser(req, body);
+        if (!user && !desktopLocal) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
+        const allowPrivate = desktopLocal;
+        if (body.endpoint && isPrivateGateway(body.endpoint) && !allowPrivate) return privateEndpointRefusal(res);
+        return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body), allowPrivate }));
       }
       case 'chat': return await handleChat(body, res, req);
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
@@ -194,7 +210,7 @@ export default async function handler(req, res) {
       case 'qoder': return await handleQoder(req, body, res);
       case 'sandbox': return await handleSandbox(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
-      case 'admin': return await handleAdmin(body, res);
+      case 'admin': return await handleAdmin(req, body, res);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
@@ -255,9 +271,13 @@ async function safeAuth(run) {
 }
 
 async function isAdmin(req, body) {
-  const expected = `adm_${await sha256(`${getKey('ADMIN_USERNAME') || 'Thaddeusadmin'}:${getKey('ADMIN_PASSWORD') || 'Thaddeusk12'}:anticodex`)}`;
-  const sent = body?.token || (req?.headers?.['x-admin-token'] || '');
-  return Boolean(sent) && sent === expected;
+  const credentials = adminCredentials();
+  if (!credentials) return false;
+  try {
+    return Boolean(verifyAdminToken(body?.admin_token || body?.token || req?.headers?.['x-admin-token'], { subject: credentials.username }));
+  } catch {
+    return false;
+  }
 }
 
 async function handleLogout(req, body, res) {
@@ -274,7 +294,6 @@ async function publicConfig(keys = {}, opts = {}) {
   return {
     name: 'ANTICODEX',
     version: VERSION,
-    admin_username: getKey('ADMIN_USERNAME') || 'Thaddeusadmin',
     features: {
       chat: true, codex: true, claude_agent: true, images: true, video: true,
       mcp: true, computer_use: true,
@@ -336,7 +355,7 @@ async function mergedKeys(req, body) {
   const keys = { ...uKeys, ...(body?.provider_keys || {}) };
   // Gateways this device knows about (Ollama/LM Studio/vLLM on the LAN). Private
   // addresses are only honoured for the local desktop instance — see above.
-  const { defs, dropped, dropped_ids } = normalizeProviderDefs(body?.provider_defs, { allowPrivate: isDesktopLocal(req) });
+  const { defs, dropped, dropped_ids } = normalizeProviderDefs(body?.provider_defs, { allowPrivate: Boolean(isDesktopLocal(req)) });
   if (defs.length) keys[PROVIDER_DEFS_KEY] = defs;
   if (dropped) keys.__provider_defs_dropped__ = dropped;
   // A gateway this device named but that had to be ignored must never be answered
@@ -431,7 +450,11 @@ async function handleChat(body, res, req) {
   }
 
   if (use_mcp !== false) {
-    const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
+    const mcpUser = await currentUser(req, body);
+    const conns = mcpUser
+      ? (await find('mcp_connections', (c) => c.user_id === mcpUser.id && c.status === 'connected' && c.enabled !== false, 50))
+        .slice(0, 12).map((c) => ({ ...c, allow_private: isDesktopLocal(req) }))
+      : [];
     const builtins = builtinTools();
     if (conns.length || builtins.length) {
       // Cached schemas, and never on the critical path: see lib/tool-cache.js.
@@ -441,7 +464,7 @@ async function handleChat(body, res, req) {
         let out;
         try {
           out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools, effort });
-        } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
+        } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) })).payload); }
         // Tool-call loop (max 4 rounds) — the assistant can drive connected MCPs.
         let rounds = 0;
         while (out.tool_calls?.length && rounds < 4) {
@@ -462,7 +485,7 @@ async function handleChat(body, res, req) {
           let next;
           try {
             next = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys, tools });
-          } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys)).payload); }
+          } catch (e) { return json(res, 200, (await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) })).payload); }
           Object.assign(out, next);
           if (!next.tool_calls?.length) break;
         }
@@ -474,7 +497,7 @@ async function handleChat(body, res, req) {
     const out = await chat({ messages: msgs, model, system: systemPrompt, temperature, max_tokens, provider, keys });
     return json(res, 200, out);
   } catch (e) {
-    const { payload, retry_with } = await describeChatFailure(e, provider, model, keys);
+    const { payload, retry_with } = await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) });
     if (retry_with) {
       try {
         const again = await chat({ messages: msgs, model: retry_with, system: systemPrompt, temperature, max_tokens, provider, keys });
@@ -485,7 +508,7 @@ async function handleChat(body, res, req) {
           note: `${provider || 'that provider'} has no model called "${payload.model}" — answered with "${retry_with}" from its live list instead.`
         });
       } catch (e2) {
-        const second = await describeChatFailure(e2, provider, retry_with, keys);
+        const second = await describeChatFailure(e2, provider, retry_with, keys, { allowPrivate: isDesktopLocal(req) });
         return json(res, 200, { ...second.payload, tried_models: [payload.model, retry_with] });
       }
     }
@@ -498,7 +521,7 @@ async function handleChat(body, res, req) {
  *  the thing that fixes it — and when the *model* was the problem, look up an id
  *  the endpoint actually serves and offer it (retrying once ourselves below),
  *  because a catalog guess + a working key used to read as a broken key. */
-async function describeChatFailure(e, provider, model, keys) {
+async function describeChatFailure(e, provider, model, keys, { allowPrivate = false } = {}) {
   const ref = provider ? `${provider}::${model}` : String(model || '');
   let shown = ref.includes('::') ? ref.split('::').slice(1).join('::') : ref;
   const pid = provider || (ref.includes('::') ? ref.split('::')[0] : null);
@@ -519,7 +542,7 @@ async function describeChatFailure(e, provider, model, keys) {
     retry_with = pickLiveModel(pid, shown);
     if (!retry_with) {
       // Nothing cached for this provider — go ask it, then decide again.
-      const synced = await syncModels({ provider: pid, keys });
+      const synced = await syncModels({ provider: pid, keys, allowPrivate });
       if (synced && synced.ok) retry_with = pickLiveModel(pid, shown);
     }
     const alts = liveAlternatives(pid, shown);
@@ -543,7 +566,7 @@ function githubAuthUrl() {
 async function handleMe(req, body, res) {
   const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
   if (!auth) return json(res, 401, { error: 'not authenticated', sign_in: '/login' });
-  const user = await authx.findByToken(auth) || await findOne('users', (u) => u.id === auth);
+  const user = await authx.findByToken(auth);
   if (!user) return json(res, 401, { error: 'Your session expired — sign in again.', sign_in: '/login' });
   return json(res, 200, { user: authx.sanitizeUser(user), ok: true });
 }
@@ -557,7 +580,8 @@ async function handleThreads(req, body, res) {
   // signing out and back in. Rows saved by the old token-keyed version are
   // still matched.
   const owner = await authx.findByToken(auth);
-  const mine = (row) => row && (row.user_id === auth || (owner && (row.user_id === owner.id || row.user_email === owner.email)));
+  if (!owner) return json(res, 401, { error: 'Sign in to access threads' });
+  const mine = (row) => row && (row.user_id === owner.id || row.user_email === owner.email);
   if (op === 'list') {
     return json(res, 200, { threads: await find('threads', mine, 500) });
   }
@@ -637,75 +661,123 @@ async function handleMcp(body, res, req) {
   const op = body.op || 'list';
   if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
 
-  if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500), tool_cache: toolCacheSummary() });
+  const user = await currentUser(req, body);
+  const adminToken = req?.headers?.['x-admin-token'] || body.admin_token;
+  const admin = adminToken ? Boolean(verifyAdminToken(adminToken)) : false;
+  if (!user && !admin) return json(res, 401, { error: 'sign in to manage MCP connections' });
+  const ownerId = user?.id || null;
+  const canSeeLegacy = admin || user?.role === 'admin';
+  const owns = (row) => Boolean(row && ownerId && row.user_id === ownerId);
+  const visible = (row) => owns(row) || (canSeeLegacy && !row?.user_id);
+  const allowPrivate = Boolean(user && isDesktopLocal(req));
+  const safeError = (error) => redactText(error?.message || error);
+  const forUse = (row) => ({ ...row, allow_private: allowPrivate });
+
+  if (op === 'list') {
+    const connections = await find('mcp_connections', visible, 500);
+    return json(res, 200, {
+      connections: connections.map(publicMcpConnection),
+      tool_cache: { entries: toolCacheSummary().length }
+    });
+  }
+  if (!user) return json(res, 403, { error: 'an authenticated account is required for this MCP operation' });
 
   if (op === 'save') {
-    const c = { ...body.connection, id: body.connection?.id || uid('mcp'), updated_at: new Date().toISOString() };
-    const existing = await findOne('mcp_connections', (x) => x.id === c.id);
-    if (existing) await update('mcp_connections', (x) => x.id === c.id, c);
-    else await insert('mcp_connections', { status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c });
-    // Its tool list may have changed with it; the next chat re-reads once.
+    const input = body.connection && typeof body.connection === 'object' ? body.connection : {};
+    let id = /^[A-Za-z0-9_.-]{1,128}$/.test(String(input.id || '')) ? String(input.id) : uid('mcp');
+    const collision = await findOne('mcp_connections', (row) => row.id === id);
+    if (collision && !owns(collision)) id = uid('mcp');
+    const existing = collision && owns(collision) ? collision : null;
+    const c = {
+      ...(existing || {}),
+      id,
+      user_id: ownerId,
+      name: String(input.name || existing?.name || id).slice(0, 160),
+      url: String(input.url || existing?.url || '').slice(0, 2048),
+      transport: input.transport || existing?.transport || 'http',
+      status: input.status || existing?.status || 'disconnected',
+      enabled: input.enabled !== false,
+      permissions: input.permissions || existing?.permissions || { tools: true, resources: true, prompts: true, read: true, write: false },
+      scopes: Array.isArray(input.scopes) ? input.scopes.slice(0, 100) : (existing?.scopes || []),
+      headers: input.headers && typeof input.headers === 'object' ? input.headers : (existing?.headers || {}),
+      token: input.token || existing?.token || null,
+      access_token: input.access_token || existing?.access_token || null,
+      refresh_token: input.refresh_token || existing?.refresh_token || null,
+      tool_allowlist: Array.isArray(input.tool_allowlist) ? input.tool_allowlist.slice(0, 200) : existing?.tool_allowlist,
+      all_tools: input.all_tools === true,
+      max_tools: Number.isInteger(input.max_tools) ? Math.max(0, Math.min(input.max_tools, 500)) : existing?.max_tools,
+      updated_at: new Date().toISOString()
+    };
+    if (!c.url) return json(res, 400, { error: 'connection url required' });
+    if (existing) await update('mcp_connections', (row) => row.id === id && owns(row), c);
+    else await insert('mcp_connections', { created_at: new Date().toISOString(), ...c });
     forgetTools();
-    return json(res, 200, { ok: true, connection: c });
+    return json(res, 200, { ok: true, connection: publicMcpConnection(c) });
   }
 
   if (op === 'delete') {
-    await remove('mcp_connections', (x) => x.id === body.id);
+    const removed = await remove('mcp_connections', (row) => row.id === body.id && owns(row));
     forgetTools();
-    return json(res, 200, { ok: true });
+    return removed ? json(res, 200, { ok: true }) : json(res, 404, { error: 'connection not found' });
   }
 
   if (op === 'probe') {
-    // Live handshake — initialize + tools/list against the real server.
     if (isLocalMcp(body.url)) {
       const why = await localRefusal(req);
       if (why) return json(res, 200, noLocalMcpServer(why));
     }
     try {
-      const result = await probeServer(body.url, body.token);
-      return json(res, 200, result);
-    } catch (e) {
-      return json(res, 200, { ok: false, error: String(e.message || e) });
+      const result = await probeServer(body.url, body.mcp_token, { allowPrivate, headers: body.headers });
+      return json(res, 200, redactSensitive(result));
+    } catch (error) {
+      return json(res, 200, { ok: false, error: safeError(error) });
     }
   }
 
   if (op === 'connect_begin') {
-    // Start the browser OAuth dance. Returns the provider's authorization URL
-    // (the sign-in / permissions page) to open in the user's browser.
-    const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
+    const conn = body.connection_id
+      ? await findOne('mcp_connections', (row) => row.id === body.connection_id && owns(row))
+      : null;
+    if (body.connection_id && !conn && !body.url) return json(res, 404, { error: 'connection not found' });
     const url = body.url || conn?.url;
     if (!url) return json(res, 400, { error: 'url or connection_id required' });
 
-    // Local (stdio) servers have no authorization server: connect = handshake.
     if (isLocalMcp(url)) {
-      const why = await localRefusal(req);
+      const why = await localRefusal(req, conn);
       if (why) return json(res, 200, noLocalMcpServer(why));
       try {
         const probe = await probeServer(url);
         const spec = stdioSpec(url);
+        let id = conn?.id || body.connection_id || spec.id;
+        const collision = await findOne('mcp_connections', (row) => row.id === id);
+        if (collision && !owns(collision)) id = uid('mcp');
         const row = {
-          id: body.connection_id || spec.id, name: probe.server?.name || spec.name || url,
+          ...(conn || {}), id, user_id: ownerId,
+          name: probe.server?.name || spec.name || url,
           url, status: 'connected', enabled: true, local: true,
           tools: probe.tools, prompts: probe.prompts,
           server_version: probe.server?.version || null,
           protocol_version: probe.protocolVersion || null,
-          connected_at: Date.now()
+          connected_at: Date.now(), updated_at: new Date().toISOString()
         };
-        const existing = await findOne('mcp_connections', (x) => x.id === row.id);
-        if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+        if (conn) await update('mcp_connections', (item) => item.id === conn.id && owns(item), row);
         else await insert('mcp_connections', row);
-        return json(res, 200, { ok: true, connected: true, connection: row });
-      } catch (e) {
-        return json(res, 200, { ok: false, error: String(e.message || e), local: true });
+        return json(res, 200, { ok: true, connected: true, connection: publicMcpConnection(row) });
+      } catch (error) {
+        return json(res, 200, { ok: false, error: safeError(error), local: true });
       }
     }
 
-    const meta = await discoverAuth(url);
-    const redirectUri = body.redirect_uri || `${getKey('SITE_URL') || 'http://localhost:8787'}/mcp/callback`;
+    const meta = await discoverAuth(url, { allowPrivate });
+    const defaultRedirect = `${requestOrigin(req) || getKey('SITE_URL') || 'http://localhost:8787'}/mcp/callback`;
+    const redirectUri = body.redirect_uri || defaultRedirect;
+    try {
+      if (new URL(redirectUri).origin !== new URL(defaultRedirect).origin) return json(res, 400, { error: 'redirect_uri must use this application origin' });
+    } catch { return json(res, 400, { error: 'invalid redirect_uri' }); }
     const state = uid('st');
     const { verifier, challenge } = pkcePair();
     if (meta?.authorization_endpoint) {
-      const client = await registerClient(meta, { redirectUris: [redirectUri] }) || {};
+      const client = await registerClient(meta, { redirectUris: [redirectUri], allowPrivate }) || {};
       const clientId = client.client_id || body.client_id;
       if (!clientId) {
         return json(res, 200, {
@@ -714,9 +786,11 @@ async function handleMcp(body, res, req) {
         });
       }
       await insert('sessions', {
-        id: state, kind: 'mcp-oauth', connection_id: body.connection_id, url,
+        id: state, kind: 'mcp-oauth', user_id: ownerId, connection_id: conn?.id || null, url,
         verifier, client_id: clientId, client_secret: client.client_secret, meta,
-        redirect_uri: redirectUri, created_at: Date.now()
+        redirect_uri: redirectUri, allow_private: allowPrivate,
+        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), used: false,
+        created_at: new Date().toISOString()
       });
       const authorize_url = buildAuthorizeUrl(meta, {
         clientId, redirectUri, scope: body.scope || meta.scopes_supported?.slice(0, 8).join(' '),
@@ -724,79 +798,85 @@ async function handleMcp(body, res, req) {
       });
       return json(res, 200, { ok: true, authorize_url, state, requires_browser: true });
     }
-    // Public / tokenless server — connect directly.
+
     try {
-      const probe = await probeServer(url, body.token);
+      const probe = await probeServer(url, body.mcp_token, { allowPrivate, headers: body.headers });
+      let id = conn?.id || body.connection_id || uid('mcp');
+      const collision = await findOne('mcp_connections', (row) => row.id === id);
+      if (collision && !owns(collision)) id = uid('mcp');
       const row = {
-        id: body.connection_id || uid('mcp'), name: probe.server?.name || url, url, status: 'connected',
-        enabled: true, token: body.token || null, tools: probe.tools, connected_at: Date.now()
+        ...(conn || {}), id, user_id: ownerId,
+        name: probe.server?.name || url, url, status: 'connected', enabled: true,
+        token: body.mcp_token || conn?.token || null, headers: body.headers || conn?.headers || {},
+        tools: probe.tools, connected_at: Date.now(), updated_at: new Date().toISOString()
       };
-      const existing = await findOne('mcp_connections', (x) => x.id === row.id);
-      if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+      if (conn) await update('mcp_connections', (item) => item.id === conn.id && owns(item), row);
       else await insert('mcp_connections', row);
-      return json(res, 200, { ok: true, connected: true, connection: row });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: String(e.message || e) });
+      return json(res, 200, { ok: true, connected: true, connection: publicMcpConnection(row) });
+    } catch (error) {
+      return json(res, 200, { ok: false, error: safeError(error) });
     }
   }
 
   if (op === 'connect_callback') {
-    const s = await findOne('sessions', (x) => x.id === body.state && x.kind === 'mcp-oauth');
-    if (!s) return json(res, 404, { error: 'unknown OAuth state — start Connect again' });
-    const tokens = await exchangeCode(s.meta, {
-      code: body.code, redirectUri: s.redirect_uri,
-      codeVerifier: s.verifier, clientId: s.client_id, clientSecret: s.client_secret
-    });
-    const probe = await probeServer(s.url, tokens.access_token);
-    const row = {
-      id: s.connection_id || uid('mcp'), name: probe.server?.name || s.url, url: s.url, status: 'connected',
-      enabled: true, access_token: tokens.access_token, refresh_token: tokens.refresh_token,
-      expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
-      tools: probe.tools, connected_at: Date.now()
-    };
-    const existing = await findOne('mcp_connections', (x) => x.id === row.id);
-    if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
-    else await insert('mcp_connections', row);
-    await update('sessions', (x) => x.id === s.id, { used: true });
-    return json(res, 200, { ok: true, connection: row });
+    const session = await findOne('sessions', (row) =>
+      row.id === body.state && row.kind === 'mcp-oauth' && row.user_id === ownerId && !row.used && new Date(row.expires_at) > new Date());
+    if (!session) return json(res, 404, { error: 'unknown or expired OAuth state — start Connect again' });
+    try {
+      const tokens = await exchangeCode(session.meta, {
+        code: body.code, redirectUri: session.redirect_uri,
+        codeVerifier: session.verifier, clientId: session.client_id, clientSecret: session.client_secret,
+        allowPrivate: session.allow_private === true && allowPrivate
+      });
+      const probe = await probeServer(session.url, tokens.access_token, { allowPrivate: session.allow_private === true && allowPrivate });
+      const existing = session.connection_id
+        ? await findOne('mcp_connections', (row) => row.id === session.connection_id && owns(row))
+        : null;
+      const row = {
+        ...(existing || {}), id: existing?.id || uid('mcp'), user_id: ownerId,
+        name: probe.server?.name || session.url, url: session.url, status: 'connected', enabled: true,
+        access_token: tokens.access_token, refresh_token: tokens.refresh_token,
+        expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
+        tools: probe.tools, connected_at: Date.now(), updated_at: new Date().toISOString()
+      };
+      if (existing) await update('mcp_connections', (item) => item.id === existing.id && owns(item), row);
+      else await insert('mcp_connections', row);
+      await update('sessions', (item) => item.id === session.id && item.user_id === ownerId && !item.used, { used: true, used_at: new Date().toISOString() });
+      return json(res, 200, { ok: true, connection: publicMcpConnection(row) });
+    } catch (error) {
+      return json(res, 200, { ok: false, error: safeError(error) });
+    }
   }
 
-  if (op === 'test') {
-    const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
+  if (op === 'test' || op === 'call') {
+    const conn = await findOne('mcp_connections', (row) => row.id === body.connection_id && owns(row));
     if (!conn) return json(res, 404, { error: 'connection not found' });
     if (isSpawnable(conn)) {
       const why = await localRefusal(req, conn);
       if (why) return json(res, 200, noLocalMcpServer(why));
     }
-    try {
-      const probe = await probeServer(conn.url, conn.access_token || conn.token);
-      await update('mcp_connections', (x) => x.id === conn.id, { tools: probe.tools, last_test: Date.now(), last_error: null });
-      return json(res, 200, { ok: true, ...probe });
-    } catch (e) {
-      await update('mcp_connections', (x) => x.id === conn.id, { last_error: String(e.message || e) });
-      return json(res, 200, { ok: false, error: String(e.message || e) });
-    }
-  }
-
-  if (op === 'call') {
-    const conn = await findOne('mcp_connections', (x) => x.id === body.connection_id);
-    if (!conn) return json(res, 404, { error: 'connection not found' });
-    try {
-      if (isSpawnable(conn)) {
-        const why = await localRefusal(req, conn);
-        if (why) return json(res, 200, noLocalMcpServer(why));
+    if (op === 'test') {
+      try {
+        const probe = await probeServer(conn.url, conn.access_token || conn.token, { allowPrivate, headers: conn.headers });
+        await update('mcp_connections', (row) => row.id === conn.id && owns(row), { tools: probe.tools, last_test: Date.now(), last_error: null });
+        return json(res, 200, redactSensitive({ ok: true, ...probe }));
+      } catch (error) {
+        const message = safeError(error);
+        await update('mcp_connections', (row) => row.id === conn.id && owns(row), { last_error: message });
+        return json(res, 200, { ok: false, error: message });
       }
-      const client = createClient(conn);
+    }
+    try {
+      const client = createClient(forUse(conn));
       try {
         await client.initialize();
         const result = await client.callTool(body.tool, body.args || {});
-        return json(res, 200, { ok: true, tool: body.tool, result });
+        return json(res, 200, redactSensitive({ ok: true, tool: body.tool, result }));
       } finally {
         await client.close().catch(() => {});
       }
-      return json(res, 200, { ok: true, tool: body.tool, result });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: String(e.message || e) });
+    } catch (error) {
+      return json(res, 200, { ok: false, error: safeError(error) });
     }
   }
 
@@ -927,7 +1007,11 @@ async function handleChatStream(req, res, body) {
   let conns = [];
   if (use_mcp !== false) {
     try {
-      conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 50)).slice(0, 12);
+      const mcpUser = await currentUser(req, body);
+      conns = mcpUser
+        ? (await find('mcp_connections', (c) => c.user_id === mcpUser.id && c.status === 'connected' && c.enabled !== false, 50))
+          .slice(0, 12).map((c) => ({ ...c, allow_private: isDesktopLocal(req) }))
+        : [];
       const builtins = builtinTools();
       if (conns.length || builtins.length) {
         const listed = conns.length ? await toolsFor(conns) : { tools: [] };
@@ -985,7 +1069,7 @@ async function handleChatStream(req, res, body) {
       stream.send({ type: 'aborted' });
       return stream.end();
     }
-    const { payload } = await describeChatFailure(e, provider, model, keys);
+    const { payload } = await describeChatFailure(e, provider, model, keys, { allowPrivate: isDesktopLocal(req) });
     stream.send({ type: 'error', ...payload });
     return stream.end();
   }
@@ -1056,11 +1140,14 @@ async function handleModelHealth(req, body, res) {
     if (!canSpawnLocalMcp() && !process.env.ALLOW_REMOTE_PROBE) {
       return json(res, 200, { ok: false, error: 'Probing models spends tokens, so it only runs on the desktop app or a local server.' });
     }
+    const user = await currentUser(req, body);
+    if (!user) return json(res, 401, { ok: false, error: 'sign in to probe models' });
     const keys = await mergedKeys(req, body);
     const wanted = Array.isArray(body.models) ? body.models.slice(0, 8) : [];
     if (!wanted.length) return json(res, 400, { ok: false, error: 'models[] required' });
     const results = await Promise.all(wanted.map((m) => probeModel({
-      model: m.model || m.id, provider: m.provider, keys, timeoutMs: Number(body.timeout_ms) || 20000
+      model: m.model || m.id, provider: m.provider, keys, timeoutMs: Number(body.timeout_ms) || 20000,
+      allowPrivate: isDesktopLocal(req)
     })));
     return json(res, 200, { ok: true, results, summary: healthSummary() });
   }
@@ -1082,10 +1169,12 @@ const reaPlans = new Map();   // fingerprint -> { at, plan }
 
 async function handleRea(req, body, res) {
   const op = body.op || 'status';
+  const user = await currentUser(req, body);
+  if (!user) return json(res, 401, { error: 'sign in to manage REA' });
   const local = canSpawnLocalMcp() && isLoopback(req);
   const client = REA_CLIENTS.includes(body.client) ? body.client : 'codex';
 
-  const connection = await findOne('mcp_connections', (c) => c.id === REA_SERVER_NAME || c.url === `stdio:${REA_SERVER_NAME}`);
+  const connection = await findOne('mcp_connections', (c) => c.user_id === user.id && (c.id === REA_SERVER_NAME || c.url === `stdio:${REA_SERVER_NAME}`));
 
   if (op === 'status') {
     let probe = null;
@@ -1166,7 +1255,7 @@ async function handleRea(req, body, res) {
       });
     }
     const planId = planFingerprint(parsed);
-    reaPlans.set(planId, { at: Date.now(), plan: parsed, client });
+    reaPlans.set(planId, { at: Date.now(), plan: parsed, client, user_id: user.id });
     // Keep this bounded; it is a preview cache, not a history.
     if (reaPlans.size > 8) reaPlans.delete([...reaPlans.keys()][0]);
     return json(res, 200, {
@@ -1191,7 +1280,7 @@ async function handleRea(req, body, res) {
       return json(res, 403, { ok: false, error: 'Setup must be approved: send { approve: true } after showing the plan.' });
     }
     const cached = reaPlans.get(String(body.plan_id || ''));
-    if (!cached) {
+    if (!cached || cached.user_id !== user.id) {
       return json(res, 409, { ok: false, error: 'Unknown or expired plan — fetch the plan again and show it before applying.' });
     }
     if (Date.now() - cached.at > 30 * 60 * 1000) {
@@ -1257,8 +1346,10 @@ async function handleRea(req, body, res) {
     if (why) return json(res, 200, noLocalMcpServer(why));
     try {
       const probe = await probeServer(`stdio:${REA_SERVER_NAME}`);
+      const occupied = await findOne('mcp_connections', (item) => item.id === REA_SERVER_NAME && item.user_id !== user.id);
       const row = {
-        id: REA_SERVER_NAME,
+        id: connection?.id || (occupied ? uid('mcp') : REA_SERVER_NAME),
+        user_id: user.id,
         name: REA_SERVER_NAME,
         url: `stdio:${REA_SERVER_NAME}`,
         status: 'connected',
@@ -1269,8 +1360,7 @@ async function handleRea(req, body, res) {
         protocol_version: probe.protocolVersion || null,
         connected_at: Date.now()
       };
-      const existing = await findOne('mcp_connections', (x) => x.id === row.id);
-      if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
+      if (connection) await update('mcp_connections', (item) => item.id === connection.id && item.user_id === user.id, row);
       else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: false } });
       forgetTools();
       await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
@@ -1693,7 +1783,9 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 async function handleSkills(req, body, res) {
   const op = body.op || 'list';
-  const local = canSpawnLocalMcp() && isLoopback(req);
+  const user = await currentUser(req, body);
+  const local = (canSpawnLocalMcp() && isLoopback(req)) || isDesktopLocal(req);
+  if (!user && !local) return json(res, 401, { error: 'sign in to manage skills' });
   const extra = [path.join(REPO_ROOT, 'skills')];
   if (local && Array.isArray(body.extra_roots)) {
     for (const r of body.extra_roots.slice(0, 10)) if (typeof r === 'string') extra.push(r);
@@ -1714,6 +1806,19 @@ async function handleSkills(req, body, res) {
     extra,
     archives
   });
+  const skillStates = user ? await getSkillSettings(user.id) : {};
+  loaded.skills = applySkillSettings(loaded.skills, skillStates);
+  loaded.count = loaded.skills.length;
+
+  if (op === 'configure') {
+    if (!user) return json(res, 401, { error: 'sign in to change skills' });
+    try {
+      const states = await setSkillEnabled(user.id, body.name, body.enabled === true);
+      return json(res, 200, { ok: true, name: body.name, enabled: states[body.name] === true });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: String(error.message || error) });
+    }
+  }
 
   if (op === 'list') {
     return json(res, 200, {
@@ -1723,7 +1828,7 @@ async function handleSkills(req, body, res) {
       skills: loaded.skills.map((s) => ({
         name: s.name, description: s.description, short_description: s.short_description ?? null,
         scope: s.scope, root_label: s.root_label, path: s.path_to_skills_md,
-        bytes: s.bytes, allow_implicit_invocation: s.allow_implicit_invocation,
+        bytes: s.bytes, enabled: s.enabled !== false, allow_implicit_invocation: s.allow_implicit_invocation,
         dependencies: s.dependencies, products: s.products,
         packaged: Boolean(s.packaged), archive: s.archive || null,
         archive_bytes: s.archive_bytes ?? null, archive_files: s.archive_files ?? null,
@@ -1737,7 +1842,7 @@ async function handleSkills(req, body, res) {
   }
 
   if (op === 'get') {
-    const skill = loaded.skills.find((s) => s.name === body.name);
+    const skill = loaded.skills.find((s) => s.name === body.name && s.enabled !== false);
     if (!skill) return json(res, 404, { ok: false, error: `no skill named ${body.name}` });
     return json(res, 200, { ok: true, skill, instructions: skillInstructions(skill) });
   }
@@ -1959,11 +2064,17 @@ async function handleImportConfig(req, body, res) {
       skipped.push({ id: c.id, reason: 'this server needs a command to run on your machine — open ANTICODEX desktop to use it' });
       continue;
     }
-    const existing = await findOne('mcp_connections', (x) => x.id === c.id);
-    const row = { ...c, status: 'disconnected', enabled: true, imported_at: new Date().toISOString() };
-    if (existing) await update('mcp_connections', (x) => x.id === c.id, row);
+    const own = await findOne('mcp_connections', (x) => x.id === c.id && x.user_id === user.id);
+    const occupied = own ? null : await findOne('mcp_connections', (x) => x.id === c.id);
+    const row = {
+      ...c,
+      id: occupied ? uid('mcp') : c.id,
+      user_id: user.id,
+      status: 'disconnected', enabled: true, imported_at: new Date().toISOString()
+    };
+    if (own) await update('mcp_connections', (x) => x.id === own.id && x.user_id === user.id, row);
     else await insert('mcp_connections', row);
-    applied.push({ kind: 'mcp', id: c.id, name: c.name, transport: row.stdio ? 'stdio' : 'http' });
+    applied.push({ kind: 'mcp', id: row.id, name: c.name, transport: row.stdio ? 'stdio' : 'http' });
   }
 
   if (rows.flags.length) {
@@ -1980,22 +2091,43 @@ async function handleImportConfig(req, body, res) {
 
 // --- admin ------------------------------------------------------------------
 
-async function handleAdmin(body, res) {
+async function handleAdmin(req, body, res) {
   const op = body.op || 'login';
-  const expectedUser = getKey('ADMIN_USERNAME') || 'Thaddeusadmin';
-  const expectedPass = getKey('ADMIN_PASSWORD') || 'Thaddeusk12';
+  const credentials = adminCredentials();
+  if (!credentials) {
+    return json(res, 503, { error: 'Admin setup incomplete: set ADMIN_USERNAME, ADMIN_PASSWORD, and ADMIN_SESSION_SECRET.' });
+  }
+  const ip = clientIp(req);
 
   if (op === 'login') {
-    const ok = timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
-    if (!ok) return json(res, 401, { error: 'Invalid admin credentials' });
-    const token = `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
-    await audit({ type: 'admin_login', ip: 'admin' });
-    return json(res, 200, { ok: true, token });
+    const status = adminLoginStatus(ip, body.username);
+    if (!status.allowed) {
+      res.setHeader('Retry-After', String(status.retryAfter));
+      return json(res, 429, { error: 'Too many admin login attempts. Try again later.', retry_after: status.retryAfter });
+    }
+    if (!adminCredentialsMatch(body.username, body.password, credentials)) {
+      const blocked = recordAdminLoginFailure(ip, body.username);
+      if (!blocked.allowed) res.setHeader('Retry-After', String(blocked.retryAfter));
+      return json(res, blocked.allowed ? 401 : 429, { error: 'Invalid admin credentials', ...(blocked.allowed ? {} : { retry_after: blocked.retryAfter }) });
+    }
+    clearAdminLoginFailures(ip, body.username);
+    try {
+      const token = issueAdminToken(credentials.username);
+      await audit({ type: 'admin_login', ip });
+      return json(res, 200, { ok: true, token, expires_in: 30 * 60 });
+    } catch (error) {
+      return json(res, 503, { error: String(error.message || error) });
+    }
   }
 
-  const token = body.token || '';
-  const valid = token === `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
-  if (!valid) return json(res, 401, { error: 'admin token required' });
+  const token = body.token || req?.headers?.['x-admin-token'] || '';
+  let capability = null;
+  try { capability = verifyAdminToken(token, { subject: credentials.username }); } catch { /* setup error below */ }
+  if (!capability) return json(res, 401, { error: 'valid admin token required' });
+  if (op === 'logout') {
+    revokeAdminToken(token, { subject: credentials.username });
+    return json(res, 200, { ok: true });
+  }
 
   if (op === 'stats') {
     const users = await find('users', () => true, 10000);
@@ -2059,50 +2191,42 @@ async function handleAdmin(body, res) {
 async function handlePair(body, res, req) {
   const op = body.op || 'create';
   if (op === 'create') {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(crypto.randomInt(100000, 1000000));
+    const deviceSecret = crypto.randomBytes(32).toString('hex');
     await insert('sessions', {
-      id: uid('pair'), kind: 'desktop-pair', code, created_at: new Date().toISOString(),
+      id: 'pair_' + await sha256(deviceSecret), kind: 'desktop-pair', code,
+      created_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), used: false
     });
-    return json(res, 200, { code, expires_in: 600 });
+    return json(res, 200, { code, device_secret: deviceSecret, expires_in: 600 });
   }
   if (op === 'adopt') {
-    // The desktop app links a website-issued session into its own local ledger
-    // so /me, threads and per-user keys work offline. Loopback only.
-    if (!isLoopback(req)) return json(res, 403, { error: 'desktop-local op' });
-    const out = await authx.adoptSession({ token: body.token, user: body.user });
-    return json(res, 200, out);
+    if (!isDesktopLocal(req)) return json(res, 403, { error: 'desktop-local op' });
+    return json(res, 200, await authx.adoptSession({ token: body.token, user: body.user }));
   }
   if (op === 'claim') {
-    // Called by the website after the user signs in (email or GitHub).
+    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.user_token || body.token;
+    const user = await authx.findByToken(token);
+    if (!user) return json(res, 401, { error: 'Sign in before linking a desktop' });
     const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code && !x.used && new Date(x.expires_at) > new Date());
     if (!s) return json(res, 400, { error: 'Invalid or expired pairing code' });
-    await update('sessions', (x) => x.id === s.id, {
-      used: true, claimed_by: body.user_id || 'desktop',
-      linked_token: body.user_token || null, linked_user: body.user || null,
-      claimed_at: new Date().toISOString()
+    await update('sessions', (x) => x.id === s.id && !x.used, {
+      used: true, claimed_by: user.id, linked_token: token,
+      linked_user: authx.sanitizeUser(user), claimed_at: new Date().toISOString()
     });
-    return json(res, 200, { ok: true, token: body.user_token || `dsk_${s.id}` });
+    return json(res, 200, { ok: true });
   }
   if (op === 'status') {
-    // Desktop polls this until the website claims the code. Once claimed, the
-    // desktop receives the service keychain so it works identically to the site.
-    const s = await findOne('sessions', (x) => x.kind === 'desktop-pair' && x.code === body.code);
-    if (!s) return json(res, 404, { error: 'unknown code' });
-    if (!s.used) return json(res, 200, { ok: true, claimed: false, expires_in: Math.max(0, Math.round((new Date(s.expires_at) - new Date()) / 1000)) });
-    // Only provider/media keys travel to the desktop. Admin, owner and
-    // service-level secrets (Supabase service role, OAuth secret, state
-    // signing key) stay on the server.
-    const NEVER_PAIR = /^(ADMIN_|OWNER_|BOOTSTRAP_|AUTH_STATE_SECRET$|SUPABASE_.*SERVICE.*$|.*SECRET$)/i;
-    const service_keys = {};
-    for (const k of allKeyEnvs()) {
-      const v = getKey(k);
-      if (v && !NEVER_PAIR.test(k) && !String(k).startsWith('ADMIN_')) service_keys[k] = v;
-    }
-    // The account's own keys replace the built-ins for this user.
-    const ownKeys = await userKeyMap(s.linked_user?.email);
-    Object.assign(service_keys, ownKeys);
-    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: s.linked_user, user_id: s.claimed_by, service_keys });
+    if (typeof body.device_secret !== 'string' || !/^[a-f0-9]{64}$/.test(body.device_secret)) return json(res, 403, { error: 'Device proof required. Restart desktop sign-in.' });
+    const id = 'pair_' + await sha256(body.device_secret);
+    const s = await findOne('sessions', (x) => x.id === id && x.kind === 'desktop-pair' && x.code === body.code && new Date(x.expires_at) > new Date());
+    if (!s) return json(res, 404, { error: 'Pairing expired or already collected' });
+    if (!s.used) return json(res, 200, { ok: true, claimed: false });
+    const user = await authx.findByToken(s.linked_token);
+    if (!user || user.id !== s.claimed_by) return json(res, 401, { error: 'Linked session expired' });
+    // Collect once; global server credentials must never leave the server.
+    await remove('sessions', (x) => x.id === s.id);
+    return json(res, 200, { ok: true, claimed: true, token: s.linked_token, user: authx.sanitizeUser(user), user_id: user.id });
   }
   return json(res, 400, { error: 'unknown pair op' });
 }
@@ -2119,7 +2243,7 @@ async function handleUpdateCheck(body, res) {
       version: (rel.tag_name || '').replace(/^v/, ''),
       notes: rel.body || '',
       published_at: rel.published_at,
-      assets: (rel.assets || []).map((a) => ({ name: a.name, size: a.size, url: a.browser_download_url }))
+      assets: (rel.assets || []).map((a) => ({ name: a.name, size: a.size, url: a.browser_download_url, digest: a.digest || null }))
     });
   } catch (e) {
     return json(res, 200, { ok: false, error: String(e.message || e) });

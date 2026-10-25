@@ -64,7 +64,18 @@ create table if not exists public.mcp_connections (
   permissions jsonb default '{"tools":true,"resources":true,"prompts":true,"read":true,"write":false}'::jsonb,
   scopes jsonb default '[]'::jsonb,
   created_at timestamptz default now(),
-  updated_at timestamptz default now()
+  updated_at timestamptz default now(),
+  enabled boolean default true,
+  token text,
+  access_token text,
+  refresh_token text,
+  expires_at timestamptz,
+  tools jsonb default '[]'::jsonb,
+  prompts jsonb default '[]'::jsonb,
+  headers jsonb default '{}'::jsonb,
+  connected_at timestamptz,
+  last_test timestamptz,
+  last_error text
 );
 
 create table if not exists public.generations (
@@ -80,6 +91,7 @@ create table if not exists public.generations (
 create table if not exists public.sessions (
   id text primary key,
   kind text,               -- mcp-oauth | desktop-pair | computer
+  user_id text,
   code text,
   connection_id text,
   scopes jsonb,
@@ -96,7 +108,9 @@ create table if not exists public.sessions (
   meta jsonb,
   redirect_uri text,
   url text,
+  allow_private boolean default false,
   expires_at timestamptz,
+  used_at timestamptz,
   created_at timestamptz default now()
 );
 
@@ -142,15 +156,15 @@ alter table public.audit enable row level security;
 alter table public.outbox enable row level security;
 alter table public.api_keys enable row level security;
 
-create policy "service role full access" on public.users for all using (true) with check (true);
-create policy "service role full access" on public.threads for all using (true) with check (true);
-create policy "service role full access" on public.reset_codes for all using (true) with check (true);
-create policy "service role full access" on public.mcp_connections for all using (true) with check (true);
-create policy "service role full access" on public.generations for all using (true) with check (true);
-create policy "service role full access" on public.sessions for all using (true) with check (true);
-create policy "service role full access" on public.audit for all using (true) with check (true);
-create policy "service role full access" on public.outbox for all using (true) with check (true);
-create policy "service role full access" on public.api_keys for all using (true) with check (true);
+create policy "service role full access" on public.users for all to service_role using (true) with check (true);
+create policy "service role full access" on public.threads for all to service_role using (true) with check (true);
+create policy "service role full access" on public.reset_codes for all to service_role using (true) with check (true);
+create policy "service role full access" on public.mcp_connections for all to service_role using (true) with check (true);
+create policy "service role full access" on public.generations for all to service_role using (true) with check (true);
+create policy "service role full access" on public.sessions for all to service_role using (true) with check (true);
+create policy "service role full access" on public.audit for all to service_role using (true) with check (true);
+create policy "service role full access" on public.outbox for all to service_role using (true) with check (true);
+create policy "service role full access" on public.api_keys for all to service_role using (true) with check (true);
 
 -- ---------------------------------------------------------------------------
 -- 2026-10-19 sign-in fixes (idempotent; safe to re-run on an existing project)
@@ -182,4 +196,15 @@ create table if not exists public.policy (
 );
 create index if not exists idx_policy_email on public.policy(email);
 alter table public.policy enable row level security;
-create policy "service role full access" on public.policy for all using (true) with check (true);
+create policy "service role full access" on public.policy for all to service_role using (true) with check (true);
+
+create table if not exists public.skill_settings (
+  id text primary key,
+  user_id text not null unique,
+  states jsonb not null default '{}'::jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists idx_skill_settings_user on public.skill_settings(user_id);
+alter table public.skill_settings enable row level security;
+create policy "service role full access" on public.skill_settings for all to service_role using (true) with check (true);

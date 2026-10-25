@@ -5,7 +5,7 @@ import { Field, Pill, Brand } from '../ui.jsx';
 
 export default function AdminPage() {
   const { notify } = useApp();
-  const [token, setToken] = useState(localStorage.getItem('acx_admin_token') || '');
+  const [token, setToken] = useState(sessionStorage.getItem('acx_admin_token') || '');
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [keys, setKeys] = useState(null);
@@ -27,7 +27,7 @@ export default function AdminPage() {
       ]);
       setStats(s); setUsers(u.users || []); setKeys(k.keys || {});
     } catch (e) {
-      if (e.status === 401) { setToken(''); localStorage.removeItem('acx_admin_token'); }
+      if (e.status === 401) { setToken(''); sessionStorage.removeItem('acx_admin_token'); }
     }
   }
 
@@ -37,7 +37,7 @@ export default function AdminPage() {
     e.preventDefault();
     try {
       const r = await admin.login(creds);
-      localStorage.setItem('acx_admin_token', r.token);
+      sessionStorage.setItem('acx_admin_token', r.token);
       setToken(r.token);
       notify('Admin access granted');
     } catch (e2) { notify(e2.message || 'Invalid credentials', 'error'); }
@@ -183,8 +183,9 @@ export default function AdminPage() {
               refresh();
             } catch (e) { notify(e.message, 'error'); }
           }}>Save global keys</button>
-          <button className="btn danger" style={{ marginLeft: 10 }} onClick={() => {
-            localStorage.removeItem('acx_admin_token'); setToken(''); notify('Signed out of admin');
+          <button className="btn danger" style={{ marginLeft: 10 }} onClick={async () => {
+            await admin.logout(token).catch(() => {});
+            sessionStorage.removeItem('acx_admin_token'); setToken(''); notify('Signed out of admin');
           }}>Sign out</button>
         </div>
       )}

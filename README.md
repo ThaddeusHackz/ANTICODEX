@@ -48,7 +48,7 @@ cd desktop && npm install && npm run package:win
 | **MCP Connectors** | 21-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Postgres, Playwright, Supabase, Figma, Cloudflare… **plus REA**), OAuth-style authorize page, permission editor, tool playground, custom HTTP/SSE servers, and a **real stdio transport** so a local server runs as a supervised child process |
 | **Computer Use** | Desktop pairing codes, screen capture → vision model, mouse/keyboard control, app launch/install (confirm-gated), AI command console |
 | **Auth** | Email + password (signs straight in, no mailer required), **GitHub OAuth**, forgot-password with **6-digit email codes** (single-use, 15-min expiry, stored with their expiry), session tokens, optional email-verification gate |
-| **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |
+| **Admin** | Environment-configured console: users (with password reset), global API keys, system status, activity. No owner or console credentials are embedded in the repository. |
 | **Bring your setup** | Reads a Codex `~/.codex/config.toml` and a Claude `.claude/settings.json` + `policy-limits.json` → shows a diff-style plan → connects the MCP servers, applies the feature policy, and returns model providers / aliases / migrations for this device. Nothing is written before you approve it; a token in the env block is detected but never echoed back |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 
@@ -56,8 +56,9 @@ cd desktop && npm install && npm run package:win
 
 All service keys live in the same keychain as the provider keys — resolved
 from env (Vercel), the admin runtime config, or your own saved key in
-Settings (per account). Paired desktops mirror those keys into the local
-keychain, which is what every provider call resolves first. Wired
+Settings (per account). Pairing transfers the authenticated session only; provider
+keys remain in the account store or the desktop OS keychain and are never included
+in pairing responses. Wired
 features: **NVIDIA NIM** chat models · **Groq** LLM · **OpenAI** (GPT + Whisper
 voice input) · **ElevenLabs** read-aloud · **Cloudflare Flux** image gen ·
 **R2** media storage · **MiniMax H3** video · **Tavily** web search ·
@@ -124,14 +125,21 @@ exactly the class of bug above. `desktop/package-win.mjs` now always rebuilds
 `web/dist` (a stale bundle was how a UI fix could never reach the .exe);
 pass `--skip-build` to reuse it deliberately.
 
-### Owner account
+### Owner and administrator setup
 
-`OWNER_EMAIL` / `OWNER_PASSWORD` / `OWNER_NAME` (defaults
-`tthaddeus75@gmail.com` / `Thaddeusk12` / `Thaddeus`) are the *second* admin:
-they sign in to the website and the desktop app like anyone else, but the row
-carries `role: admin`. They are materialised on demand, so a wiped database
-never locks the owner out. The **admin console** (`/admin`) keeps its own
-`ADMIN_USERNAME` / `ADMIN_PASSWORD` pair — unchanged.
+No owner or administrator credential has a source-code default. Configure the app
+owner with `OWNER_EMAIL`, `OWNER_PASSWORD`, and optionally `OWNER_NAME`; configure
+the separate `/admin` console with `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and a random
+`ADMIN_SESSION_SECRET` of at least 32 bytes. Production admin login fails closed
+when any required setting is absent. Admin capabilities use a fixed HS256 format,
+expire after 30 minutes, live in browser `sessionStorage`, and are revoked on
+admin logout.
+
+Cost-bearing chat, search, media, model-probe, and extras routes use in-memory
+token buckets keyed by IP and authenticated user. Configure them with
+`ANTICODEX_QUOTAS` JSON or the `ANTICODEX_QUOTA_*` capacity/refill variables.
+This limiter is process-local: multi-instance production deployments should add
+a shared durable limiter at the edge in addition to these application limits.
 
 ## GitHub sign-in (2-minute setup)
 
@@ -260,8 +268,7 @@ Build it: `node desktop/package-win.mjs` (add `--skip-build` to reuse `web/dist`
 
 ## Desktop auto-update
 
-`desktop/updater.mjs` polls `github.com/ThaddeusHackz/ANTICODEX/releases/latest`. When a newer version is
-published, the app notifies the user; only after **Accept** is the asset downloaded and the installer launched.
+`desktop/updater.mjs` polls `github.com/ThaddeusHackz/ANTICODEX/releases/latest`. A release is accepted only when its asset has a GitHub `sha256` digest or matching `SHA256SUMS` entry; size and hash are checked before disk write. Windows installers must also have a valid Authenticode signature (and match `ANTICODEX_UPDATE_PUBLISHER` when configured). A native prompt names the version and publisher before the non-silent installer opens.
 Publishing a `v*` tag triggers `.github/workflows/release.yml` (Windows runner builds the app and attaches it
 to the GitHub Release).
 

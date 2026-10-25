@@ -52,12 +52,23 @@ jobs:
           }
         env:
           TAG: ${{ github.ref_name }}
+      - name: Generate SHA256SUMS
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "release/ANTICODEX-*-win32-x64.zip"
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLowerInvariant()
+            "$hash *$($file.Name)"
+          }
+          Set-Content -Path "release/SHA256SUMS" -Value $lines -Encoding ascii
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: release/ANTICODEX-*-win32-x64.zip
+          files: |
+            release/ANTICODEX-*-win32-x64.zip
+            release/SHA256SUMS
           generate_release_notes: true
       - name: Upload build artifact
         if: always()
@@ -71,7 +82,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [api, auth, web-static, web-mount, desktop]
+        suite: [api, auth, web-static, web-mount, desktop, security, desktop-security]
         # Two Node versions on purpose. Vercel runs 22; the packaged .exe embeds
         # Electron 31's Node, which is the 20 line — so `api/` + `lib/` have to work
         # on both, and a runner pinned to one silently stops testing the other.
@@ -114,6 +125,8 @@ jobs:
             web-static) f=tests/test-web.mjs ;;
             web-mount) f=tests/test-web-mount.mjs ;;
             desktop) f=tests/test-desktop.mjs ;;
+            security) f=tests/test-security.mjs ;;
+            desktop-security) f=tests/test-desktop-security.mjs ;;
           esac
           set +e
           out=$(node "$f" 2>&1); rc=$?

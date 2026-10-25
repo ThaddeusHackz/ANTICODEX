@@ -75,7 +75,7 @@ let passed = 0, failed = 0;
 async function api(action, payload = {}, headers = {}) {
   const res = await fetch(`${BASE}/api/bridge`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', 'x-anticodex-local': 'test-local-token-0123456789abcdef', ...headers },
     body: JSON.stringify({ action, ...payload })
   });
   const data = await res.json().catch(() => ({}));
@@ -91,7 +91,7 @@ async function main() {
   const server = spawn('node', ['server.mjs'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
-      ...process.env, PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true',
+      ...process.env, ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-only-password-123', ADMIN_SESSION_SECRET: 'test-session-secret-32-bytes-minimum', OWNER_EMAIL: 'tthaddeus75@gmail.com', OWNER_PASSWORD: 'test-only-password-123', OWNER_NAME: 'Thaddeus', PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true', ANTICODEX_LOCAL_TOKEN: 'test-local-token-0123456789abcdef',
       // A gateway we control, registered the same way a user's custom provider
       // would be: proves per-account keys, model sync and id substitution.
       CUSTOM_PROVIDERS: JSON.stringify([{
@@ -207,7 +207,7 @@ async function main() {
   ok('logout drops the session', r.status === 200 && r.data.ok && (await api('me', { token })).status === 401);
 
   r = await api('login', { email, password: 'secret123' });
-  const token2 = r.data.token;
+  let token2 = r.data.token;
 
   r = await api('forgot', { email });
   ok('forgot emails code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
@@ -221,6 +221,7 @@ async function main() {
 
   r = await api('login', { email, password: 'newpass123' });
   ok('login with new password', r.status === 200 && r.data.token);
+  const tokenAfterReset = r.data.token;
 
   r = await api('reset', { email, code: resetCode, new_password: 'again456' });
   ok('code is single-use', r.status === 200 && r.data.ok === false);
@@ -232,23 +233,23 @@ async function main() {
   r = await api('mcp', { op: 'catalog' });
   ok('mcp catalog', r.status === 200 && r.data.catalog.length >= 15 && r.data.catalog.some((c) => c.id === 'github'));
   ok('mcp gateways present', r.data.gateways?.some((g) => g.id === 'zapier'));
-  r = await api('mcp', { op: 'save', connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
+  r = await api('mcp', { op: 'save', token: tokenAfterReset, connection: { id: 'mcp_t1', name: 'Test MCP', transport: 'http', url: 'https://example.com/mcp', status: 'connected' } });
   ok('mcp connection saved', r.status === 200);
-  r = await api('mcp', { op: 'probe', url: 'https://example.invalid/mcp' });
+  r = await api('mcp', { op: 'probe', token: tokenAfterReset, url: 'https://example.invalid/mcp' });
   ok('mcp probe fails gracefully', r.status === 200 && r.data.ok === false && r.data.error);
-  r = await api('mcp', { op: 'connect_begin', url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: 'http://localhost:8787/mcp/callback' });
+  r = await api('mcp', { op: 'connect_begin', token: tokenAfterReset, url: 'https://example.invalid/mcp', connection_id: 'mcp_t1', redirect_uri: `${BASE}/mcp/callback` });
   ok('connect_begin reports unreachable server', r.status === 200 && r.data.ok === false);
-  r = await api('mcp', { op: 'list' });
+  r = await api('mcp', { op: 'list', token: tokenAfterReset });
   ok('mcp list', r.status === 200 && r.data.connections.some((c) => c.id === 'mcp_t1'));
-  r = await api('mcp', { op: 'call', connection_id: 'mcp_t1', tool: 'x' });
+  r = await api('mcp', { op: 'call', token: tokenAfterReset, connection_id: 'mcp_t1', tool: 'x' });
   ok('mcp call reports failure', r.status === 200);
-  r = await api('mcp', { op: 'delete', id: 'mcp_t1' });
+  r = await api('mcp', { op: 'delete', id: 'mcp_t1', token: tokenAfterReset });
   ok('mcp delete', r.status === 200);
 
   console.log('— admin —');
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'wrong' });
+  r = await api('admin', { op: 'login', username: 'test-admin', password: 'wrong' });
   ok('admin wrong creds rejected', r.status === 401);
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: 'test-admin', password: 'test-only-password-123' });
   ok('admin login', r.status === 200 && r.data.token);
   const at = r.data.token;
   r = await api('admin', { op: 'stats', token: at });
@@ -261,7 +262,7 @@ async function main() {
   ok('admin bad token rejected', r.status === 401);
 
   console.log('— owner account (second admin: app sign-in, not the console) —');
-  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner signs in to the app', r.status === 200 && r.data.ok && r.data.token);
   ok('owner is flagged admin', r.data.user?.role === 'admin' && r.data.role === 'admin');
   ok('owner display name', r.data.user?.name === 'Thaddeus');
@@ -269,7 +270,7 @@ async function main() {
   ok('owner account cannot be re-registered over', r.data.ok === false && /already exists/i.test(r.data.error || ''));
   r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'nope-nope-nope' });
   ok('owner password is still required', r.data.ok === false && /wrong email or password/i.test(r.data.error || ''));
-  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner email is NOT an admin-console login', r.status === 401);
   r = await api('admin', { op: 'ensure_owner', token: at });
   ok('admin can re-materialise the owner row', r.status === 200 && r.data.ok && r.data.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
@@ -402,23 +403,23 @@ async function main() {
   console.log('— pairing & updates —');
   r = await api('pair', { op: 'create' });
   ok('pair code', r.status === 200 && r.data.code?.length === 6);
-  const pairCode = r.data.code;
-  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u1', user_token: 'acx_linked', user: { name: 'Linked', email: 'l@x.com' } });
-  ok('pair claim', r.status === 200 && r.data.token === 'acx_linked');
+  const pairCode = r.data.code; const deviceSecret = r.data.device_secret;
+  r = await api('pair', { op: 'claim', code: pairCode, user_token: 'forged', user: { email: 'victim@example.com' } });
+  ok('unauthenticated pairing claim rejected', r.status === 401);
+  r = await api('pair', { op: 'claim', code: pairCode, user_token: tokenLive, user: { email: 'victim@example.com' } });
+  ok('authenticated pair claim succeeds', r.status === 200 && r.data.ok);
   r = await api('pair', { op: 'status', code: pairCode });
-  ok('pair status returns linked account', r.status === 200 && r.data.claimed === true && r.data.token === 'acx_linked' && r.data.user?.email === 'l@x.com');
-  // The GitHub exchange links the code server-side, so the browser's follow-up
-  // claim is refused. The code must still *report* the claim, or the website
-  // (and the desktop polling it) would treat a successful link as a failure.
-  r = await api('pair', { op: 'claim', code: pairCode, user_id: 'u2', user_token: 'acx_second' });
-  ok('a used code cannot be re-claimed', r.status === 400 && /expired/i.test(r.data.error));
-  r = await api('pair', { op: 'status', code: pairCode });
-  ok('…and the first link survives, so the hand-off is idempotent', r.data.claimed === true && r.data.token === 'acx_linked');
+  ok('pair polling requires device proof', r.status === 403);
+  r = await api('pair', { op: 'status', code: pairCode, device_secret: deviceSecret });
+  ok('pair binds verified account, ignores forged profile', r.status === 200 && r.data.claimed && r.data.token === tokenLive && r.data.user?.email === email);
+  ok('pair never exports service keys', !('service_keys' in r.data));
+  r = await api('pair', { op: 'status', code: pairCode, device_secret: deviceSecret });
+  ok('pair collection is one-time', r.status === 404);
   r = await api('update_check');
   ok('update check runs', r.status === 200);
 
   console.log('— test_endpoint —');
-  r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai' });
+  r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai' }, { 'x-anticodex-local': '' });
   ok('endpoint test needs a session (it is an SSRF relay)', r.status === 401 && r.data.sign_in === '/login');
   r = await api('test_endpoint', { endpoint: 'https://integrate.api.nvidia.com/v1', api_key: 'bad', type: 'openai', token: tokenLive });
   ok('endpoint test reports result', r.status === 200 && typeof r.data.ok === 'boolean');
@@ -432,9 +433,9 @@ async function main() {
   // registration is free, so "has a session" is not the same as "trusted to dial
   // 169.254.169.254". The desktop app runs the same code on the machine itself, so
   // only that instance gets the private addresses.
-  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive });
+  r = await api('test_endpoint', { endpoint: 'http://127.0.0.1:1/v1', api_key: 'whatever', type: 'openai', token: tokenLive }, { 'x-anticodex-local': '' });
   ok('a private/LAN address is refused on a shared server, and says why', r.status === 403 && r.data.fix === 'desktop' && /ANTICODEX Desktop/i.test(r.data.hint || ''), JSON.stringify(r.data).slice(0, 200));
-  r = await api('sync_models', { provider: 'localmock', endpoint: 'http://192.168.0.7:8000/v1' });
+  r = await api('sync_models', { provider: 'localmock', endpoint: 'http://192.168.0.7:8000/v1', token: tokenLive }, { 'x-anticodex-local': '' });
   ok('and syncing a LAN gateway from a browser is refused too', r.status === 403 && r.data.fix === 'desktop');
   r = await api('test_endpoint', { provider: 'localmock', api_key: 'revoked-key', token: tokenLive });
   ok('a rejected key is called a rejected key', r.data.ok === false && r.data.verdict === 'key' && r.data.settings_link === '/settings', JSON.stringify(r.data).slice(0, 200));
@@ -454,7 +455,7 @@ async function main() {
       { id: '..bad..', name: 'Junk', type: 'openai', endpoint: 'http://127.0.0.1:9/v1' },
       { id: 'custom_ok', name: 'Public Box', type: 'openai', endpoint: 'https://gateway.example.com/v1', key_env: 'CUSTOM_OK_API_KEY' }
     ]
-  });
+  }, { 'x-anticodex-local': '' });
   const defIds = (r.data.providers || []).map((p) => p.id);
   ok('a device gateway with a public endpoint is usable', defIds.includes('custom_ok'), JSON.stringify(defIds));
   ok('a private one is dropped on a shared server', !defIds.includes('custom_lan'));
@@ -463,7 +464,7 @@ async function main() {
   r = await api('chat', {
     provider: 'custom_lan', model: 'anything', messages: [{ role: 'user', content: 'hi' }],
     provider_defs: [{ id: 'custom_lan', name: 'LAN vLLM', type: 'openai', endpoint: 'http://192.168.0.7:8000/v1' }]
-  });
+  }, { 'x-anticodex-local': '' });
   ok('a dropped gateway is named as dropped, not dialled', r.status === 200 && r.data.ok === false && r.data.verdict === 'blocked' && r.data.fix === 'desktop', JSON.stringify(r.data).slice(0, 200));
   ok('and it is never answered by quietly swapping in Demo Core', !/Demo Core/i.test(r.data.text || ''), JSON.stringify(r.data).slice(0, 120));
   r = await api('chat', {

@@ -2,7 +2,7 @@
 // modules required, works inside a packaged .exe). Other platforms fall back to
 // xdotool (Linux) or cliclick (macOS). Every action is logged.
 
-import { execFile, exec } from 'node:child_process';
+import { execFile, exec, spawn } from 'node:child_process';
 import os from 'node:os';
 
 function run(cmd, args = [], opts = {}) {
@@ -14,7 +14,8 @@ function run(cmd, args = [], opts = {}) {
 }
 
 function ps(script) {
-  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+  const encoded = Buffer.from(String(script), 'utf16le').toString('base64');
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]);
 }
 
 export function createComputerUse() {
@@ -26,6 +27,8 @@ export function createComputerUse() {
   }
 
   async function moveMouse(x, y) {
+    x = Number(x); y = Number(y);
+    if (!Number.isInteger(x) || !Number.isInteger(y)) return record('move', { x, y }, { ok: false, stderr: 'invalid coordinates' });
     if (process.platform === 'win32') {
       const r = await ps(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x},${y})`);
       return record('move', { x, y }, r);
@@ -35,6 +38,10 @@ export function createComputerUse() {
   }
 
   async function click(x, y, button = 'left', count = 1) {
+    x = Number(x); y = Number(y); count = Number(count);
+    if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(count) || count < 1 || count > 3) {
+      return record('click', { x, y, button, count }, { ok: false, stderr: 'invalid click arguments' });
+    }
     if (process.platform === 'win32') {
       const flag = button === 'right' ? '0x0008' : button === 'middle' ? '0x0020' : '0x0002';
       const script = `
@@ -62,7 +69,7 @@ ${Array.from({ length: count }).map(() => `[M]::mouse_event(${flag},0,0,0,[IntPt
   async function key(combo) {
     if (process.platform === 'win32') {
       const map = { enter: '{ENTER}', tab: '{TAB}', esc: '{ESC}', backspace: '{BS}', ctrl: '^', alt: '%', shift: '+' };
-      const keys = combo.split('+').map((k) => map[k.toLowerCase()] || k).join('');
+      const keys = combo.split('+').map((k) => map[k.toLowerCase()] || k).join('').replace(/'/g, "''");
       return record('key', { combo }, await ps(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`));
     }
     return record('key', { combo }, await run('xdotool', ['key', combo]));
@@ -77,10 +84,16 @@ ${Array.from({ length: count }).map(() => `[M]::mouse_event(${flag},0,0,0,[IntPt
   }
 
   async function launch(target, args = []) {
-    if (process.platform === 'win32') {
-      return record('launch', { target }, await run('powershell.exe', ['-NoProfile', '-Command', `Start-Process '${target}'`]));
-    }
-    return record('launch', { target }, run(target, args, { detached: true, stdio: 'ignore' }).then(() => ({ ok: true })));
+    const result = await new Promise((resolve) => {
+      try {
+        const child = spawn(target, args, { detached: true, stdio: 'ignore', shell: false });
+        child.once('spawn', () => { child.unref(); resolve({ ok: true, stdout: '', stderr: '' }); });
+        child.once('error', (error) => resolve({ ok: false, stdout: '', stderr: String(error.message || error) }));
+      } catch (error) {
+        resolve({ ok: false, stdout: '', stderr: String(error.message || error) });
+      }
+    });
+    return record('launch', { target }, result);
   }
 
   async function shell(command) {

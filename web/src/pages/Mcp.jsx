@@ -178,7 +178,7 @@ export default function McpPage() {
                 <span className="status-dot ok" />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</div>
-                  <div className="tiny">{c.url} · {c.tools?.length || 0} tools · {c.access_token || c.token ? 'authorized' : 'public'}</div>
+                  <div className="tiny">{c.url} · {c.tools?.length || 0} tools · {c.has_token ? 'authorized' : 'public'}</div>
                 </div>
               </div>
               <div className="row">

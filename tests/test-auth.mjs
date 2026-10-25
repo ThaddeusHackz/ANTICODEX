@@ -224,7 +224,7 @@ async function api(base, action, payload = {}, headers = {}) {
 
 function spawnServer(env, args = []) {
   const server = spawn('node', ['server.mjs', ...args], {
-    cwd: ROOT, env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', ANTICODEX_DATA: DATA_TMP, ...env }, stdio: 'ignore'
+    cwd: ROOT, env: { ...process.env, ADMIN_USERNAME: 'Thaddeusadmin', ADMIN_PASSWORD: 'test-only-password-123', OWNER_EMAIL: 'tthaddeus75@gmail.com', OWNER_PASSWORD: 'test-only-password-123', PORT: String(PORT), HOST: '127.0.0.1', ANTICODEX_DATA: DATA_TMP, ...env }, stdio: 'ignore'
   });
   return server;
 }
@@ -328,7 +328,7 @@ async function main() {
   ok('a recovery code is waiting in the ledger', pending.length >= 1);
   r = await api(BASE, 'admin', { op: 'reset_user', token: 'bad', email, password: 'nope123456' });
   ok('admin reset needs the admin token', r.status === 401);
-  const admin = await api(BASE, 'admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  const admin = await api(BASE, 'admin', { op: 'login', username: 'Thaddeusadmin', password: 'test-only-password-123' });
   const at = admin.data.token;
   r = await api(BASE, 'admin', { op: 'reset_user', token: at, email, password: 'brandnewpass' });
   ok('admin can reset an account without the emailed code', r.status === 200 && r.data.ok);
@@ -347,13 +347,13 @@ async function main() {
   ok('threads survive signing out and back in', r.data.threads?.some((t) => t.id === 'th_1'));
 
   console.log('\n— owner / second admin —');
-  r = await api(BASE, 'login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api(BASE, 'login', { email: 'tthaddeus75@gmail.com', password: 'test-only-password-123' });
   ok('owner signs in with the baked credentials', r.status === 200 && r.data.ok && Boolean(r.data.token));
   ok('owner is role=admin for the app', r.data.role === 'admin' && r.data.user.role === 'admin');
   ok('owner row exists in the ledger', mock.tables.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
   r = await api(BASE, 'me', { token: r.data.token });
   ok('owner session works on protected calls', r.status === 200 && r.data.user.name === 'Thaddeus');
-  r = await api(BASE, 'admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  r = await api(BASE, 'admin', { op: 'login', username: 'Thaddeusadmin', password: 'test-only-password-123' });
   ok('admin CONSOLE credentials still work and are separate', r.status === 200 && r.data.token);
 
   console.log('\n— GitHub button behaviour when it is not wired up —');
@@ -382,7 +382,7 @@ async function main() {
   const BASE2 = `http://127.0.0.1:${PORT2}`;
   const ro = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT2), HOST: '127.0.0.1', ANTICODEX_DATA: roDir, SUPABASE_URL: '', SUPABASE_ANON_KEY: '', SUPABASE_SERVICE_ROLE_KEY: '' },
+    env: { ...process.env, ADMIN_USERNAME: 'Thaddeusadmin', ADMIN_PASSWORD: 'test-only-password-123', OWNER_EMAIL: 'tthaddeus75@gmail.com', OWNER_PASSWORD: 'test-only-password-123', PORT: String(PORT2), HOST: '127.0.0.1', ANTICODEX_DATA: roDir, SUPABASE_URL: '', SUPABASE_ANON_KEY: '', SUPABASE_SERVICE_ROLE_KEY: '' },
     stdio: 'ignore'
   });
   assert(await waitFor(BASE2), 'read-only server did not start');
