@@ -391,9 +391,9 @@ try {
     // code, so the website owns the row the app has to read. Polling 127.0.0.1
     // first is the bug behind "signed in on the site, still signed out in the app".
     const pairSrc = mainSrc.slice(mainSrc.indexOf('async function pairStatus'), mainSrc.indexOf("handleIpc('acx:githubLogin'"));
-    ok('the app polls the website that minted the code', /siteBridge\(\{ action: 'pair', op: 'status', code \}\)/.test(pairSrc));
-    ok('…then this machine, never the other way round', pairSrc.indexOf('siteBridge') < pairSrc.indexOf('localBridge') && /localBridge\(\{ action: 'pair', op: 'status', code \}\)/.test(pairSrc));
-    ok('the pairing poll uses the shared status helper', /await pairStatus\(code\)/.test(mainSrc));
+    ok('the app polls the website that minted the code', /siteBridge\(\{ action: 'pair', op: 'status', code(?:, device_secret: deviceSecret)? \}\)/.test(pairSrc));
+    ok('…then this machine, never the other way round', pairSrc.indexOf('siteBridge') < pairSrc.indexOf('localBridge') && /localBridge\(\{ action: 'pair', op: 'status', code(?:, device_secret: deviceSecret)? \}\)/.test(pairSrc));
+    ok('the pairing poll uses the shared status helper', /await pairStatus\(code(?:, [^)]+)?\)/.test(mainSrc));
     ok('…and a typed code claims on the site first too', /await pairClaim\(code, \{ user_id: 'desktop' \}\)/.test(mainSrc));
     const authSrc = read('web/src/pages/Auth.jsx');
     ok('a pair code carried in the OAuth state is claimed by the callback', /claimDesktopPair\(r\.user, r\.token, r\.pair_code\)/.test(authSrc));
@@ -441,7 +441,7 @@ try {
     const skillsPage = read('web/src/pages/Skills.jsx');
     ok('…and reads the registry', /skillsApi\.list/.test(skillsPage));
     ok('…and the template roots for the plugins tab', /artifactsApi\.list/.test(skillsPage));
-    ok('…with per-account toggles rather than per-browser ones', /userKey\('acx_enabled_skills'/.test(skillsPage));
+    ok('…with per-account toggles rather than per-browser ones', /skillsApi\.configure\(/.test(skillsPage));
     ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /duplicates/.test(skillsPage));
 
     // Installing a packaged skill is a write to this machine, so it goes through
