@@ -279,15 +279,29 @@ globalThis.__mount = (route) => {
   }
 
   console.log('\n— the Codex workspace —');
-  const wsText = await mountAt('/codex', { token: reg.token, user: reg.user });
+  // The page now lists a REAL folder (DATA/workspaces/<user id>) when the bridge
+  // runs locally — seed it the way a user with saved files would see it.
+  const wsDir = path.join(DATA, 'workspaces', String(reg.user.id));
+  fs.mkdirSync(path.join(wsDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(wsDir, 'ANTICODEX.md'), '# Project memory\n');
+  fs.writeFileSync(path.join(wsDir, 'src/index.js'), 'export function greet(name) {\n  return `Hello, ${name}!`;\n}\nconsole.log(greet(\'ANTICODEX\'));\n');
+  let wsText = await mountAt('/codex', { token: reg.token, user: reg.user });
+  await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('ANTICODEX.md'));
+  wsText = win.document.getElementById('root').textContent.replace(/\s+/g, ' ');
   ok('workspace renders', wsText.length > 20);
-  ok('sandbox file tree is visible', wsText.includes('SANDBOX FILES') && wsText.includes('src/index.js'), wsText.slice(0, 200));
+  ok('real workspace file tree is visible', wsText.includes('WORKSPACE') && wsText.includes('ANTICODEX.md') && wsText.includes('src/'), wsText.slice(0, 200));
   ok('approval modes are listed', wsText.includes('Suggest') && wsText.includes('Auto-run'));
   ok('agent pane is present', wsText.includes('Codex agent'));
   const wsDom = win.document.getElementById('root');
   const panes = wsDom.querySelector('.workspace');
   ok('workspace has all three panes', Boolean(panes && panes.querySelector('.file-tree') && panes.querySelector('.editor-pane') && panes.querySelector('.agent-pane')));
-  ok('editor textarea is wired to the file', (panes?.querySelector('.editor-pane textarea')?.value || '').includes('greet'));
+  const srcBtn = [...(panes?.querySelectorAll('.file-tree .file-item') || [])].find((b) => /src\//.test(b.textContent));
+  if (srcBtn) click(srcBtn);
+  await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('index.js'));
+  const idxBtn = [...(panes?.querySelectorAll('.file-tree .file-item') || [])].find((b) => /index\.js/.test(b.textContent));
+  if (idxBtn) click(idxBtn);
+  await settleUntil(() => (win.document.querySelector('#root .editor-pane textarea')?.value || '').includes('greet'));
+  ok('editor textarea is wired to the file', (panes?.querySelector('.editor-pane textarea')?.value || '').includes('greet'), 'textarea=' + (panes?.querySelector('.editor-pane textarea')?.value || '(none)').slice(0, 80));
 
 
   console.log('\n— the model picker (topbar, any provider, any id) —');
@@ -574,8 +588,13 @@ globalThis.__mount = (route) => {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'register', email: 'other.user@gmail.com', password: 'otherpass123', name: 'Other User' })
   })).json();
-  const other = await mountAt('/codex', { token: r2.token, user: r2.user });
-  ok('a second account still gets its own workspace', other.includes('SANDBOX FILES'));
+  const wsDir2 = path.join(DATA, 'workspaces', String(r2.user.id));
+  fs.mkdirSync(wsDir2, { recursive: true });
+  fs.writeFileSync(path.join(wsDir2, 'only-mine.txt'), 'private file');
+  let other = await mountAt('/codex', { token: r2.token, user: r2.user });
+  await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('only-mine.txt'));
+  other = win.document.getElementById('root').textContent.replace(/\s+/g, ' ');
+  ok('a second account still gets its own workspace', other.includes('only-mine.txt') && !other.includes('index.js'), other.slice(0, 220));
   const keys = win.eval('Object.keys(localStorage).join(",")');
   ok('workspace files are keyed by account, not shared', !/(^|,)acx_fs(,|$)/.test(String(keys)) || String(keys).includes('acx_fs:'), String(keys));
   const railOther = await mountAt('/', { token: r2.token, user: r2.user });
