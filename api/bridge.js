@@ -63,6 +63,7 @@ import {
   templateRoots
 } from '../lib/artifacts.js';
 import { discoverAgentDocs, describePolicy, normalizeSandboxPolicy, normalizeApprovalPolicy, decideApproval, SANDBOX_MODES, APPROVAL_MODES } from '../lib/workspace.js';
+import { wsRootFor, wsStatus, wsList, wsRead, wsWrite, wsMkdir, wsRemove, wsExec, wsPreview } from '../lib/workspacefs.js';
 import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, describeWorkspacePolicy } from '../lib/policy.js';
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
@@ -193,6 +194,7 @@ export default async function handler(req, res) {
       case 'rea': return await handleRea(req, body, res);
       case 'qoder': return await handleQoder(req, body, res);
       case 'sandbox': return await handleSandbox(req, body, res);
+      case 'workspace_fs': return await handleWorkspaceFs(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
       case 'admin': return await handleAdmin(body, res);
       case 'pair': return await handlePair(body, res, req);
@@ -1027,6 +1029,93 @@ async function handleSandbox(req, body, res) {
   if (op === 'read') return json(res, 200, readSandboxFile(body.run_id, body.name));
   if (op === 'clear') return json(res, 200, clearSandbox(body.run_id));
   return json(res, 400, { ok: false, error: `Unknown sandbox op "${op}".` });
+}
+
+// --- real workspace (the Codex page's folder on disk) ------------------------
+
+/**
+ * The gap this closes: the sidebar's approval mode used to be a label —
+ * decideApproval was computed for display only. Here the same engine gates
+ * every operation server-side before any filesystem or process is touched:
+ *
+ *   auto   → run it
+ *   prompt → refuse until the caller passes confirm:true (the UI's Allow click)
+ *   deny   → refuse outright; confirm cannot override a denial
+ *
+ * Reads follow the sandbox's read grant; writes/execs/mkdirs/rms require the
+ * matching write/exec grant or an approval. Loopback-only, like the sandbox:
+ * a remote request does not get to touch this machine's disk.
+ */
+async function handleWorkspaceFs(req, body, res) {
+  if (!sandboxAllowed(req)) {
+    return json(res, 403, {
+      ok: false, fix: 'desktop', verdict: 'blocked', needs_local: true,
+      error: 'A real workspace is a real folder on a real machine, so a remote request does not get one.',
+      hint: 'ANTICODEX Desktop (or your own `npm start`) gives this page a folder under its data directory, per account.',
+      settings_link: '/settings'
+    });
+  }
+  const op = String(body.op || 'status');
+  if (op === 'status') {
+    const { root: _root, ...st } = wsStatus(body.account); // never echo an absolute fs path to the browser
+    return json(res, 200, {
+      ok: true, local: true, ...st,
+      policy: describePolicy({ sandbox: body.sandbox, approval: body.approval })
+    });
+  }
+  const root = wsRootFor(body.account);
+  const actionKind = op === 'exec' ? 'exec'
+    : (op === 'read' || op === 'list' || op === 'preview') ? 'read'
+    : (op === 'write' || op === 'mkdir' || op === 'rm') ? 'write' : null;
+  if (!actionKind) return json(res, 400, { ok: false, error: `Unknown workspace op "${op}".` });
+
+  const verdict = decideApproval({ sandbox: body.sandbox, approval: body.approval, action: actionKind });
+  if (verdict === 'deny') {
+    return json(res, 200, {
+      ok: false, verdict: 'deny',
+      error: `The ${normalizeApprovalPolicy(body.approval).mode} approval policy does not allow ${actionKind} in the ${normalizeSandboxPolicy(body.sandbox).mode} sandbox.`
+    });
+  }
+  if (verdict === 'prompt' && !body.confirm) {
+    return json(res, 200, {
+      ok: false, verdict: 'prompt', needs_approval: true,
+      pending: { op, path: typeof body.path === 'string' ? body.path.slice(0, 200) : null, command: op === 'exec' ? String(body.command || '').slice(0, 200) : null }
+    });
+  }
+
+  try {
+    if (op === 'list') return json(res, 200, wsList(root, body.path ?? ''));
+    if (op === 'read') return json(res, 200, wsRead(root, body.path));
+    if (op === 'preview') return json(res, 200, wsPreview(root, body.path, body.content));
+    if (op === 'write') {
+      const out = wsWrite(root, body.path, body.content);
+      if (out.ok) await audit({ type: 'workspace.write', path: out.path, bytes: out.bytes, ip: clientIp(req) }).catch(() => {});
+      return json(res, 200, out);
+    }
+    if (op === 'mkdir') return json(res, 200, wsMkdir(root, body.path));
+    if (op === 'rm') {
+      const out = wsRemove(root, body.path);
+      if (out.ok) await audit({ type: 'workspace.rm', path: out.removed, ip: clientIp(req) }).catch(() => {});
+      return json(res, 200, out);
+    }
+    if (op === 'exec') {
+      const out = await wsExec(root, { command: body.command, timeout_ms: body.timeout_ms });
+      await audit({
+        type: 'workspace.exec', ok: Boolean(out.ok), exit_code: out.exit_code ?? null,
+        timed_out: Boolean(out.timed_out), duration_ms: out.duration_ms ?? null, ip: clientIp(req)
+      }).catch(() => {});
+      return json(res, 200, out);
+    }
+    return json(res, 400, { ok: false, error: `Unknown workspace op "${op}".` });
+  } catch (e) {
+    const ro = e && (e.code === 'EROFS' || /read-only/i.test(String(e && e.message || '')));
+    return json(res, 200, {
+      ok: false, needs_local: ro || undefined,
+      error: ro
+        ? "This server's disk is read-only, so it cannot keep a workspace folder. The desktop app can — same page, real files."
+        : `Workspace failed: ${String((e && e.message) || e).slice(0, 200)}`
+    });
+  }
 }
 
 // --- model health -------------------------------------------------------------
