@@ -1,8 +1,12 @@
 #!/usr/bin/env node
-// Packages ANTICODEX for Windows as a runnable folder with ANTICODEX.exe.
-// Uses electron-packager (downloads the official Electron win32 x64 build from
-// GitHub Releases — no wine required). The GitHub Actions workflow produces the
-// full NSIS installer with proper icons on a Windows runner.
+// Packages ANTICODEX for Windows as a runnable portable folder with
+// ANTICODEX.exe, then zips that folder. It uses electron-packager (downloads the
+// official Electron win32 x64 build from GitHub Releases — no wine required).
+//
+// What actually ships is the PORTABLE ZIP, and that is what the release workflow
+// attaches and what the updater downloads and extracts over the install folder.
+// There is no NSIS installer: nothing here or in .github/workflows builds one, so
+// the updater must never expect to run an installer silently.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';

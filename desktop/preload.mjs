@@ -49,6 +49,9 @@ contextBridge.exposeInMainWorld('anticodexDesktop', {
   reaEnv: () => ipcRenderer.invoke('acx:reaEnv'),
   checkUpdate: () => ipcRenderer.invoke('acx:update'),
   downloadUpdate: () => ipcRenderer.invoke('acx:update:download'),
+  applyUpdate: () => ipcRenderer.invoke('acx:update-apply'),
+  dismissUpdate: (version) => ipcRenderer.invoke('acx:update-dismiss', version),
+  updateStatus: () => ipcRenderer.invoke('acx:update-status'),
   onUpdateAvailable: (cb) => ipcRenderer.on('acx:update-available', (_e, info) => cb(info)),
   onDeepLink: (cb) => ipcRenderer.on('acx:deep-link', (_e, url) => cb(url))
 });
