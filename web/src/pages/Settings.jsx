@@ -227,6 +227,11 @@ export default function SettingsPage() {
     try { return JSON.parse(localStorage.getItem('acx_custom_providers') || '[]'); } catch { return []; }
   });
   const [updateInfo, setUpdateInfo] = useState(null);
+  // Desktop auto-update state, driven entirely by what main.mjs actually returns.
+  // stage: idle (nothing) | downloading | ready (staged) | applying | error.
+  const [availableUpdate, setAvailableUpdate] = useState(null);
+  const [updateStage, setUpdateStage] = useState('idle');
+  const [updateError, setUpdateError] = useState(null);
   const [gatewayNote, setGatewayNote] = useState('');
   const [keychain, setKeychain] = useState(null);
 
@@ -258,6 +263,66 @@ export default function SettingsPage() {
     }
     if (desktop?.keychainStatus) desktop.keychainStatus().then(setKeychain).catch(() => {});
   }, []);
+
+  // Subscribe to the update the main process pushes once per session, and pull the
+  // persisted status so an update staged in a previous run is still shown truthfully.
+  useEffect(() => {
+    if (!desktop) return;
+    if (desktop.onUpdateAvailable) {
+      try {
+        desktop.onUpdateAvailable((info) => {
+          if (info && info.available && !info.dismissed) {
+            setAvailableUpdate(info);
+            setUpdateInfo(info);
+            setUpdateStage('idle');
+          }
+        });
+      } catch { /* the channel may already be gone on hot reload */ }
+    }
+    if (desktop.updateStatus) {
+      desktop.updateStatus().then((s) => {
+        if (s && (s.stage === 'ready' || s.stage === 'applying')) setUpdateStage(s.stage);
+      }).catch(() => {});
+    }
+  }, []);
+
+  // Accept = stage the release zip (download + extract) if it is not staged yet,
+  // then apply (which quits so the detached helper can swap files and relaunch).
+  // Every transition reflects a real result — no spinner while nothing is running.
+  async function acceptUpdate() {
+    if (!desktop) return;
+    setUpdateError(null);
+    try {
+      if (updateStage !== 'ready') {
+        setUpdateStage('downloading');
+        const d = await desktop.downloadUpdate();
+        if (!d || !d.ok) { setUpdateStage('error'); setUpdateError(d || { error: 'download failed', fix: 'Retry, or download the .exe from GitHub.' }); return; }
+        setUpdateStage('ready');
+      }
+      const a = await desktop.applyUpdate();
+      if (!a || !a.ok) { setUpdateStage('error'); setUpdateError(a || { error: 'apply failed', fix: 'Retry, or download the .exe from GitHub.' }); return; }
+      setUpdateStage('applying');
+    } catch (e) {
+      setUpdateStage('error');
+      setUpdateError({ error: String(e && e.message || e), fix: 'Download the release manually from GitHub.' });
+    }
+  }
+
+  async function dismissUpdate() {
+    const v = availableUpdate?.version;
+    try { await desktop?.dismissUpdate?.(v); } catch { /* best effort */ }
+    setAvailableUpdate(null);
+    setUpdateStage('idle');
+  }
+
+  async function desktopCheck() {
+    if (!desktop?.checkUpdate) { setUpdateInfo(await updateCheck()); return; }
+    const info = await desktop.checkUpdate();
+    setUpdateInfo(info);
+    setUpdateError(null);
+    if (info && info.available && !info.dismissed) { setAvailableUpdate(info); setUpdateStage('idle'); }
+    else setAvailableUpdate(null);
+  }
 
   /** One place writes the gateway list, so the browser copy and the .exe copy
    *  cannot drift apart (drift is how a saved endpoint "disappears" after a
@@ -508,18 +573,50 @@ export default function SettingsPage() {
           <h3>ANTICODEX Desktop</h3>
           <p className="sub">Windows app with auto-update: when a release is published, every installed copy offers the update and applies it after the user accepts.</p>
           <div className="row">
-            <button className="btn" onClick={async () => {
-              const r = await updateCheck();
-              setUpdateInfo(r);
-            }}>Check for updates</button>
+            <button className="btn" onClick={desktopCheck}>Check for updates</button>
             <a className="btn primary" href="https://github.com/ThaddeusHackz/ANTICODEX/releases/latest" target="_blank" rel="noreferrer">Download .exe</a>
           </div>
-          {updateInfo && (
+
+          {desktop && availableUpdate && availableUpdate.available && !availableUpdate.dismissed && (
+            <div className="card" style={{ marginTop: 12, background: 'var(--bg-soft)' }}>
+              <div className="row">
+                <Pill kind="ok">update v{availableUpdate.version}</Pill>
+                {availableUpdate.current ? <span className="tiny">running v{availableUpdate.current}</span> : null}
+                <Pill kind={updateStage === 'error' ? 'warn' : updateStage === 'applying' ? 'ok' : 'warn'}>{updateStage}</Pill>
+              </div>
+              {availableUpdate.notes ? <div className="tiny" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>{availableUpdate.notes}</div> : null}
+              <div className="row" style={{ marginTop: 10 }}>
+                <button
+                  className="btn primary"
+                  disabled={updateStage === 'downloading' || updateStage === 'applying'}
+                  onClick={acceptUpdate}
+                >
+                  {updateStage === 'downloading' ? 'Downloading…'
+                    : updateStage === 'applying' ? 'Applying — restarting…'
+                    : updateStage === 'ready' ? `Apply v${availableUpdate.version}`
+                    : `Accept & update to v${availableUpdate.version}`}
+                </button>
+                <button className="btn" disabled={updateStage === 'downloading' || updateStage === 'applying'} onClick={dismissUpdate}>Dismiss</button>
+              </div>
+              <div className="tiny" style={{ marginTop: 8 }}>
+                {updateStage === 'idle' && `Downloads the v${availableUpdate.version} release, extracts it into your app data folder, then restarts ANTICODEX onto it.`}
+                {updateStage === 'downloading' && 'Downloading the release and extracting it into the app data folder.'}
+                {updateStage === 'ready' && 'Downloaded and staged. Applying restarts ANTICODEX to swap in the update.'}
+                {updateStage === 'applying' && 'The updater runs outside the app now — ANTICODEX reopens itself once the files are swapped.'}
+                {updateStage === 'error' && updateError && (
+                  <span> {updateError.error}{updateError.fix ? ` — ${updateError.fix}` : ''} <a href={availableUpdate.url || '#'} target="_blank" rel="noreferrer">Download from GitHub</a></span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {updateInfo && !(desktop && availableUpdate && availableUpdate.available && !availableUpdate.dismissed) && (
             <div className="card" style={{ marginTop: 12, background: 'var(--bg-soft)' }}>
               {updateInfo.ok ? (
                 <>
-                  <div className="row"><Pill kind="ok">latest: v{updateInfo.version}</Pill><span className="tiny">{updateInfo.published_at}</span></div>
+                  <div className="row"><Pill kind="ok">latest: v{updateInfo.version}</Pill><span className="tiny">{updateInfo.published_at || updateInfo.publishedAt}</span></div>
                   <div className="tiny" style={{ marginTop: 8 }}>{(updateInfo.assets || []).map((a) => a.name).join(' · ') || 'No assets yet'}</div>
+                  {desktop && updateInfo.available ? <div className="tiny" style={{ marginTop: 8 }}>{updateInfo.dismissed ? `You dismissed v${updateInfo.version}. Check the GitHub releases to update anyway.` : 'Accept the card above to update.'}</div> : null}
                 </>
               ) : <div className="tiny">No release found yet (or GitHub unreachable): {updateInfo.error}</div>}
             </div>

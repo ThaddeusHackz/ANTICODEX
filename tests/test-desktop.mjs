@@ -467,5 +467,167 @@ try {
   UPSTREAM.close();
 }
 
+// ===========================================================================
+// The auto-update state machine: download → extract → stage → apply. These use
+// an injected spawn and a temp userData so they exercise the real updater.mjs
+// logic (extraction staging, the dismissed gate, the state file, the detached
+// helper written before quit) without a network, a Windows box or an .exe.
+// ===========================================================================
+console.log('\n— the updater actually applies the release it downloads —');
+{
+  // A fake extractor: returns a child whose 'close' fires on the next tick, and
+  // simulates the portable zip layout by creating ANTICODEX-win32-x64/ANTICODEX.exe
+  // inside the pending dir (the real extractor would produce this).
+  function extractorChild(stagedDir) {
+    const h = {};
+    fs.mkdirSync(stagedDir, { recursive: true });
+    fs.writeFileSync(path.join(stagedDir, 'ANTICODEX.exe'), 'fake-binary');
+    setTimeout(() => (h.close || []).forEach((cb) => cb(0)), 0);
+    return { on: (e, cb) => { (h[e] = h[e] || []).push(cb); }, unref() {} };
+  }
+  const release = (tag, assetName) => ({
+    ok: true,
+    json: async () => ({
+      tag_name: tag, body: 'release notes here', html_url: `https://github.com/ThaddeusHackz/ANTICODEX/releases/tag/${tag}`,
+      published_at: '2026-01-01T00:00:00Z',
+      assets: [{ name: assetName, size: 5, browser_download_url: `https://example.invalid/${assetName}` }]
+    })
+  });
+  const assetFetch = () => ({ ok: true, arrayBuffer: async () => Uint8Array.from([1, 2, 3, 4]).buffer });
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-dl-'));
+  const pending = path.join(tmp, 'pending-update');
+  const stagedDir = path.join(pending, 'ANTICODEX-win32-x64');
+  const spawnCalls = [];
+  const fakeSpawn = (cmd, args, o) => { spawnCalls.push({ cmd, args, o }); return extractorChild(stagedDir); };
+  const fakeFetch = async (url) => (String(url).includes('releases/latest') ? release('v9.9.9', 'ANTICODEX-9.9.9-win32-x64.zip') : assetFetch());
+
+  const up = createUpdater('1.0.0', {
+    fs, spawn: fakeSpawn, fetch: fakeFetch, platform: 'win32',
+    userData: () => tmp, execPath: 'C:\\app\\ANTICODEX-win32-x64\\ANTICODEX.exe', appPid: () => 4242
+  });
+  const info = await up.check();
+  const dl = await up.download();
+  ok('the payload carries version, notes and url', info.ok === true && info.version === '9.9.9' && /release notes here/.test(info.notes) && /releases\/tag/.test(info.url), JSON.stringify(info));
+  ok('download() extracts instead of only fetching the bytes', dl.ok === true && dl.stage === 'ready', JSON.stringify(dl));
+  ok('the staged payload is the extracted app folder', dl.stagedDir === stagedDir, JSON.stringify(dl.stagedDir));
+  ok('a real extractor is spawned on win32 (PowerShell Expand-Archive)', spawnCalls.some((c) => /powershell/i.test(c.cmd) && /Expand-Archive/.test(c.args.join(' '))), JSON.stringify(spawnCalls.map((c) => c.cmd)));
+  ok('the extracted zip is not left next to the running app unsafely', fs.existsSync(path.join(pending, 'ANTICODEX-9.9.9-win32-x64.zip')) === false || fs.existsSync(stagedDir), JSON.stringify(dl));
+  const stateOnDisk = (() => { try { return JSON.parse(fs.readFileSync(path.join(tmp, 'update-state.json'), 'utf8')); } catch { return {}; } })();
+  ok('the state file records the staged version', stateOnDisk.staged_version === '9.9.9' && stateOnDisk.staged_dir === stagedDir, JSON.stringify(stateOnDisk));
+
+  // the non-win32 dev path uses unzip
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-zip-'));
+  const staged2 = path.join(tmp2, 'pending-update', 'ANTICODEX-win32-x64');
+  const calls2 = [];
+  const up2 = createUpdater('1.0.0', {
+    fs, spawn: (c, a, o) => { calls2.push({ c, a, o }); return extractorChild(staged2); },
+    fetch: async (u) => (String(u).includes('releases/latest') ? release('v9.9.9', 'ANTICODEX-9.9.9-win32-x64.zip') : assetFetch()),
+    platform: 'linux', userData: () => tmp2
+  });
+  const dl2 = await up2.download();
+  ok('a non-win32 dev box extracts with unzip', dl2.ok === true && calls2.some((x) => x.c === 'unzip' && x.a.includes('-d')), JSON.stringify(calls2.map((x) => x.c)));
+
+  // a release with no installable asset fails honestly
+  const up3 = createUpdater('1.0.0', { fs, spawn: fakeSpawn, platform: 'win32', userData: () => fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-e-')), fetch: async () => ({ ok: true, json: async () => ({ tag_name: 'v9.9.9', body: '', assets: [] }) }) });
+  const dl3 = await up3.download();
+  ok('a release with no installable asset is an error, not a fake success', dl3.ok === false && /asset/.test(dl3.error) && dl3.fix, JSON.stringify(dl3));
+  for (const d of [tmp, tmp2]) fs.rmSync(d, { recursive: true, force: true });
+}
+
+console.log('\n— a dismissed update is only nagged about when it actually changes —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-gate-'));
+  const release = (tag) => async (url) => ({ ok: true, json: async () => ({ tag_name: tag, body: '', html_url: '', published_at: '', assets: [{ name: `a-${tag}.zip`, browser_download_url: `https://e/${tag}.zip` }] }) });
+  const noopSpawn = () => ({ on() {}, unref() {} });
+
+  fs.writeFileSync(path.join(tmp, 'update-state.json'), JSON.stringify({ dismissed_version: '2.0.0' }));
+  const same = await createUpdater('1.0.0', { fs, fetch: release('v2.0.0'), platform: 'win32', userData: () => tmp, spawn: noopSpawn }).check();
+  ok('the same version the user dismissed is suppressed', same.available === true && same.dismissed === true, JSON.stringify(same));
+
+  const newer = await createUpdater('1.0.0', { fs, fetch: release('v2.1.0'), platform: 'win32', userData: () => tmp, spawn: noopSpawn }).check();
+  ok('a newer release notifies even though an older one was dismissed', newer.available === true && newer.dismissed === false, JSON.stringify(newer));
+
+  const sameNoDismiss = await createUpdater('1.0.0', { fs, fetch: release('v2.0.0'), platform: 'win32', userData: () => fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-fresh-')), spawn: noopSpawn }).check();
+  ok('nothing is dismissed by default, so a fresh install notifies', sameNoDismiss.available === true && sameNoDismiss.dismissed === false, JSON.stringify(sameNoDismiss));
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— the state file round-trips and is honest about what happened —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-state-'));
+  const up = createUpdater('1.0.0', { fs, userData: () => tmp });
+  const d = up.dismiss('3.4.5');
+  ok('dismiss reports the version it persisted', d.ok === true && d.dismissed_version === '3.4.5', JSON.stringify(d));
+  const raw = JSON.parse(fs.readFileSync(path.join(tmp, 'update-state.json'), 'utf8'));
+  ok('update-state.json holds dismissed_version', raw.dismissed_version === '3.4.5', JSON.stringify(raw));
+  const st = up.status();
+  ok('status() reads back the persisted state', st.dismissed_version === '3.4.5' && st.stage === 'idle', JSON.stringify(st));
+  // a check() stamps last_checked_at through the real fs
+  const up2 = createUpdater('1.0.0', { fs, userData: () => tmp, platform: 'win32', fetch: async () => ({ ok: true, json: async () => ({ tag_name: 'v1.0.0', body: '', assets: [] }) }) });
+  await up2.check();
+  const raw2 = JSON.parse(fs.readFileSync(path.join(tmp, 'update-state.json'), 'utf8'));
+  ok('checking stamps last_checked_at', typeof raw2.last_checked_at === 'string' && raw2.dismissed_version === '3.4.5', JSON.stringify(raw2));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— apply writes a detached helper and quits only after it is running —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-apply-'));
+  const stagedDir = path.join(tmp, 'pending-update', 'ANTICODEX-win32-x64');
+  fs.mkdirSync(stagedDir, { recursive: true });
+  fs.writeFileSync(path.join(stagedDir, 'ANTICODEX.exe'), 'x');
+  fs.writeFileSync(path.join(tmp, 'update-state.json'), JSON.stringify({ staged_version: '9.9.9', staged_dir: stagedDir }));
+
+  const order = [];
+  let spawnOpts = null;
+  const fakeSpawn = (cmd, args, o) => { order.push('spawn'); spawnOpts = { cmd, args, o }; return { on() {}, unref() {} }; };
+  const up = createUpdater('1.0.0', {
+    fs, spawn: fakeSpawn, platform: 'win32', userData: () => tmp,
+    execPath: '/opt/ANTICODEX-win32-x64/ANTICODEX.exe', appPid: () => 4242, env: () => ({ PATH: '/bin' })
+  });
+  const res = await up.apply(() => order.push('quit'));
+  ok('apply() stages the swap and reports applying', res.ok === true && res.stage === 'applying', JSON.stringify(res));
+  ok('…it spawns the helper BEFORE quitting the app', order[0] === 'spawn' && order[1] === 'quit', JSON.stringify(order));
+  ok('…detached, in node mode, so it survives the quit', !!spawnOpts && spawnOpts.o.detached === true && spawnOpts.o.env.ELECTRON_RUN_AS_NODE === '1', JSON.stringify(spawnOpts && spawnOpts.o));
+
+  const helperPath = path.join(tmp, 'update-helper.cjs');
+  ok('a real helper script is written into userData', fs.existsSync(helperPath), helperPath);
+  const helper = fs.existsSync(helperPath) ? fs.readFileSync(helperPath, 'utf8') : '';
+  ok('the helper waits for the app PID to exit', /process\.kill\(/.test(helper) && /alive\(/.test(helper), helper.slice(0, 60));
+  ok('…copies the staged files over the install dir', /cpSync\(/.test(helper) && /CFG\.installDir/.test(helper));
+  ok('…and relaunches the app without node mode leaking', /CFG\.exePath/.test(helper) && /delete env\.ELECTRON_RUN_AS_NODE/.test(helper));
+  const cfgArg = spawnOpts && spawnOpts.args && spawnOpts.args[1] ? JSON.parse(spawnOpts.args[1]) : {};
+  ok('the helper is told the right install dir and staged folder', cfgArg.installDir === '/opt/ANTICODEX-win32-x64' && cfgArg.staged === stagedDir && cfgArg.appPid === 4242, JSON.stringify(cfgArg));
+
+  // apply with nothing staged must fail honestly, not fake success
+  const up2 = createUpdater('1.0.0', { fs, userData: () => fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-empty-')), spawn: () => ({ on() {}, unref() {} }) });
+  let quitRan = false;
+  const bad = await up2.apply(() => { quitRan = true; });
+  ok('apply with nothing staged reports failure', bad.ok === false && /staged/.test(bad.error) && bad.fix, JSON.stringify(bad));
+  ok('…and does NOT quit the app on that failure', quitRan === false, JSON.stringify({ quitRan }));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— the one bridge, the preload and the page all agree on the flow —');
+{
+  const mainSrc = read('desktop/main.mjs');
+  const preloadSrc = read('desktop/preload.mjs');
+  ok('main offers update-dismiss', /ipcMain\.handle\('acx:update-dismiss'/.test(mainSrc));
+  ok('…update-apply, quitting only after the helper is up', /ipcMain\.handle\('acx:update-apply'/.test(mainSrc) && /updater\.apply\(/.test(mainSrc));
+  ok('…and update-status for real state', /ipcMain\.handle\('acx:update-status'/.test(mainSrc));
+  ok('…and download now routes to the extract step, not downloadAndInstall', /acx:update:download'[^]*updater\.download\(\)/.test(mainSrc) && !/downloadAndInstall/.test(mainSrc));
+  ok('the pushed notification honours the dismissed gate', /info\.available && !info\.dismissed/.test(mainSrc));
+  ok('preload exposes dismissUpdate', /dismissUpdate:\s*\(version\)\s*=>\s*ipcRenderer\.invoke\('acx:update-dismiss'/.test(preloadSrc));
+  ok('…and applyUpdate', /applyUpdate:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('acx:update-apply'/.test(preloadSrc));
+
+  const settings = read('web/src/pages/Settings.jsx');
+  ok('Settings subscribes to onUpdateAvailable', /desktop\.onUpdateAvailable/.test(settings));
+  ok('…Accept downloads then applies', /await desktop\.downloadUpdate\(\)/.test(settings) && /await desktop\.applyUpdate\(\)/.test(settings));
+  ok('…with a Dismiss that persists the version', /desktop\?\.dismissUpdate\?\.\(v\)/.test(settings));
+  ok('…rendering real states, not a fake spinner', /updateStage === 'downloading'/.test(settings) && /updateStage === 'applying'/.test(settings));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

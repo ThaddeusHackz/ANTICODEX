@@ -127,7 +127,17 @@ async function startLocalServer() {
 
 let win = null;
 const computer = createComputerUse();
-const updater = createUpdater(VERSION);
+// The updater owns the real state machine on disk, so it needs this app's data
+// folder, platform and its own process handle: the staged zip and the detached
+// apply helper all live under userData, and the helper waits on this PID before
+// swapping files.
+const updater = createUpdater(VERSION, {
+  userData: () => app.getPath('userData'),
+  platform: process.platform,
+  execPath: process.execPath,
+  env: () => process.env,
+  appPid: () => process.pid
+});
 
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
@@ -520,9 +530,18 @@ ipcMain.handle('acx:update', async () => {
   return info;
 });
 
-ipcMain.handle('acx:update:download', async () => {
-  return updater.downloadAndInstall(() => win);
-});
+// The renderer only ever reaches these through the preload bridge. Each returns the
+// updater's real status — a failed step comes back {ok:false,error,fix}, and the
+// apply flow shuts the app down only after the detached helper is running.
+ipcMain.handle('acx:update:download', async () => updater.download());
+
+ipcMain.handle('acx:update-apply', async () => updater.apply(() => {
+  setTimeout(() => app.quit(), 0);
+}));
+
+ipcMain.handle('acx:update-dismiss', async (_e, version) => updater.dismiss(version));
+
+ipcMain.handle('acx:update-status', async () => updater.status());
 
 // --- lifecycle --------------------------------------------------------------
 
@@ -576,11 +595,13 @@ else {
     // while the app was booting.
     const cold = deepArgv();
     if (cold) deliverDeepLink(cold);
-    // Offer updates once per session after a delay (user must accept).
+    // Offer updates once per session after a delay (the user must accept before
+    // anything is downloaded). A version this machine already dismissed is not
+    // nagged about again; any newer release notifies once more.
     setTimeout(async () => {
       try {
         const info = await updater.check();
-        if (info.available && win) {
+        if (info.available && !info.dismissed && win) {
           win.webContents.send('acx:update-available', info);
         }
       } catch { /* offline is fine */ }
