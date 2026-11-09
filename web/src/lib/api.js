@@ -326,6 +326,20 @@ export const workspace = {
   set: (p) => api('workspace', { op: 'set', ...p })
 };
 
+// The real workspace folder (desktop / local server). Every call carries the
+// sidebar's sandbox+approval so the bridge can enforce them server-side;
+// `confirm:true` is sent only after the user clicks Allow on a prompt.
+export const workspaceFs = {
+  status: (p) => api('workspace_fs', { op: 'status', ...p }),
+  list: (path, p) => api('workspace_fs', { op: 'list', path, ...p }),
+  read: (path, p) => api('workspace_fs', { op: 'read', path, ...p }),
+  write: (path, content, p) => api('workspace_fs', { op: 'write', path, content, ...p }),
+  mkdir: (path, p) => api('workspace_fs', { op: 'mkdir', path, ...p }),
+  rm: (path, p) => api('workspace_fs', { op: 'rm', path, ...p }),
+  preview: (path, content, p) => api('workspace_fs', { op: 'preview', path, content, ...p }),
+  exec: (command, p) => api('workspace_fs', { op: 'exec', command, ...p })
+};
+
 /** Write a Codex-compatible `config.toml` from what this device knows. */
 export const exportConfig = (state) => api('export_config', { state });
 
