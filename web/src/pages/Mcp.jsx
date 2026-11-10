@@ -4,7 +4,7 @@ import * as api from '../lib/api.js';
 
 function GatewayCard({ g, notify }) {
   return (
-    <div className="mcp-card" style={{ borderColor: '#8b5cf666' }}>
+    <div className="mcp-card" style={{ borderColor: 'var(--border-2)' }}>
       <div className="row">
         <div className="mcp-icon">⚡</div>
         <div>

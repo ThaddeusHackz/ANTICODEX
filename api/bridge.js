@@ -41,7 +41,7 @@ import {
   streamAcpAnswer
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally as qoderAtlasTally } from '../lib/qoder-repos.js';
-import { webSearch } from '../lib/search.js';
+import { webSearch, searchEverything } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
@@ -72,7 +72,8 @@ import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
-import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState } from '../lib/daytona.js';
+import { loadCatalogue } from '../lib/publicapis.js';
+import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState, diagnose } from '../lib/daytona.js';
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
 import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
 import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
@@ -164,6 +165,28 @@ export default async function handler(req, res) {
       }
       case 'chat': return await handleChat(body, res, req);
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
+      // ⌕Search has to find more than chats: the sidebar box searches the API
+      // catalogue, the skill atlas and this machine's connectors too, or people
+      // learn not to use it.
+      case 'search_all': {
+        const q = body.q || body.query || '';
+        const chats = await find('threads', () => true, 500).catch(() => []);
+        // The atlas is a build artifact: 2,208 skills, loaded lazily and cached by
+        // the module. `loadAtlas()` throws if the artifact is missing, which is a
+        // normal state on a fresh checkout — so a missing atlas must not break chat
+        // search, it just contributes no group.
+        let skills = null;
+        try { skills = loadAtlas(); } catch { skills = null; }
+        let apis = null;
+        try { apis = loadCatalogue(); } catch { apis = null; }
+        return json(res, 200, searchEverything(q, {
+          limit: Math.min(Number(body.limit) || 6, 20),
+          chats,
+          skills,
+          apis,
+          connectors: MCP_CATALOG
+        }));
+      }
       case 'image': {
         const out = await generateImage({ ...body, keys: await mergedKeys(req, body) });
         // Keep the artifact. An image that exists only until the tab closes is the
@@ -1457,7 +1480,10 @@ async function handleRea(req, body, res) {
       };
       const existing = await findOne('mcp_connections', (x) => x.id === row.id);
       if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
-      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: false } });
+      // REA edits the app it is analysing, so its own registration needs write. The
+      // gate that matters is `permissions` on the row — and it is enforced now
+      // (`toolAllowedByPermissions`), not decorative.
+      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: true } });
       forgetTools();
       await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
       return json(res, 200, { ok: true, connection: row, tools: (probe.tools || []).length });
@@ -2603,6 +2629,11 @@ async function handleDaytona(req, body, res) {
     // A probe is also the only truthful check of an expiry countdown: the countdown
     // is a hint from the paste time, while the box either answers or it does not.
     return json(res, 200, { ...out, fields: setupRecipe().fields, session_token: status.token });
+  }
+  if (op === 'diagnose') {
+    const out = await diagnose({ timeoutMs: Number(body.timeout_ms) || 8000 });
+    await audit({ type: 'daytona.diagnose', ok: Boolean(out.ok), failed_at: out.failed_at, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
   }
   if (op === 'provision') {
     const out = await provisionWorkspace({ only: body.only || null, timeoutMs: body.timeout_ms });

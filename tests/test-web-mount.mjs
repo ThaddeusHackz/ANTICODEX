@@ -641,6 +641,29 @@ globalThis.__mount = (route) => {
     ok('…with the atlas reachable from it', /atlas/.test(studioText));
     const sandboxText = await mountAt('/sandbox', { token: reg.token, user: reg.user });
     ok('the Sandbox page offers both targets', /This machine/.test(sandboxText) && /Daytona/.test(sandboxText), sandboxText.slice(-160));
+    // The doctor is a button on the real page, and it has to survive being pressed
+    // with nothing configured — a crash here would take the whole Sandbox page down.
+    const diagBtn = [...win.document.querySelectorAll('#root .main button')].find((b) => /Diagnose/.test(b.textContent));
+    ok('the Sandbox page has a Diagnose button', Boolean(diagBtn));
+    if (diagBtn) {
+      click(diagBtn);
+      await settle(6);
+      const after = win.document.querySelector('#root .main')?.textContent || '';
+      ok('pressing it does not tear down the page', /Sandbox/.test(after) && errors.length === 0, errors.join(' | ').slice(0, 200));
+    }
+    // Every rail destination gets mounted at least once. These four were never
+    // opened by any test, so a mount-time crash in them would have shipped.
+    for (const [route, needle] of [
+      ['/mcp', /Connectors/i],
+      ['/computer', /Computer/i],
+      ['/images', /Image/i],
+      ['/video', /Video/i]
+    ]) {
+      const before = errors.length;
+      const text3 = await mountAt(route, { token: reg.token, user: reg.user });
+      ok(`${route} renders`, needle.test(text3), text3.slice(0, 120));
+      ok(`${route} mounts without throwing`, errors.length === before, errors.slice(before).join(' | ').slice(0, 200));
+    }
     ok('no uncaught errors from the new pages', errors.length === 0, errors.join(' | ').slice(0, 300));
   }
 

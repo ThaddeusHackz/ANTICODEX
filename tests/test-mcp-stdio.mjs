@@ -210,5 +210,39 @@ if (process.env.REA_E2E === '1') {
   console.log('  · skipped (set REA_E2E=1 to spawn the real server)');
 }
 
+// ---------------------------------------------------------------------------
+if (failed) process.exit(1);
+
+// The catalogue: entries people can actually connect, and endpoints that resolve.
+// A wrong URL fails as "OAuth did not work", which is indistinguishable from a
+// user mistake, so the shapes are asserted here instead of discovered by a user.
+{
+  const { MCP_CATALOG, stdioSpec } = await import('../lib/mcp.js');
+  const byId = new Map(MCP_CATALOG.map((c) => [c.id, c]));
+
+  ok('catalogue has no duplicate ids', new Set(MCP_CATALOG.map((c) => c.id)).size === MCP_CATALOG.length);
+  ok('every remote entry is https', MCP_CATALOG.every((c) => !/^https?:/.test(c.url) || c.url.startsWith('https://')));
+  // The streamable-HTTP transport is what this app speaks; an `/sse` endpoint will
+  // open and then fail on the first call.
+  const sse = MCP_CATALOG.filter((c) => /\/sse$/.test(c.url));
+  ok('no catalogue entry points at a legacy /sse endpoint', sse.length === 0, sse.map((c) => c.id).join(' '));
+
+  for (const id of ['figma', 'shadcn', 'playwright', 'chrome-devtools', 'neon', 'prisma', 'firecrawl', 'sequential-thinking']) {
+    ok(`catalogue carries ${id}`, byId.has(id));
+  }
+  // A local entry is only usable if it resolves to a launch spec — the URL alone
+  // would throw "no launch spec in this build" at connect time.
+  for (const c of MCP_CATALOG.filter((x) => x.stdio)) {
+    const spec = stdioSpec(c.url);
+    ok(`${c.id}: stdio url resolves to a launch spec`, Boolean(spec && spec.command), c.url);
+    ok(`${c.id}: launch spec is npx with -y`, spec.command === 'npx' && spec.args.includes('-y'));
+  }
+  // A server with a large tool surface must ship a default subset, or it bills the
+  // user's context on every turn (REA: 207 tools).
+  ok('REA still ships a suggested subset', Array.isArray(byId.get('rea').suggested_tools) && byId.get('rea').suggested_tools.length < 40);
+}
+
+if (failed) process.exit(1);
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

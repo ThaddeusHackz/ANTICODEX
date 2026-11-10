@@ -351,7 +351,7 @@ function ScanPanel({ onNotify }) {
         <div className="card-head">
           <h3>Scan source before it ships</h3>
           <div className="right">
-            <input className="select" value={filename} onChange={(e) => setFilename(e.target.value)} style={{ width: 150 }} />
+            <input className="select" value={filename} onChange={(e) => setFilename(e.target.value)} style={{ width: 150 }} aria-label="Source file to scan" />
             <button className="btn small primary" onClick={run} disabled={busy}>{busy ? 'Scanning…' : 'Scan'}</button>
           </div>
         </div>

@@ -365,6 +365,16 @@ See [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md) for the evidence behind each 
 Apache-2.0 (see `LICENSE`). Architecture study credits `openai/codex` (Apache-2.0) — see `NOTICE`.
 All ANTICODEX branding, UI and code are original; no proprietary OpenAI/Anthropic assets are redistributed.
 
+## The interface (2026-11)
+
+The UI pass is documented rather than described: `docs/UI.md` lists what made it
+look generated (gradient text, glow shadows, a private palette per page), what was
+actually broken (three undefined CSS tokens, no focus ring, `var()` written inside a
+JSX object where it is a syntax error), and the twelve checks in `tests/test-web.mjs`
+that now fail when any of it comes back. `docs/MCP-CATALOGUE.md` covers the MCP
+additions — Figma, shadcn, Playwright, Chrome DevTools, Neon, Prisma, Firecrawl,
+sequential-thinking — plus six endpoints that were simply wrong.
+
 ## The agent, and the machine it runs on (2026-11)
 
 ANTICODEX now has a coding agent with hands, built to the shape

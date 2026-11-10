@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../lib/api.js';
-import { StatusPill, Facts } from '../ui.jsx';
+import { StatusPill, Facts, Modal } from '../ui.jsx';
 
 const GROUPS = [
   { id: 'chat', label: 'Chat', note: 'the conversation surface' },
@@ -130,9 +130,8 @@ export default function ParityPage() {
       </div>
 
       {crate && (
-        <div className="modal-back" onClick={(e) => e.target === e.currentTarget && setCrate(null)}>
-          <div className="modal" style={{ width: 'min(720px, 100%)' }}>
-            <div className="modal-head">{crate.crate.name}</div>
+        <Modal title={crate.crate.name} onClose={() => setCrate(null)} width={720}>
+          <div>
             <div className="modal-body">
               <Facts cols={3} items={[
                 { k: 'Kind', v: crate.crate.kind },
@@ -153,7 +152,7 @@ export default function ParityPage() {
                   <tbody>
                     {crate.surfaces.map((s) => (
                       <tr key={s.id}>
-                        <td><b>{s.label}</b></td>
+                        <th scope="row" style={{ textAlign: 'left', fontWeight: 400 }}><b>{s.label}</b></th>
                         <td><StatusPill status={s.status} /></td>
                         <td className="mono tiny">{s.present.join(', ') || '—'}</td>
                       </tr>
@@ -164,7 +163,7 @@ export default function ParityPage() {
               <button className="btn" style={{ marginTop: 14 }} onClick={() => setCrate(null)}>Close</button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

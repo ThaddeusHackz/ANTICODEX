@@ -98,7 +98,7 @@ function ProviderCard({ def, onSave, onSaved, onPickModel, notify }) {
       </div>
       {def.note && <div className="tiny" style={{ margin: '8px 0 0' }}>{def.note}</div>}
       <div style={{ marginTop: 10 }}>
-        <Field label="API endpoint"><input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} /></Field>
+        <Field label="API endpoint"><input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} aria-label="API endpoint" placeholder="https://api.example.com/v1" /></Field>
         <Field label="API key" hint={def.homepage ? `Get a key: ${def.homepage}` : undefined}>
           <input type="password" value={key} placeholder={def.placeholder || 'paste key'} onChange={(e) => setKey(e.target.value)} autoComplete="off" />
         </Field>
@@ -668,7 +668,7 @@ function CustomProviderForm({ onSave }) {
     <div className="grid-2">
       <Field label="Provider name"><input value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} placeholder="My gateway" /></Field>
       <Field label="API endpoint"><input value={v.endpoint} onChange={(e) => setV({ ...v, endpoint: e.target.value })} placeholder="https://api.example.com/v1" /></Field>
-      <Field label="API key"><input type="password" value={v.api_key} onChange={(e) => setV({ ...v, api_key: e.target.value })} /></Field>
+      <Field label="API key"><input type="password" value={v.api_key} onChange={(e) => setV({ ...v, api_key: e.target.value })} aria-label="API key" autoComplete="off" /></Field>
       <Field label="Wire type">
         <select value={v.type} onChange={(e) => setV({ ...v, type: e.target.value })}>
           <option value="openai">OpenAI-compatible</option>

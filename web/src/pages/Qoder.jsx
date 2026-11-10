@@ -188,9 +188,10 @@ export default function QoderPage() {
           <div className="card" style={{ marginTop: 12 }}>
             <div className="card-head"><h3>Daytona, as Qoder asks for it</h3><div className="right"><span className="tiny">Sandbox → Daytona has the live values and the probe</span></div></div>
             <table className="tbl">
+              <caption className="sr-only">ACP run details</caption>
               <tbody>
                 {Object.entries(kit.daytona).map(([k, v]) => (
-                  <tr key={k}><td className="tiny" style={{ width: 130 }}>{k}</td><td className="mono tiny">{v}</td></tr>
+                  <tr key={k}><th scope="row" className="tiny" style={{ width: 130, textAlign: 'left', fontWeight: 500 }}>{k}</th><td className="mono tiny">{v}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -236,11 +237,11 @@ export default function QoderPage() {
               <div className="tiny" style={{ lineHeight: 1.7 }}>
                 ✓ {probe.agent?.title || probe.agent?.name || 'qodercli'} {probe.agent?.version || ''} · ACP {String(probe.protocol)} · {probe.ms} ms
                 {probe.auth_methods?.length
-                  ? <div style={{ color: '#fcd34d', marginTop: 4 }}>Not signed in — run <span className="kbd">{probe.auth_methods[0].name}</span> on this machine first.</div>
-                  : <div style={{ color: '#6ee7a8', marginTop: 4 }}>Signed in — a session can be created.</div>}
+                  ? <div style={{ color: 'var(--warn)', marginTop: 4 }}>Not signed in — run <span className="kbd">{probe.auth_methods[0].name}</span> on this machine first.</div>
+                  : <div style={{ color: 'var(--ok)', marginTop: 4 }}>Signed in — a session can be created.</div>}
               </div>
             ) : (
-              <div className="tiny" style={{ color: '#fca5a5', lineHeight: 1.6 }}>{probe.error}</div>
+              <div className="tiny" style={{ color: 'var(--danger)', lineHeight: 1.6 }}>{probe.error}</div>
             )}
             {probe.capabilities && (
               <div className="tiny" style={{ marginTop: 6, opacity: 0.7 }}>
@@ -283,7 +284,7 @@ export default function QoderPage() {
                 ) : null}
               </>
             ) : (
-              <div className="tiny" style={{ color: '#fca5a5', lineHeight: 1.6 }}>{acpRun.error}</div>
+              <div className="tiny" style={{ color: 'var(--danger)', lineHeight: 1.6 }}>{acpRun.error}</div>
             )}
           </div>
         )}
@@ -305,7 +306,7 @@ export default function QoderPage() {
         </div>
 
         {cloud.probe && (
-          <div className="tiny" style={{ marginTop: 8, color: cloud.probe.ok ? '#6ee7a8' : '#fca5a5' }}>
+          <div className="tiny" style={{ marginTop: 8, color: cloud.probe.ok ? 'var(--ok)' : 'var(--danger)' }}>
             {cloud.probe.ok ? `✓ key works — ${cloud.probe.items?.length ?? 0} template(s) visible` : cloud.probe.error}
           </div>
         )}
@@ -314,7 +315,7 @@ export default function QoderPage() {
           <div className="tiny" style={{ marginTop: 8, lineHeight: 1.7 }}>
             Identities: <b>{(cloud.identities.items || []).length}</b>
             {(cloud.identities.items || []).slice(0, 3).map((i) => <div key={i.id} style={{ opacity: 0.75 }}>· {i.external_id || i.name || i.id}</div>)}
-            {cloud.identities.ok === false ? <div style={{ color: '#fca5a5' }}>{cloud.identities.error}</div> : null}
+            {cloud.identities.ok === false ? <div style={{ color: 'var(--danger)' }}>{cloud.identities.error}</div> : null}
             Templates: <b>{(cloud.templates?.items || []).length}</b>
             {(cloud.templates?.items || []).slice(0, 3).map((t) => <div key={t.id} style={{ opacity: 0.75 }}>· {t.name || t.id}</div>)}
           </div>
@@ -336,7 +337,7 @@ export default function QoderPage() {
             </div>
             {cloud.events && (
               <div style={{ marginTop: 8 }}>
-                {cloud.events.ok === false && <div className="tiny" style={{ color: '#fca5a5' }}>{cloud.events.error}</div>}
+                {cloud.events.ok === false && <div className="tiny" style={{ color: 'var(--danger)' }}>{cloud.events.error}</div>}
                 <pre className="rea-log">{JSON.stringify((cloud.events.items || cloud.events.events || []).slice(0, 20), null, 1)}</pre>
               </div>
             )}
@@ -358,7 +359,7 @@ export default function QoderPage() {
           </select>
           <input value={wf.version} onChange={(e) => setWf({ ...wf, version: e.target.value })} style={{ width: 90 }} aria-label="qodercli version" />
           <label className="tiny" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input type="checkbox" checked={wf.mcp} onChange={(e) => setWf({ ...wf, mcp: e.target.checked })} /> qoder-github MCP
+            <input type="checkbox" checked={wf.mcp} onChange={(e) => setWf({ ...wf, mcp: e.target.checked })} aria-label="qoder-github MCP" /> qoder-github MCP
           </label>
         </div>
         <textarea

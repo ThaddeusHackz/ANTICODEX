@@ -51,6 +51,8 @@ export default function SandboxPage() {
   const [saving, setSaving] = useState(false);
   const [steps, setSteps] = useState(null);
   const [provision, setProvision] = useState(null);
+  const [diag, setDiag] = useState(null);
+  const [diagBusy, setDiagBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -82,6 +84,23 @@ export default function SandboxPage() {
         api.daytona.status().then((dd) => { setDaytona(dd); setConn(''); }).catch(() => {});
       } else notify(r?.error || 'Could not clear the token');
     } catch (e) { notify(e.message); }
+  }
+
+  // The doctor runs when the connection misbehaves, not instead of using it. It
+  // reports each layer (dns → tcp → banner → auth → tools) and stops at the first
+  // failure, because "SSH failed" has four different fixes.
+  async function runDiagnose() {
+    setDiagBusy(true);
+    setDiag(null);
+    try {
+      const r = await api.daytona.diagnose();
+      setDiag(r);
+      notify(r?.ok ? 'The workspace answers — auth and tools work.'
+        : `Stopped at ${r?.failed_at || 'an unknown layer'} — the row says what to do.`);
+    } catch (e) {
+      setDiag({ ok: false, error: e.message });
+      notify(e.message);
+    } finally { setDiagBusy(false); }
   }
 
   async function runProvision(only) {
@@ -237,7 +256,7 @@ export default function SandboxPage() {
             style={{ flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
           />
           <button className="btn small primary" onClick={saveConnection} disabled={saving || !conn.trim()}>{saving ? 'Saving…' : 'Save'}</button>
-          <button className="btn small" onClick={probe} disabled={busy || !daConfigured}>Probe</button>
+          <button className="btn small" onClick={runDiagnose} disabled={diagBusy || !daConfigured}>{diagBusy ? 'Checking…' : 'Diagnose'}</button>
           <button className="btn small ghost" onClick={makeKey} disabled={busy}>Make a key</button>
         </div>
         {d.session_token?.known && (
@@ -253,7 +272,7 @@ export default function SandboxPage() {
               </span>
               <span className="tiny">…{d.session_token.suffix} · {d.session_token.ttl_minutes} min lifetime</span>
               <div style={{ flex: 1, minWidth: 80, height: 6, background: 'var(--bg-input)', borderRadius: 99, overflow: 'hidden' }}>
-                <div style={{ width: `${Math.max(0, Math.min(100, 100 * (1 - Math.max(0, d.session_token.expires_at - now) / (d.session_token.ttl_minutes * 60000))))}%`, height: '100%', background: d.session_token.state === 'valid' ? 'var(--ok, #2e7d32)' : 'var(--danger)' }} />
+                <div style={{ width: `${Math.max(0, Math.min(100, 100 * (1 - Math.max(0, d.session_token.expires_at - now) / (d.session_token.ttl_minutes * 60000))))}%`, height: '100%', background: d.session_token.state === 'valid' ? 'var(--ok)' : 'var(--danger)' }} />
               </div>
               <button className="btn tiny ghost" onClick={revoke}>Forget token</button>
             </div>
@@ -261,6 +280,43 @@ export default function SandboxPage() {
             {Array.isArray(d.rotation) && d.rotation.length > 0 && (
               <div className="tiny" style={{ marginTop: 4, opacity: .75 }}>
                 Rotated {d.rotation.length}× this machine · last: …{d.rotation[d.rotation.length - 1].replaced_suffix} → …{d.rotation[d.rotation.length - 1].set_suffix} on {new Date(d.rotation[d.rotation.length - 1].replaced_at).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+        {diag && (
+          <div style={{ marginTop: 8 }}>
+            {/* Layer by layer, first failure highlighted. A green tick above a red
+                row is the useful part: it proves the network works and moves the
+                suspicion to the one thing a user can actually change. */}
+            <table className="table" style={{ fontSize: 12 }}>
+              <caption className="sr-only">Connection layers, in the order they are tested</caption>
+              <tbody>
+                {(diag.rows || []).map((r) => (
+                  <tr key={r.layer}>
+                    <td style={{ width: 16 }}><span aria-hidden="true">{r.ok ? '✓' : '✗'}</span><span className="sr-only">{r.ok ? 'ok' : 'failed'}</span></td>
+                    <th scope="row" style={{ width: 58, fontFamily: 'var(--mono)', textAlign: 'left' }}>{r.layer}</th>
+                    <td style={{ whiteSpace: 'pre-wrap' }}>{r.detail}</td>
+                    <td className="tiny" style={{ color: r.ok ? undefined : 'var(--danger)' }}>{r.hint}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {diag.failed_at ? (
+              <div className="tiny" style={{ marginTop: 6 }}>
+                Stopped at <b>{diag.failed_at}</b>. Everything above it works, so the fix is on that row.
+              </div>
+            ) : diag.ok ? (
+              <div className="tiny" style={{ marginTop: 6 }}>Every layer answered — the workspace is usable right now.</div>
+            ) : null}
+            {diag.error && <div className="tiny" style={{ color: 'var(--danger)', marginTop: 6 }}>{diag.error}</div>}
+            {diag.missing?.length > 0 && (
+              <div className="tiny" style={{ marginTop: 6 }}>Missing on the box: {diag.missing.join(', ')} — run the install below.</div>
+            )}
+            {diag.public_key && diag.failed_at === 'auth' && (
+              <div className="tiny" style={{ marginTop: 6 }}>
+                Add this key in Daytona, then retry:
+                <code style={{ display: 'block', wordBreak: 'break-all', fontFamily: 'var(--mono)', marginTop: 3 }}>{diag.public_key}</code>
               </div>
             )}
           </div>
@@ -293,8 +349,8 @@ export default function SandboxPage() {
                 <tbody>
                   {(provision?.steps || []).map((st) => (
                     <tr key={st.id}>
-                      <td style={{ width: 18 }}>{st.ok ? '✓' : st.optional ? '·' : '✗'}</td>
-                      <td>{st.label}</td>
+                      <td style={{ width: 18 }}><span aria-hidden="true">{st.ok ? '✓' : st.optional ? '·' : '✗'}</span><span className="sr-only">{st.ok ? 'done' : st.optional ? 'skipped' : 'failed'}</span></td>
+                      <th scope="row" style={{ textAlign: 'left', fontWeight: 500 }}>{st.label}</th>
                       <td className="tiny" style={{ whiteSpace: 'pre-wrap', opacity: .8 }}>{st.detail || st.error}</td>
                       <td className="tiny" style={{ textAlign: 'right' }}>{st.seconds}s</td>
                     </tr>
@@ -349,6 +405,8 @@ export default function SandboxPage() {
             <input
               value={command}
               onChange={(e) => setCommand(e.target.value)}
+              aria-label="Shell command to run"
+              spellCheck={false}
               style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
             />
             <div className="tiny" style={{ marginTop: 6 }}>Same target switch. A remote command runs over SSH; a local one goes through the workspace policy gate.</div>
@@ -378,7 +436,7 @@ export default function SandboxPage() {
             {run?.stderr ? (
               <>
                 <div className="tiny" style={{ marginTop: 8, marginBottom: 4 }}>stderr</div>
-                <pre style={{ margin: 0, padding: 11, background: '#2a1414', borderRadius: 9, fontSize: 12.3, maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', color: '#ffb4b4' }}>{run.stderr}</pre>
+                <pre style={{ margin: 0, padding: 11, background: 'var(--danger-bg)', borderRadius: 9, fontSize: 12.3, maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', color: 'var(--danger)' }}>{run.stderr}</pre>
               </>
             ) : null}
             {run?.files?.length ? (
@@ -400,7 +458,7 @@ export default function SandboxPage() {
             <table className="tbl">
               <tbody>
                 {Object.entries(d.fields || {}).map(([k, v]) => (
-                  <tr key={k}><td className="tiny" style={{ width: 110 }}>{k}</td><td className="mono tiny">{v}</td></tr>
+                  <tr key={k}><th scope="row" className="tiny" style={{ width: 110, textAlign: 'left', fontWeight: 500 }}>{k}</th><td className="mono tiny">{v}</td></tr>
                 ))}
               </tbody>
             </table>

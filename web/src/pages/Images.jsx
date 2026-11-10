@@ -8,19 +8,28 @@ function UnsplashSearch() {
   const [q, setQ] = useState('');
   const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
   return (
     <div className="card" style={{ marginBottom: 16 }}>
       <h3 style={{ marginTop: 0 }}>Search Unsplash photos</h3>
+      {/* Without a key this used to look identical to a working search box, and
+          pressing Search just flashed a toast. Say what is missing, in place. */}
+      {err && (
+        <div className="tiny" style={{ color: 'var(--warn)', marginBottom: 8 }}>
+          {err} — add <code className="code-inline">UNSPLASH_ACCESS_KEY</code> in Settings, or on the server.
+        </div>
+      )}
       <div className="row">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="mountains, neon city, abstract…"
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="mountains, neon city, abstract…" aria-label="Unsplash photo search"
           onKeyDown={(e) => { if (e.key === 'Enter') document.getElementById('unsplash-go')?.click(); }} style={{ flex: 1 }} />
         <button id="unsplash-go" className="btn primary" disabled={busy || !q.trim()} onClick={async () => {
           setBusy(true);
           try {
             const r = await extras({ op: 'image_search', query: q });
-            if (r.ok === false) { notify(r.error); return; }
+            if (r.ok === false) { setErr(r.error || 'Search failed'); setItems([]); notify(r.error); return; }
+            setErr(null);
             setItems(r.results || []);
-          } catch (e) { notify(e.message); }
+          } catch (e) { setErr(e.message); notify(e.message); }
           finally { setBusy(false); }
         }}>{busy ? 'Searching…' : 'Search'}</button>
       </div>

@@ -126,7 +126,7 @@ export default function EvidencePage() {
             <tbody>
               {kit.surfaces.map((s) => (
                 <tr key={s.id}>
-                  <td><b>{s.label}</b><div className="tiny">{s.what}</div></td>
+                  <th scope="row" style={{ textAlign: 'left', fontWeight: 400 }}><b>{s.label}</b><div className="tiny">{s.what}</div></th>
                   <td><span className={`pill ${s.status === 'live' ? 'ok' : s.status === 'partial' ? 'warn' : s.status === 'needs-cli' ? 'info' : s.status === 'external' ? 'info' : 'err'}`}>{s.status}</span></td>
                   <td className="tiny">{s.evidence}</td>
                   <td style={{ fontSize: 12.5 }}>{s.here}</td>
@@ -151,6 +151,7 @@ export default function EvidencePage() {
       <div className="section">
         <h2>Documents in the repository</h2>
         <table className="tbl">
+          <thead><tr><th scope="col" style={{ width: '32%' }}>Document</th><th scope="col">What it records</th></tr></thead>
           <tbody>
             {[
               ['docs/FORENSIC-REPORT.md', 'The original sweep: both desktop packages, runtime directories, the OSS workspace.'],

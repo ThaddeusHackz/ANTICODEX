@@ -123,14 +123,14 @@ export default function ComputerPage() {
           </div>
           <div style={{
             flex: 1, minHeight: 300, maxHeight: 420, overflowY: 'auto', marginTop: 12,
-            background: '#07090f', borderRadius: 12, padding: 14, fontFamily: 'var(--mono)', fontSize: 12
+            background: 'var(--bg-input)', borderRadius: 12, padding: 14, fontFamily: 'var(--mono)', fontSize: 12
           }}>
             {log.map((l, i) => (
               <div key={i} style={{
-                color: l.kind === 'err' ? '#fca5a5' : l.kind === 'cmd' ? '#e8ebf6' : l.kind === 'sys' ? '#8b93ab' : '#9fe8b8',
+                color: l.kind === 'err' ? 'var(--danger)' : l.kind === 'cmd' ? 'var(--text)' : l.kind === 'sys' ? 'var(--muted)' : 'var(--ok)',
                 whiteSpace: 'pre-wrap', marginBottom: 6
               }}>
-                {l.kind === 'cmd' && <span style={{ color: '#22d3ee' }}>› </span>}{l.text}
+                {l.kind === 'cmd' && <span style={{ color: 'var(--accent-2)' }}>› </span>}{l.text}
               </div>
             ))}
           </div>
