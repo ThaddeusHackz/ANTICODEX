@@ -195,9 +195,14 @@ function SkillDetail({ skill, onNotify, signedIn }) {
   async function install(target) {
     setInstalling(true);
     try {
-      const r = await api.skillkit.export(skill.slug, { target });
-      if (r.ok) onNotify(`Installed ${r.slug} → ${r.file}`);
-      else onNotify(r.error || 'Could not install');
+      // Desktop: the main process owns the skill roots, so it writes the file and
+      // can say where it went. Browser/local server: the bridge does the same write.
+      const desk = typeof window !== 'undefined' ? window.anticodexDesktop : null;
+      const r = target !== 'workspace' && desk?.installSkill
+        ? await desk.installSkill({ slug: skill.slug, target })
+        : await api.skillkit.export(skill.slug, { target });
+      if (r?.ok) onNotify(`Installed ${r.slug} → ${r.file}`);
+      else onNotify(r?.error || 'Could not install');
     } catch (e) { onNotify(e.message); }
     finally { setInstalling(false); }
   }

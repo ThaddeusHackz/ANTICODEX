@@ -400,15 +400,25 @@ export const skillkit = {
 };
 
 // --- Daytona ----------------------------------------------------------------
+// In the desktop app these run in the main process: SSH keys stay out of the page,
+// and the answer is the same JSON the bridge would have produced.
+const desktopDaytona = (op, args) => (typeof window !== 'undefined' && window.anticodexDesktop?.daytona
+  ? window.anticodexDesktop.daytona(op, args)
+  : api('daytona', { op, ...args }));
+
 export const daytona = {
-  status: () => api('daytona', { op: 'status' }),
-  key: () => api('daytona', { op: 'key' }),
-  probe: () => api('daytona', { op: 'probe' }),
-  list: (path) => api('daytona', { op: 'list', path }),
-  read: (path) => api('daytona', { op: 'read', path }),
-  write: (path, content) => api('daytona', { op: 'write', path, content }),
-  exec: (command, p = {}) => api('daytona', { op: 'exec', command, ...p }),
-  api: (method, p = {}) => api('daytona', { op: 'api', method, ...p })
+  status: () => desktopDaytona('status'),
+  key: () => desktopDaytona('key'),
+  probe: () => desktopDaytona('probe'),
+  list: (path) => desktopDaytona('list', { path }),
+  read: (path) => desktopDaytona('read', { path }),
+  write: (path, content) => desktopDaytona('write', { path, content }),
+  exec: (command, p = {}) => desktopDaytona('exec', { command, ...p }),
+  anywhere: (command, p = {}) => desktopDaytona('anywhere', { command, ...p }),
+  api: (method, p = {}) => api('daytona', { op: 'api', method, ...p }),
+  // Save a typed connection to ~/.qoder/daytona.json (local only). The status
+  // comes back with it, so the page never renders a stale "not configured".
+  configure: (set) => desktopDaytona('config', { set })
 };
 
 // --- Codex parity map -------------------------------------------------------

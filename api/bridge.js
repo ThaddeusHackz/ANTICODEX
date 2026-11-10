@@ -70,7 +70,7 @@ import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
-import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser } from '../lib/daytona.js';
+import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget } from '../lib/daytona.js';
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
 import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
 import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
@@ -2405,7 +2405,30 @@ async function handleDaytona(req, body, res) {
   const local = canSpawnLocalMcp() && isLoopback(req);
   const status = daytonaStatus();
 
-  if (op === 'status') return json(res, 200, { ...status, local, recipe: setupRecipe() });
+  if (op === 'status') return json(res, 200, { ...status, local, recipe: setupRecipe(), config: daytonaConfig() });
+  if (op === 'config') {
+    // Saving a connection writes ~/.qoder/daytona.json, which is a local file — a
+    // hosted caller must not be able to aim this machine's SSH somewhere else.
+    if (!local) return needsLocal(res, 'Saving a Daytona connection writes a file on this machine.');
+    if (body.set) {
+      const set = { ...body.set };
+      // Accept the pasted shapes (`ssh user`, `user@host:22`, `Daytona host`) and
+      // store exactly one canonical form, so the status and the SSH argv agree.
+      if (set.target) {
+        const t = normaliseTarget(set.target, set.user);
+        const [user, hostPort] = t.split('@');
+        set.user = user || undefined;
+        set.host = (hostPort || '').split(':')[0] || undefined;
+        const port = (hostPort || '').split(':')[1];
+        if (port) set.port = port;
+        delete set.target;
+      }
+      if (set.user) set.user = normaliseUser(set.user);
+      const out = saveDaytonaConfig(set);
+      return json(res, 200, { ...out, status: daytonaStatus() });
+    }
+    return json(res, 200, { ok: true, config: daytonaConfig(), status });
+  }
   if (op === 'key') {
     if (!local) return needsLocal(res, 'Creating and reading SSH keys is a local operation.');
     const k = publicKey();

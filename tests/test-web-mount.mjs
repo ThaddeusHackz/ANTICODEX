@@ -564,8 +564,20 @@ globalThis.__mount = (route) => {
   {
     const text = await mountAt('/sandbox', { token: reg.token, user: reg.user });
     ok('the page renders', /Sandbox/.test(text) && /Run/.test(text), text.slice(0, 120));
-    ok('it says what it will run', /JavaScript/.test(text) && /Python/.test(text));
-    ok('…and what it will not do', /not a container|only for the person sitting/i.test(text), text.slice(-200));
+    // The target the page opens on depends on whether a Daytona connection is saved
+    // on this machine (it defaults to Daytona when one is). The local-target claims
+    // are asserted with the local chip selected, so the test is about the app and
+    // not about the runner's home directory.
+    const text2 = () => win.document.querySelector('#root .main').textContent;
+    const machine = [...win.document.querySelectorAll('#root .chip')].find((b) => /This machine/.test(b.textContent));
+    ok('both targets are offered', Boolean(machine) && [...win.document.querySelectorAll('#root .chip')].some((b) => /Daytona/.test(b.textContent)));
+    if (machine) { click(machine); await settle(4); }
+    ok('it says what it will run', /JavaScript/.test(text2()) && /Python/.test(text2()), `has=${(text2().match(/JavaScript|Python/g) || []).join(',')}`);
+    ok('…and what it will not do', /not a container|only for the person sitting/i.test(text2()), text2().slice(-200));
+    // The connection form: the one field a user types into, and the honesty about
+    // where it is stored.
+    ok('the connection is editable in the page', Boolean(win.document.querySelector('#root input[placeholder*="daytona.io"]')));
+    ok('…and says where it is saved, without pretending to hold a key', /daytona\.json/.test(text2()) && /never a key or a token/.test(text2()));
   }
 
   console.log('\n— the Qoder page —');

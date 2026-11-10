@@ -47,10 +47,18 @@ export default function SandboxPage() {
   const [target, setTarget] = useState(new URLSearchParams(loc.search).get('target') === 'daytona' ? 'daytona' : 'local');
   const [command, setCommand] = useState('uname -a && node -v && python3 -V && pwd');
   const [keyInfo, setKeyInfo] = useState(null);
+  const [conn, setConn] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.sandbox.status().then(setStatus).catch(() => {});
-    api.daytona.status().then((d) => { setDaytona(d); if (d?.configured) setTarget(d.mode === 'local' ? 'local' : 'daytona'); }).catch(() => {});
+    api.daytona.status().then((d) => {
+      setDaytona(d);
+      if (d?.configured) setTarget(d.mode === 'local' ? 'local' : 'daytona');
+      // Pre-fill with what is in force, so "Save" edits rather than replaces.
+      const ssh = d?.ssh || {};
+      if (ssh.target) setConn(ssh.target);
+    }).catch(() => {});
   }, []);
 
   function pickLang(id) {
@@ -106,6 +114,30 @@ export default function SandboxPage() {
     } catch (e) { notify(e.message); }
   }
 
+  // Save a typed connection. The shapes Daytona's console hands out are all
+  // accepted (`ssh user`, `user@host`, `user@host:22`, `Daytona host`) and stored
+  // in one canonical form on this machine, so it survives a restart and the SSH
+  // argv, the status panel and the "copy these fields" table cannot disagree.
+  async function saveConnection() {
+    const value = conn.trim();
+    if (!value) return;
+    setSaving(true);
+    try {
+      const r = await api.daytona.configure({ target: value });
+      if (r?.ok) {
+        setDaytona((prev) => ({ ...(prev || {}), ...(r.status || {}), config: r.config }));
+        const saved = r.status || {};
+        notify(saved.configured
+          ? `Saved — Daytona target ${saved.ssh?.target || value}`
+          : 'Saved, but no workspace user was in that value');
+        if (saved.configured) setTarget('daytona');
+      } else {
+        notify(r?.error || 'Could not save that connection');
+      }
+    } catch (e) { notify(e.message); }
+    finally { setSaving(false); }
+  }
+
   const d = daytona || {};
   const daConfigured = Boolean(d.configured);
 
@@ -135,6 +167,43 @@ export default function SandboxPage() {
         { k: 'Output cap', v: `${Math.round((status?.limits?.max_output_bytes || 64000) / 1024)} KB` },
         { k: 'SSH key', v: d.ssh?.key ? 'found' : 'none yet', d: d.ssh?.key?.path || 'press “Make a key”' }
       ]} />
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <h3>Daytona connection</h3>
+          <div className="right">
+            <span className={`pill ${daConfigured ? 'ok' : 'warn'}`}>{daConfigured ? 'configured' : 'not configured'}</span>
+            {d.mode && <span className="pill">{d.mode}</span>}
+          </div>
+        </div>
+        <div className="tiny" style={{ marginBottom: 8 }}>
+          Paste the target Daytona shows you. All of these work and are stored the same way:{' '}
+          <code className="code-inline">ssh {d.ssh?.user || '&lt;workspace-user&gt;'}</code>,{' '}
+          <code className="code-inline">{d.ssh?.user || '&lt;workspace-user&gt;'}@{d.ssh?.host || 'ssh.app.daytona.io'}</code>,{' '}
+          <code className="code-inline">{d.ssh?.user || '&lt;workspace-user&gt;'}@{d.ssh?.host || 'ssh.app.daytona.io'}:{d.ssh?.port || 22}</code>.
+          It is written to <code className="code-inline">{d.ssh?.saved_file || '~/.qoder/daytona.json'}</code> as a username, a host and a port —
+          never a key or a token. Environment variables still win, so a one-off <code className="code-inline">DAYTONA_SSH_USER=…</code> overrides this.
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            value={conn}
+            onChange={(e) => setConn(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') saveConnection(); }}
+            placeholder="WtMs6F8XVkKfRX7TDUrzlAunuPS3pqJs@ssh.app.daytona.io:22"
+            spellCheck={false}
+            style={{ flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
+          />
+          <button className="btn small primary" onClick={saveConnection} disabled={saving || !conn.trim()}>{saving ? 'Saving…' : 'Save'}</button>
+          <button className="btn small" onClick={probe} disabled={busy || !daConfigured}>Probe</button>
+          <button className="btn small ghost" onClick={makeKey} disabled={busy}>Make a key</button>
+        </div>
+        {d.source && (
+          <div className="tiny" style={{ marginTop: 6 }}>
+            Source: user {d.source.user}, host {d.source.host}, port {d.source.port}, key {d.source.key}.
+          </div>
+        )}
+        {d.note && <div className="tiny" style={{ marginTop: 4 }}>{d.note}</div>}
+      </div>
 
       <div className="section split">
         <div>

@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 let pass = 0;
@@ -194,8 +194,17 @@ console.log('\n— Daytona —');
   ok('quoting survives a nasty command', quoted.ok, quoted.stderr);
   const long = await d.execAnywhere('x'.repeat(5000), { target: 'local' });
   ok('an over-long command is refused before spawn', long.ok === false && /longer than/.test(long.error || ''));
-  const noTarget = await d.sshExec('echo hi');
-  ok('SSH without a target explains itself', noTarget.ok === false && /DAYTONA_SSH_USER/.test(noTarget.error || ''));
+  // No target means no target: point the config at a file that does not exist so a
+  // saved connection on the machine running the tests cannot make this pass or fail.
+  const lonely = path.join(os.tmpdir(), `acx-daytona-none-${process.pid}.json`);
+  const hadCfg = process.env.ANTICODEX_DAYTONA_CONFIG;
+  process.env.ANTICODEX_DAYTONA_CONFIG = lonely;
+  try {
+    const noTarget = await d.sshExec('echo hi');
+    ok('SSH without a target explains itself', noTarget.ok === false && /DAYTONA_SSH_USER/.test(noTarget.error || ''), noTarget.error || noTarget.stderr);
+  } finally {
+    if (hadCfg === undefined) delete process.env.ANTICODEX_DAYTONA_CONFIG; else process.env.ANTICODEX_DAYTONA_CONFIG = hadCfg;
+  }
 }
 
 // --- Codex parity ----------------------------------------------------------
@@ -329,6 +338,58 @@ console.log('\n— installers —');
   const installPage = read('web/src/pages/Install.jsx');
   ok('the install page leads with what the device can do', /detect\.ios/.test(installPage) && /detect\.mac/.test(installPage));
   ok('…and admits what a browser cannot do', /cannot open an SSH socket|no socket/i.test(installPage));
+}
+
+
+// --- the Daytona connection ---------------------------------------------------
+// The target is the one thing a user types, and every shape Daytona prints has to
+// resolve to the same single value — otherwise the status panel, the SSH argv and
+// the copied field table disagree and the connection "works sometimes".
+console.log('\n— Daytona connection —');
+{
+  const os = await import('node:os');
+  const fsx = await import('node:fs');
+  const d = await import(pathToFileURL(path.join(ROOT, 'lib', 'daytona.js')).href);
+  const U = 'WtMs6F8XVkKfRX7TDUrzlAunuPS3pqJs';
+  const want = `${U}@ssh.app.daytona.io:22`;
+  ok('a pasted "ssh user@host:port" normalises to one form', d.normaliseTarget(`ssh ${want}`) === want, d.normaliseTarget(`ssh ${want}`));
+  ok('…as does user@host', d.normaliseTarget(`${U}@ssh.app.daytona.io`) === `${U}@ssh.app.daytona.io`);
+  ok('…and a bare host keeps the user', d.normaliseTarget('ssh.app.daytona.io', U) === `${U}@ssh.app.daytona.io`);
+  ok('…and the console label is tolerated', d.normaliseTarget(`Daytona ssh.app.daytona.io`, U) === `${U}@ssh.app.daytona.io`);
+
+  // Save/read round-trip against this machine's real home, then restore.
+  const file = path.join(os.tmpdir(), `acx-daytona-test-${process.pid}.json`);
+  const had = process.env.ANTICODEX_DAYTONA_CONFIG;
+  process.env.ANTICODEX_DAYTONA_CONFIG = file;
+  const before = fsx.existsSync(file) ? fsx.readFileSync(file, 'utf8') : null;
+  try {
+    const saved = d.saveDaytonaConfig({ user: U, host: 'ssh.app.daytona.io', port: 22 });
+    ok('a saved connection writes a file', saved.ok && fsx.existsSync(file));
+    const mode = fsx.statSync(file).mode & 0o777;
+    ok('…readable only by its owner', mode === 0o600, mode.toString(8));
+    const text = fsx.readFileSync(file, 'utf8');
+    ok('…with no key material in it', !/BEGIN .*PRIVATE KEY|ssh-ed25519/.test(text), text.slice(0, 120));
+    const st = d.daytonaStatus();
+    ok('…that the status reports as configured', st.configured === true && st.ssh.user === U, JSON.stringify(st.ssh.target));
+    ok('…with the source named, so env and file cannot be confused', st.source.user === 'saved', JSON.stringify(st.source));
+    ok('…and the exact fields a client form asks for', st.fields.Username === `ssh ${U}` && st.fields['Host address'] === 'ssh.app.daytona.io' && st.fields.Port === '22' && st.fields.Name === 'Daytona');
+    // environment wins over the file — a one-off run must not need an unset.
+    process.env.DAYTONA_SSH_USER = 'someoneelse';
+    ok('an environment variable overrides the saved file', d.daytonaStatus().ssh.user === 'someoneelse' && d.daytonaStatus().source.user === 'env');
+    delete process.env.DAYTONA_SSH_USER;
+    const api = d.saveDaytonaConfig({ api_key: 'dtn_test_never_echo' });
+    ok('an API key is stored but never echoed', api.ok && api.saved.api_key === '(set)', JSON.stringify(api.saved.api_key));
+    ok('…and the status does not leak it', !JSON.stringify(d.daytonaStatus()).includes('dtn_test_never_echo'));
+  } finally {
+    if (before === null) { try { fsx.rmSync(file); } catch { /* gone */ } } else fsx.writeFileSync(file, before);
+    if (had === undefined) delete process.env.ANTICODEX_DAYTONA_CONFIG; else process.env.ANTICODEX_DAYTONA_CONFIG = had;
+  }
+  // The probe must not call a 20 ms refusal a timeout: that sent people looking for
+  // a firewall when the answer was "the peer reset us".
+  const src = read('lib/daytona.js');
+  ok('a refused connection is reported as refused, not as a timeout', /network_refused/.test(src) && /timed_out: timedOut && !networkish/.test(src));
+  ok('…with the command that would have worked', /Run the same command from a network that allows outbound 22/.test(src));
+  ok('the setup recipe prints the username verbatim, `ssh ` prefix included', /Username: `ssh \$\{u\}`/.test(src));
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
