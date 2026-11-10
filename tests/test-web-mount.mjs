@@ -707,7 +707,10 @@ globalThis.__mount = (route) => {
     // a 3G phone; the Skills page cannot wait that long. Assert on the wire.
     const th = await import('node:http');
     const get = (pathname, headers) => new Promise((resolve, reject) => {
-      const r = th.request({ host: '127.0.0.1', port: 8787, path: pathname, headers }, (res) => {
+      // PORT, not 8787: the harness starts the server on an ephemeral port so it can
+      // run beside a developer's dev server. Hardcoding 8787 here passed locally
+      // (where one was running) and failed in CI with ECONNREFUSED.
+      const r = th.request({ host: '127.0.0.1', port: PORT, path: pathname, headers }, (res) => {
         const chunks = [];
         res.on('data', (d) => chunks.push(d));
         res.on('end', () => resolve({ headers: res.headers, bytes: Buffer.concat(chunks).length, body: Buffer.concat(chunks) }));
