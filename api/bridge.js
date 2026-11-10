@@ -72,7 +72,7 @@ import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
-import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState } from '../lib/daytona.js';
+import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState, diagnose } from '../lib/daytona.js';
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
 import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
 import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
@@ -2603,6 +2603,11 @@ async function handleDaytona(req, body, res) {
     // A probe is also the only truthful check of an expiry countdown: the countdown
     // is a hint from the paste time, while the box either answers or it does not.
     return json(res, 200, { ...out, fields: setupRecipe().fields, session_token: status.token });
+  }
+  if (op === 'diagnose') {
+    const out = await diagnose({ timeoutMs: body.timeout_ms });
+    await audit({ type: 'daytona.diagnose', ok: Boolean(out.ok), failed_at: out.failed_at, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
   }
   if (op === 'provision') {
     const out = await provisionWorkspace({ only: body.only || null, timeoutMs: body.timeout_ms });

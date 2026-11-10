@@ -421,6 +421,7 @@ export const daytona = {
   configure: (set) => desktopDaytona('config', { set }),
   steps: () => desktopDaytona('steps'),
   provision: (opts = {}) => desktopDaytona('provision', opts),
+  diagnose: (opts = {}) => desktopDaytona('diagnose', opts),
   revoke: () => desktopDaytona('revoke')
 };
 

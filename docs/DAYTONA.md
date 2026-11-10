@@ -121,6 +121,32 @@ cat ~/.qoder/ssh/daytona_ed25519.pub   # printed by "Make a key" on the Sandbox 
 
 then run **Install / repair the sandbox** and the same checklist runs for real.
 
+## 4b. Diagnose, don't guess
+
+**Sandbox → Diagnose** (or `daytona op=diagnose`) tests the path one layer at a time
+and stops at the first failure, because "SSH failed" has four different fixes:
+
+| Layer | What it proves | If it fails |
+| --- | --- | --- |
+| `dns` | the hostname resolves, and to what | the spelling or your resolver; nothing after this can work |
+| `tcp` | a SYN gets a SYN-ACK (a drop looks like a timeout, a refusal like an RST) | blocked port (dropped) vs closed port (refused) — different owners |
+| `banner` | the host sends `SSH-2.0-…` | either sshd is down, or something in front accepted and dropped |
+| `auth` | your key opens a shell (`true`) | the hint names the key, and the public half is printed to paste |
+| `tools` | what the box has (node, python, rg, qodercli…) | run the install checklist |
+
+The live result from this sandbox, which is why the layer split exists:
+
+```
+✓ dns     ssh.app.daytona.io → 3.227.28.221, 3.214.160.170, 13.223.35.70
+✓ tcp     ssh.app.daytona.io:22 connected in 6 ms
+✗ banner  connected, then the host closed without an SSH banner
+```
+
+That is **not** a filtered port (which times out) and **not** a bad key (which
+answers a banner, then refuses). Something in front of sshd accepts the connection
+and drops it. The app says so, and says what it is not — which saves the user from
+rotating a token that was never the problem.
+
 ## 5. How the agent uses it
 
 `lib/agent.js` resolves a target once per run (`auto` prefers Daytona when a

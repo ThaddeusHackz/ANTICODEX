@@ -337,6 +337,60 @@ console.log('\n— Glasser is gone —');
   ok('the catalogue tool replaced it in the agent', /public_api/.test(read('lib/agent.js')));
 }
 
+
+// ---------------------------------------------------------------------------
+console.log('\n— the connection doctor —');
+{
+  const d = await mod('lib/daytona.js');
+  ok('diagnose is exported', typeof d.diagnose === 'function');
+
+  // A host that does not resolve must fail at `dns` and stop — no TCP attempt, no
+  // misleading "SSH failed".
+  d.saveDaytonaConfig({ user: 'abc1234', host: 'no-such-workspace.invalid', port: 22 });
+  const dnsFail = await d.diagnose({ timeoutMs: 3000 });
+  ok('an unresolvable host stops at dns', dnsFail.ok === false && dnsFail.failed_at === 'dns', JSON.stringify(dnsFail.rows?.[0]));
+  ok('…naming the host and the error', /no-such-workspace\.invalid/.test(dnsFail.rows[0].detail) && dnsFail.rows[0].detail.length > 10);
+  ok('…with one fix, not a list', typeof dnsFail.rows[0].hint === 'string' && dnsFail.rows[0].hint.length > 10);
+
+  // A port where nothing listens must fail at `tcp` with the right code, and must
+  // say "refused", not "blocked" — the two have different causes.
+  d.saveDaytonaConfig({ user: 'abc1234', host: '127.0.0.1', port: 9 });
+  const refused = await d.diagnose({ timeoutMs: 3000 });
+  ok('a closed port stops at tcp', refused.failed_at === 'tcp', JSON.stringify(refused.rows?.slice(0, 2)));
+  ok('…and is reported as refused, with the reason it is not a firewall', /refus/i.test(refused.rows[1].detail + refused.rows[1].hint), refused.rows[1]?.hint);
+
+  // The live Daytona host: this sandbox can reach it at TCP but gets no banner. The
+  // test asserts the *shape* of the answer, not that the network cooperates — a
+  // machine with working SSH must pass this too, so both outcomes are accepted and
+  // the interesting part is that the layers are distinguishable.
+  d.saveDaytonaConfig({ user: 'nlhOT5bG7KrWEDanZJZuhyWCeYVQSOTL', host: 'ssh.app.daytona.io', port: 22 });
+  const live = await d.diagnose({ timeoutMs: 8000 });
+  ok('a real host is diagnosed across layers', rowsInOrder(live.rows), JSON.stringify(live.rows?.map((r) => r.layer)));
+  ok('…and reports where it stopped, or that nothing failed', live.ok ? live.failed_at === null : typeof live.failed_at === 'string', `${live.ok} / ${live.failed_at}`);
+  ok('…including the token countdown, because an expired token is the other cause', live.token?.known === true);
+  if (live.failed_at === 'banner') {
+    ok('…and calls a silent close neither a key problem nor a wrong username',
+      /not a key problem/.test(live.rows.find((r) => r.layer === 'banner').hint || ''));
+  }
+  // It works the same when auth fails: the key is the hint, and the public half is
+  // included so it can be pasted without another step.
+  ok('the public key travels with the diagnosis', live.ok || live.failed_at !== 'auth' || typeof live.public_key === 'string');
+
+  function rowsInOrder(rows) {
+    const order = ['dns', 'tcp', 'banner', 'auth', 'tools'];
+    if (!Array.isArray(rows) || !rows.length) return false;
+    const idx = rows.map((r) => order.indexOf(r.layer));
+    return idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]));
+  }
+
+  const bridge = read('api/bridge.js');
+  ok('the bridge exposes it', /op === 'diagnose'/.test(bridge) && /diagnose\(\{ timeoutMs/.test(bridge));
+  ok('…and audits it', /daytona\.diagnose/.test(bridge));
+  const sb = read('web/src/pages/Sandbox.jsx');
+  ok('the Sandbox page has a Diagnose button', /runDiagnose/.test(sb) && /Diagnose/.test(sb));
+  ok('…that shows the layer that failed', /diag\.failed_at/.test(sb) && /Stopped at/.test(sb));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* tmp */ }
 process.exit(failed ? 1 : 0);
