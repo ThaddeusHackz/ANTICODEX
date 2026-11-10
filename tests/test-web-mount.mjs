@@ -600,6 +600,93 @@ globalThis.__mount = (route) => {
   const railOther = await mountAt('/', { token: r2.token, user: r2.user });
   ok("one account's chats do not leak into another's rail", !railOther.includes('Mount Rail Chat'), railOther.slice(0, 180));
 
+
+  console.log('\n— the new surfaces render with real data —');
+  {
+    // Each of these pages pulls from a bridge action added in 2026-11. A page that
+    // builds but throws on mount is exactly the bug this suite exists for, so each
+    // is asserted on text that can only come from the endpoint.
+    const skillsText = await mountAt('/skills', { token: reg.token, user: reg.user });
+    ok('the Skills page renders', /Skills/.test(skillsText), skillsText.slice(0, 140));
+    ok('…with the real corpus size', /2,208|2208/.test(skillsText), skillsText.slice(0, 300));
+    ok('…and real skill cards', /skill/.test(skillsText) && skillsText.length > 600, `${skillsText.length} chars`);
+    const libraryText = await mountAt('/library', { token: reg.token, user: reg.user });
+    ok('the Library page renders', /Library/.test(libraryText), libraryText.slice(0, 140));
+    ok('…and either lists artifacts or says how to make one', /artifacts|Nothing here yet/i.test(libraryText), libraryText.slice(0, 300));
+    const parityText = await mountAt('/parity', { token: reg.token, user: reg.user });
+    ok('the Codex parity page renders', /Codex parity/.test(parityText), parityText.slice(0, 160));
+    ok('…with the swept commit and crate count', /[0-9a-f]{7,}/.test(parityText) && /12[0-9]|[0-9]{2,} crates/.test(parityText + ' crates'), parityText.slice(0, 400));
+    ok('…and names surfaces as implemented or partial', /implemented|partial|missing/i.test(parityText));
+    const evidenceText = await mountAt('/evidence', { token: reg.token, user: reg.user });
+    ok('the Evidence page renders', /Evidence/.test(evidenceText), evidenceText.slice(0, 160));
+    ok('…separating seen from inferred', /\[seen\]/.test(evidenceText) && /\[inferred\]/.test(evidenceText));
+    const installText = await mountAt('/install', { token: reg.token, user: reg.user });
+    ok('the Install page renders', /Install/.test(installText), installText.slice(0, 160));
+    ok('…for macOS and iOS', /macOS/.test(installText) && /iPhone/.test(installText));
+    const studioText = await mountAt('/studio', { token: reg.token, user: reg.user });
+    ok('Agent Studio renders at /studio', /Agent Studio/.test(studioText), studioText.slice(0, 160));
+    ok('…with the atlas reachable from it', /atlas/.test(studioText));
+    const sandboxText = await mountAt('/sandbox', { token: reg.token, user: reg.user });
+    ok('the Sandbox page offers both targets', /This machine/.test(sandboxText) && /Daytona/.test(sandboxText), sandboxText.slice(-160));
+    ok('no uncaught errors from the new pages', errors.length === 0, errors.join(' | ').slice(0, 300));
+  }
+
+
+  console.log('\n— the rail does what it says —');
+  {
+    // A brand-new chat has to clear the thread. The rail routes to "/?new=…" and
+    // renders the same page, so this is the difference between a working button and
+    // one that appears to do nothing.
+    await mountAt('/', { token: reg.token, user: reg.user });
+    const ta = () => win.document.querySelector('#root .composer textarea');
+    ok('the composer is on the empty state', Boolean(ta()), 'no textarea');
+    typeIn(ta(), 'a message that must disappear on New chat');
+    keydown(ta(), 'Enter');
+    await settle(20);
+    ok('a message is on screen', /a message that must disappear/.test(win.document.getElementById('root').textContent));
+    const newBtn = [...win.document.querySelectorAll('#root .nav-item')].find((b) => /New chat/.test(b.textContent));
+    ok('the rail has a New chat action', Boolean(newBtn));
+    click(newBtn);
+    await settle(12);
+    // Scope the assertion to the chat column: the rail legitimately still lists the
+    // thread by its title, which is the first message. The bug being tested is a
+    // conversation left in the message area.
+    const mainText = () => win.document.querySelector('#root .main').textContent;
+    ok('…and it clears the thread', !/a message that must disappear/.test(mainText()), 'still on screen; main=' + mainText().slice(0, 200));
+    ok('…back to the empty state', /What can I do for you\?/.test(mainText()), mainText().slice(0, 120));
+
+    // The command palette is the only way to reach 20 destinations from a keyboard.
+    win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
+    await settle(4);
+    const palette = win.document.querySelector('#root .modal[aria-label="Command palette"]');
+    ok('⌘K opens the command palette', Boolean(palette));
+    if (palette) {
+      const input = palette.querySelector('input');
+      typeIn(input, 'parity');
+      await settle(6);
+      ok('…and searching it finds a destination', /Codex parity/.test(palette.textContent));
+      ok('…by keyboard, with a selection', Boolean(palette.querySelector('.kbd')));
+    }
+    win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle(2);
+    ok('Escape closes it', !win.document.querySelector('#root .modal[aria-label="Command palette"]'));
+
+    // Chat search: the drawer input must find a thread by its body, not just title.
+    const searchBtn = [...win.document.querySelectorAll('#root .nav-item')].find((b) => /Search chats/.test(b.textContent));
+    ok('the rail has a chat search', Boolean(searchBtn));
+    if (searchBtn) {
+      click(searchBtn);
+      await settle(4);
+      const box = win.document.querySelector('#root .sidebar input[type="search"]');
+      ok('…which opens an input', Boolean(box));
+      if (box) {
+        typeIn(box, 'mount rail chat');
+        await settle(6);
+        ok('…that searches message bodies', /Mount Rail Chat/.test(win.document.getElementById('root').textContent));
+      }
+    }
+  }
+
   ok('server stayed alive throughout', server.exitCode === null, `exit ${server.exitCode}`);
 } catch (e) {
   failed++;

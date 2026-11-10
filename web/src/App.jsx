@@ -86,28 +86,17 @@ function NavButton({ item, active, railed, count, onClick }) {
   );
 }
 
-function Sidebar({ onOpenPalette, onSearch, searching, setSearching, searchQuery, setSearchQuery, searchHits }) {
+const newChatCounter = { current: 0 };
+
+function Sidebar({ threads, onOpenPalette, onSearch, searching, setSearching, searchQuery, setSearchQuery, searchHits }) {
   const { user, signOut, sidebarOpen, setSidebarOpen, cfg, railed, setRailed } = useApp();
   const nav = useNavigate();
   const loc = useLocation();
-  // `loadThreads()` is synchronous on purpose — see lib/state.jsx. A `.then()` on
-  // it throws inside this effect and blanks every signed-in page.
-  const [threads, setThreads] = useState(() => loadThreads());
+  // The thread list lives in Shell so the rail and chat search cannot disagree
+  // about what exists. It used to be two copies — the rail's (server + local) and
+  // Shell's (local only) — so searching found only chats written on this device.
   const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    if (!user) { setThreads([]); return; }
-    let alive = true;
-    const pull = () => api.threads.list()
-      .then((r) => { if (alive) setThreads(mergeThreads(loadThreads(), (r && r.threads) || [])); })
-      .catch(() => {});
-    setThreads(loadThreads());
-    pull();
-    window.addEventListener('acx:threads', pull);
-    return () => { alive = false; window.removeEventListener('acx:threads', pull); };
-  }, [user, loc.pathname]);
-
-  const groups = useMemo(() => groupThreads(threads), [threads]);
+  const groups = useMemo(() => groupThreads(threads || []), [threads]);
   const isActive = (item) => (item.end ? loc.pathname === item.to : loc.pathname === item.to || loc.pathname.startsWith(item.to + '/'));
   const wide = sidebarOpen && !railed;
 
@@ -130,7 +119,9 @@ function Sidebar({ onOpenPalette, onSearch, searching, setSearching, searchQuery
 
       <div className="sidebar-scroll">
         {/* New chat / search / library — the three actions above the sections */}
-        <NavButton item={{ icon: '＋', label: 'New chat' }} railed={railed} onClick={() => nav(`/?new=${Date.now()}`)} />
+        {/* A monotonically increasing counter, not a timestamp: two taps in the
+            same millisecond must still be two distinct navigations. */}
+        <NavButton item={{ icon: '＋', label: 'New chat' }} railed={railed} onClick={() => nav(`/?new=${++newChatCounter.current}`)} />
         <NavButton item={{ icon: '⌕', label: 'Search chats' }} railed={railed} onClick={onSearch} active={searching} />
         <NavButton item={{ icon: '▤', label: 'Library' }} railed={railed} active={loc.pathname === '/library'} onClick={() => nav('/library')} />
 
@@ -269,6 +260,8 @@ function Shell({ children }) {
   const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const { user } = useApp();
+  // Local first (instant, works offline), then the account copy, merged by id.
   const [threads, setThreads] = useState(() => loadThreads());
   const nav = useNavigate();
 
@@ -288,17 +281,23 @@ function Shell({ children }) {
   }, []);
 
   useEffect(() => {
-    const pull = () => setThreads(loadThreads());
-    window.addEventListener('acx:threads', pull);
+    setThreads(loadThreads());
+    if (!user?.id) return undefined;
+    let alive = true;
+    const pull = () => api.threads.list()
+      .then((r) => { if (alive) setThreads(mergeThreads(loadThreads(), (r && r.threads) || [])); })
+      .catch(() => {});
     pull();
-    return () => window.removeEventListener('acx:threads', pull);
-  }, []);
+    window.addEventListener('acx:threads', pull);
+    return () => { alive = false; window.removeEventListener('acx:threads', pull); };
+  }, [user?.id, loc.pathname]);
 
   const searchHits = useMemo(() => api.searchThreads(threads, searchQuery), [threads, searchQuery]);
 
   return (
     <div className="app">
       <Sidebar
+        threads={threads}
         onOpenPalette={() => setPaletteOpen(true)}
         onSearch={() => setSearching((v) => !v)}
         searching={searching}

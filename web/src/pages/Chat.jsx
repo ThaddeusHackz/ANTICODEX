@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
 import { modelLabel, rememberLabel } from '../ModelPicker.jsx';
 import * as api from '../lib/api.js';
@@ -101,6 +101,7 @@ function MessageActions({ text, onRegen }) {
 
 export default function ChatPage() {
   const { model, setModel, user, notify, cfg, effort } = useApp();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -127,10 +128,26 @@ export default function ChatPage() {
   const scrollRef = useRef(null);
   const taRef = useRef(null);
 
+  // "+ New chat" from the rail lands here with ?new=<timestamp>. It has to clear
+  // the thread, not just navigate to "/": the rail renders the same route, so
+  // without this the previous conversation stayed on screen and the button looked
+  // broken. A fresh id means the next message starts a new thread on save.
+  const route = useLocation();
+  const newToken = new URLSearchParams(route.search).get('new');
+  useEffect(() => {
+    if (!newToken) return;
+    setMessages([]);
+    setLive(null);
+    setThreadId(`th_${Date.now()}`);
+    setTemplate(null);
+    setSkillTrail([]);
+  }, [newToken]);
+
   // Opening a chat from the rail (?thread=…) must work offline too: read the
   // local copy immediately, then let the server copy win if it is newer.
+  const openThreadId = new URLSearchParams(route.search).get('thread');
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get('thread');
+    const t = openThreadId;
     if (!t) return;
     const local = loadThreads().find((x) => x && x.id === t);
     if (local?.messages?.length) { setMessages(local.messages); setThreadId(local.id); }
@@ -138,7 +155,7 @@ export default function ChatPage() {
       const th = (r.threads || []).find((x) => x.id === t);
       if (th?.messages?.length) { setMessages(th.messages); setThreadId(th.id); saveThreadLocal(th); threadsChanged(); }
     }).catch(() => {});
-  }, [window.location.search, user?.id]);
+  }, [openThreadId, user?.id]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -351,7 +368,7 @@ export default function ChatPage() {
                   key={tile.label}
                   className="pill"
                   title={tile.hint}
-                  onClick={() => { window.location.pathname = tile.to; }}
+                  onClick={() => navigate(tile.to)}
                   style={{ cursor: 'pointer', padding: '4px 10px' }}
                 >
                   {tile.label} <b style={{ marginLeft: 4 }}>{tile.value}</b>
