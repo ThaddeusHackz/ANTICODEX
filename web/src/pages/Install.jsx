@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import * as api from '../lib/api.js';
 import { CopyField, Facts, StatusPill } from '../ui.jsx';
+import { onInstallState, promptInstall, dismissInstall, clearDismiss } from '../lib/pwa.js';
 
 // Install — one page that answers "how do I actually get this on my Mac / iPhone"
 // without pretending a web server can compile or sign anything.
@@ -18,6 +19,10 @@ export default function InstallPage() {
   const [releaseErr, setReleaseErr] = useState(null);
   const [pwa, setPwa] = useState(null);
   const [detect, setDetect] = useState({ ios: false, mac: false, standalone: false, touch: false });
+  // Live install state from lib/pwa.js: whether *this* browser can show a prompt,
+  // whether we are already installed, and whether the offer was dismissed.
+  const [installState, setInstallState] = useState(null);
+  const [promptMsg, setPromptMsg] = useState(null);
 
   useEffect(() => {
     api.raw('update_check', {}).then(setRelease).catch((e) => setReleaseErr(e.message));
@@ -30,13 +35,24 @@ export default function InstallPage() {
       standalone: Boolean(standalone),
       touch: navigator.maxTouchPoints > 0
     });
+    const un = onInstallState(setInstallState);
     setPwa({
       manifest: Boolean(document.querySelector('link[rel=manifest]')),
       serviceWorker: 'serviceWorker' in navigator,
       appleIcon: Boolean(document.querySelector('link[rel=apple-touch-icon]')),
       registered: false
     });
+    return un;
   }, []);
+
+  async function doInstall() {
+    const r = await promptInstall();
+    setPromptMsg(r.outcome === 'accepted'
+      ? 'Installing — the app will open in its own window.'
+      : r.outcome === 'dismissed'
+        ? 'Dismissed. Nothing was installed; you can offer it again from this page.'
+        : (r.reason || 'This browser did not offer an install prompt.'));
+  }
 
   const assets = release?.assets || [];
   const macArm = assets.find((a) => /arm64|aarch64/i.test(a.name));
@@ -61,6 +77,67 @@ export default function InstallPage() {
         { k: 'Service worker', v: pwa?.serviceWorker ? 'supported' : 'unavailable', d: 'offline shell' },
         { k: 'Latest release', v: release?.ok ? release.version : '—', d: release?.ok ? new Date(release.published_at).toLocaleDateString() : (releaseErr || 'GitHub releases') }
       ]} />
+
+      {/* One card that says what THIS browser can do, rather than a button that
+          silently fails. Chromium gets a real prompt; Safari on iOS gets the two
+          taps; a browser that cannot install says so and stays quiet. */}
+      {installState && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="card-head">
+            <h3>Install on this browser</h3>
+            <div className="right">
+              <StatusPill status={installState.can === 'installed' ? 'live' : installState.can === 'unsupported' ? 'missing' : 'partial'} />
+              <span className="pill">{installState.can}</span>
+            </div>
+          </div>
+          {installState.can === 'installed' && (
+            <div className="tiny">
+              Already installed — you are reading this in the installed app, not a tab. Nothing to do.
+            </div>
+          )}
+          {installState.can === 'prompt' && (
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <button className="btn small primary" onClick={doInstall}>Install ANTICODEX</button>
+              <span className="tiny">Chrome/Edge will show its own install sheet. Nothing is downloaded until you accept.</span>
+            </div>
+          )}
+          {installState.can === 'awaiting-prompt' && (
+            <div className="tiny">
+              This browser supports installation but has not offered its prompt yet — it usually appears after the page has been
+              visited once, or use the install icon in the address bar. If the app is already installed, this stays quiet on purpose.
+            </div>
+          )}
+          {installState.can === 'ios-steps' && (
+            <ol style={{ paddingLeft: 20, fontSize: 13.5, lineHeight: 1.8, margin: '4px 0 6px' }}>
+              <li>Tap the <b>Share</b> button (the square with an arrow) in Safari's toolbar.</li>
+              <li>Scroll and tap <b>Add to Home Screen</b>.</li>
+              <li>Tap <b>Add</b> — the app opens full-screen from the home screen, with no Safari chrome.</li>
+            </ol>
+          )}
+          {installState.can === 'ios-other-browser' && (
+            <div className="tiny">
+              On iOS only Safari can add an app to the home screen. Open this page in Safari to install it — Chrome and Firefox on
+              iPhone are Safari underneath but do not expose the Share → Add to Home Screen flow.
+            </div>
+          )}
+          {installState.can === 'unsupported' && (
+            <div className="tiny">
+              This browser cannot install a web app (Firefox desktop is the common case). The macOS app and the PWA on a phone are
+              the two paths that work; this page has both below.
+            </div>
+          )}
+          {promptMsg && <div className="tiny" style={{ marginTop: 6 }}>{promptMsg}</div>}
+          {installState.dismissed && (
+            <div className="tiny" style={{ marginTop: 6 }}>
+              You dismissed the offer, so the app will not ask for 14 days.{' '}
+              <button className="btn tiny ghost" onClick={clearDismiss}>Ask me again</button>
+            </div>
+          )}
+          {!installState.dismissed && installState.can !== 'installed' && installState.can !== 'unsupported' && (
+            <button className="btn tiny ghost" style={{ marginTop: 6 }} onClick={dismissInstall}>Not now</button>
+          )}
+        </div>
+      )}
 
       {/* ---------------- iOS ---------------- */}
       <div className="section">
