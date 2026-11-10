@@ -220,5 +220,34 @@ console.log('\n— MCP permissions are enforced, not decorative —');
   ok('…and returns a blocked_by marker instead of calling through', /blocked_by: 'permissions'/.test(mcp));
 }
 
+
+console.log('\n— every test suite actually runs in CI —');
+{
+  // Why this exists: `a11y) f=tests/test-a11y.mjs ;;` was added to the workflow's
+  // case statement, but the suite was never added to the matrix — so that branch
+  // was dead code and the suite never ran in CI at all. A case arm with no matching
+  // matrix entry is invisible: nothing fails, nothing runs.
+  const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
+  const matrixLine = wf.match(/suite:\s*\[([^\]]+)\]/);
+  ok('the workflow declares a suite matrix', Boolean(matrixLine));
+  const suites = matrixLine ? matrixLine[1].split(',').map((x) => x.trim()) : [];
+  const arms = [...wf.matchAll(/^\s{8,}([a-z][\w-]*)\)\s*f=tests\/([\w.-]+\.mjs)/gm)]
+    .map((m) => ({ suite: m[1], file: m[2] }));
+  ok('the workflow case statement has arms', arms.length > 0);
+  const orphanArms = arms.filter((a) => !suites.includes(a.suite));
+  ok('every case arm has a matrix entry', orphanArms.length === 0, orphanArms.map((a) => a.suite).join(' '));
+
+  // And the reverse: every arm's file must exist, or the job fails with a confusing
+  // "Cannot find module" instead of a test result.
+  const missingFiles = arms.filter((a) => !fs.existsSync(path.join(root, 'tests', a.file)));
+  ok('every arm points at a file that exists', missingFiles.length === 0, missingFiles.map((a) => a.file).join(' '));
+
+  // Every suite that runs in the workflow must also run in `npm test`, so a local
+  // green means a CI green.
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const notLocal = arms.filter((a) => !pkg.scripts.test.includes(`tests/${a.file}`));
+  ok('every CI suite also runs in npm test', notLocal.length === 0, notLocal.map((a) => a.file).join(' '));
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

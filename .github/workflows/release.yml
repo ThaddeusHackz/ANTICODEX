@@ -71,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [api, auth, web-static, web-mount, desktop, agent]
+        suite: [api, auth, web-static, web-mount, desktop, agent, a11y]
         # Two Node versions on purpose. Vercel runs 22; the packaged .exe embeds
         # Electron 31's Node, which is the 20 line — so `api/` + `lib/` have to work
         # on both, and a runner pinned to one silently stops testing the other.
