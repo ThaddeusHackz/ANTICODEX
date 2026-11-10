@@ -383,3 +383,83 @@ export const userKeys = {
   remove: (key_env) => api('user_keys', { op: 'delete', key_env })
 };
 export const updateCheck = () => api('update_check', {});
+
+// --- skills engine ----------------------------------------------------------
+// `list` and `resolve` are server-side over the pinned atlas, so the browser never
+// re-downloads the 2 MB index just to type in a search box.
+export const skillkit = {
+  stats: () => api('skillkit', { op: 'stats' }),
+  list: (p = {}) => api('skillkit', { op: 'list', ...p }),
+  get: (slug) => api('skillkit', { op: 'get', slug }),
+  resolve: (text, p = {}) => api('skillkit', { op: 'resolve', text, ...p }),
+  ground: (text, p = {}) => api('skillkit', { op: 'ground', text, ...p }),
+  scan: (code, p = {}) => api('skillkit', { op: 'scan', code, ...p }),
+  sources: () => api('skillkit', { op: 'sources' }),
+  installed: () => api('skillkit', { op: 'installed' }),
+  export: (slug, p = {}) => api('skillkit', { op: 'export', slug, ...p })
+};
+
+// --- Daytona ----------------------------------------------------------------
+export const daytona = {
+  status: () => api('daytona', { op: 'status' }),
+  key: () => api('daytona', { op: 'key' }),
+  probe: () => api('daytona', { op: 'probe' }),
+  list: (path) => api('daytona', { op: 'list', path }),
+  read: (path) => api('daytona', { op: 'read', path }),
+  write: (path, content) => api('daytona', { op: 'write', path, content }),
+  exec: (command, p = {}) => api('daytona', { op: 'exec', command, ...p }),
+  api: (method, p = {}) => api('daytona', { op: 'api', method, ...p })
+};
+
+// --- Codex parity map -------------------------------------------------------
+export const codexMap = {
+  map: () => api('codex_map', { op: 'map' }),
+  crate: (name) => api('codex_map', { op: 'crate', name }),
+  biggest: (n = 12) => api('codex_map', { op: 'biggest', n })
+};
+
+// --- Qoder field guide ------------------------------------------------------
+export const fieldKit = () => api('qoder_fieldkit', {});
+
+// --- Library ----------------------------------------------------------------
+export const library = {
+  list: (p = {}) => api('library', { op: 'list', ...p }),
+  summary: () => api('library', { op: 'summary' }),
+  kinds: () => api('library', { op: 'kinds' }),
+  record: (item) => api('library', { op: 'record', item })
+};
+
+// --- thread search ----------------------------------------------------------
+// Client-side over the local copy *and* the account copy, because a search that
+// only sees the server cannot find the chat you just wrote offline.
+export function searchThreads(list, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return [];
+  const terms = q.split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const t of list || []) {
+    if (!t) continue;
+    const title = String(t.title || '').toLowerCase();
+    const body = (t.messages || []).map((m) => String(m.content || '')).join('\n').toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (title.includes(term)) score += 8;
+      if (t.id.toLowerCase().includes(term)) score += 4;
+      const hits = body.split(term).length - 1;
+      if (hits) score += Math.min(hits, 6);
+    }
+    if (score > 0) {
+      const at = body.indexOf(terms[0]);
+      scored.push({
+        ...t,
+        score,
+        snippet: at >= 0 ? body.slice(Math.max(0, at - 50), at + 120).replace(/\s+/g, ' ') : ''
+      });
+    }
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, 40);
+}
+
+/** Escape hatch: call a bridge action by name (used by pages that read one
+ *  status endpoint and nothing else, e.g. the install page's release check). */
+export const raw = (action, payload = {}) => api(action, payload);

@@ -29,6 +29,18 @@ npm test                  # API integration + bundle checks
 # 3. Windows desktop app
 cd desktop && npm install && npm run package:win
 # → release/ANTICODEX-win32-x64/ANTICODEX.exe
+
+# 4. macOS desktop app (any host builds an unsigned .app; sign on macOS)
+node desktop/package-mac.mjs --arch arm64 --release
+# → desktop/release/ANTICODEX-darwin-arm64/ANTICODEX.app (+ .zip / .dmg on macOS)
+
+# 5. iPhone / iPad
+node scripts/build-ios.mjs            # PWA assets + web/ios Capacitor project
+# → dist/ios/install.html  ·  web/ios/  (open on a Mac with Xcode to sign an .ipa)
+
+# 6. the skill atlas (2,208 skills) and the Codex sweep
+node scripts/build-skill-atlas.mjs    # → web/public/skills-atlas/
+node scripts/rea-codex-sweep.mjs      # → lib/codex-repos.js (evidence for /parity)
 ```
 
 ## Features
@@ -51,6 +63,13 @@ cd desktop && npm install && npm run package:win
 | **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |
 | **Bring your setup** | Reads a Codex `~/.codex/config.toml` and a Claude `.claude/settings.json` + `policy-limits.json` → shows a diff-style plan → connects the MCP servers, applies the feature policy, and returns model providers / aliases / migrations for this device. Nothing is written before you approve it; a token in the env block is detected but never echoed back |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
+| **Skills (2,208)** | `/skills` — a pinned corpus of agent skills from seven permissively licensed sources, **retrievable by meaning** (hybrid BM25 + name/tag boosts, deterministic), **grounded into every chat turn** with hard budgets, and installable into `~/.qoder/skills`, `~/.codex/skills` or `~/.claude/skills` in one click. Skills already on your machine — Qoder's included — join the same retrieval corpus. A 19-rule safety scanner with line numbers and fixes ships on the same page. `node scripts/build-skill-atlas.mjs` is the only way the corpus changes. |
+| **Daytona** | `/sandbox` runs on **this machine or on a Daytona box over SSH** (`ssh.app.daytona.io:22`), with REST sandbox create/list when a `DAYTONA_API_KEY` exists. Every result carries the machine that ran it (`local` / `daytona:<user>`), the exit code and the wall clock. SSH keys come from `~/.ssh` or are generated at `~/.qoder/ssh/`; host keys are pinned on first use. |
+| **Codex parity** | `/parity` pairs **every surface this app ships with the upstream crates that implement the same job**, read live from `openai/codex` (121 crates, 80.8 MB of Rust, pinned by commit), and resolves each claim against the filesystem — delete an implementation and the row says `missing`. The differences are in the same table, not in a footnote. |
+| **Evidence** | `/evidence` — the reverse-engineering record, split into `[seen]` (read from an artifact) and `[inferred]` (hypothesis + its basis), with the three commands that regenerate every number on it. |
+| **Library** | `/library` — every artifact the workspace produced: images, video, code, exported skills. Records are written by the generators themselves, so the page is never a mock grid. |
+| **Agent Studio** | `/studio` — plans, project memory (`ANTICODEX.md`), a **searchable skill picker over all 2,208** (pin one, or let retrieval choose per message), and a live tool log. |
+| **Install** | `/install` — macOS `.app`/`.dmg`, the iOS home-screen app (two taps, no App Store), and the Xcode path to a signed `.ipa`, each with the command that actually produces it and what is missing when it cannot. |
 
 ## Service keychain (integrated 2026-10-19)
 
@@ -345,3 +364,62 @@ See [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md) for the evidence behind each 
 
 Apache-2.0 (see `LICENSE`). Architecture study credits `openai/codex` (Apache-2.0) — see `NOTICE`.
 All ANTICODEX branding, UI and code are original; no proprietary OpenAI/Anthropic assets are redistributed.
+
+## The workspace shell (2026-11)
+
+The rail, the pages and the phone build were rebuilt around one rule: **a number on
+screen is read, never written.** The empty-state tiles, the parity tally and the
+skill count all come from a bridge call, so a missing runtime or an unbuilt atlas
+shows up as a different number instead of a broken promise.
+
+```
+rail (264px, collapses to 64px of glyphs)
+├── ＋ New chat · ⌕ Search chats · ▤ Library
+├── ⌗ Chat · ⌘ Codex · ✳ Agent Studio
+├── Workspace   ⌥ Sandbox · ▦ Images · ▶ Video · ▤ Library · ⇄ Connectors · ▣ Computer Use
+├── Intelligence ✦ Skills · ⟲ REA · ◈ Qoder · ◎ Codex parity · ⌸ Evidence · ⇪ Bring your setup · ⤓ Install
+└── account
+```
+
+- **⌘K / Ctrl-K** opens a command palette that searches the 19 destinations *and*
+  the skill atlas — "find the skill that does X" is the action people reach for most.
+- **Chat search** is real: titles first, then message bodies, local copy merged with
+  the account copy, with a snippet of the match.
+- **The rail is not a desktop-only idea.** Below 900px it becomes a drawer with a
+  tap-to-close scrim, closes itself on navigation, and the composer respects the
+  home-bar inset; inputs are 16px so iOS does not zoom on focus.
+- **Skills travel with the turn.** `use_skills`, `skills:[…]` and `skills_mode` go
+  out with every chat request; the bridge resolves them before the model is called,
+  emits a `skills` frame, and the answer keeps its trail (`m.skills`), so a good
+  reply can be traced back to the instructions that shaped it.
+- **Light theme** is a variable swap (`[data-theme="light"]`), and `prefers-reduced-motion`
+  turns animation off rather than down.
+
+## Qoder, Daytona and the installed machine
+
+Everything that touches *this* machine is loopback-only: reading `~/.qoder/skills`,
+exporting a skill, running a command over SSH, creating a key. A hosted deployment
+answers `needs_local` and says why, rather than quietly reading the server's disk.
+
+| Bridge action | What it does |
+| --- | --- |
+| `skillkit op:"stats" / "list" / "get"` | The pinned atlas: counts, filtered pages, one skill's full text |
+| `skillkit op:"resolve"` | Hybrid retrieval — scores, tiers and *why* each skill matched |
+| `skillkit op:"ground"` | The exact prompt block, budgets applied, excerpt pointers included |
+| `skillkit op:"installed"` | `~/.qoder`, `~/.codex`, `~/.claude`: accepted skills, refusals with reasons, duplicates |
+| `skillkit op:"export"` | Write a skill into one of those roots with normalised frontmatter |
+| `skillkit op:"scan"` | 19-rule static security scan: severity, line, fix |
+| `daytona op:"status" / "key" / "probe" / "exec" / "list" / "read" / "write"` | The remote box over SSH; `api` adds REST create/list when a key exists |
+| `codex_map op:"map" / "crate"` | The parity table, resolved against the filesystem |
+| `qoder_fieldkit` | The nav spec and the Qoder surface guide (status + limit per row) |
+| `library op:"list" / "summary" / "record"` | Artifacts the workspace produced |
+
+The `/sandbox` target switch is the practical bit: pick **This machine** or
+**Daytona**, run, and read the `target` field in the result. `execAnywhere()` is the
+same choice for code — an agent that wrote a file to the wrong machine is worse than
+one that says it could not.
+
+**Egress note.** This build was produced in a sandbox that blocks `ssh.app.daytona.io`
+and `raw.githubusercontent.com`, so the Daytona paths are exercised against a local
+subshell and the SSH argument builder, not the live host (`tests/test-atlas.mjs`).
+From your machine (desktop app or `npm start`) port 22 is all it needs.

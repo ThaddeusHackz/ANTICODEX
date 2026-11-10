@@ -18,7 +18,8 @@ function ToolChips({ active, setActive }) {
     { id: 'imagine', label: '✦ Imagine' },
     { id: 'video', label: '▶ Video' },
     { id: 'research', label: '∞ Deep research' },
-    { id: 'mcp', label: '⇄ MCP tools' }
+    { id: 'mcp', label: '⇄ MCP tools' },
+    { id: 'skills', label: '✦ Skills' }
   ];
   return (
     <>
@@ -113,7 +114,15 @@ export default function ChatPage() {
   // that matters — nothing is shown that failed validation on disk.
   const [template, setTemplate] = useState(null);
   const [picker, setPicker] = useState(null);
-  const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true });
+  const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true, skills: true });
+  // Skills that shaped this answer, announced by the bridge on the `skills` frame.
+  // The trail is per-message so an old answer keeps its provenance.
+  const [skillTrail, setSkillTrail] = useState([]);
+  const [pickedSkills, setPickedSkills] = useState([]);
+  const [skillPicker, setSkillPicker] = useState(null);
+  // The numbers on the empty state are read, not written into the copy: if a
+  // runtime is missing or the atlas failed to build, the tile says so.
+  const [stats, setStats] = useState(null);
   const [threadId, setThreadId] = useState(() => new URLSearchParams(window.location.search).get('thread') || `th_${Date.now()}`);
   const scrollRef = useRef(null);
   const taRef = useRef(null);
@@ -200,6 +209,7 @@ export default function ChatPage() {
     setBusy(true);
     const started = Date.now();
     setLive({ phase: 'contacting', elapsed: 0, text: '', thinking: '', firstToken: null, chars: 0, tools: [] });
+    setSkillTrail([]);
     const controller = new AbortController();
     abortRef.current = controller;
     // A clock that ticks even when nothing else does: silence for 20 seconds is
@@ -219,7 +229,10 @@ export default function ChatPage() {
         system,
         effort,
         template: template || undefined,
-        use_mcp: active.mcp !== false
+        use_mcp: active.mcp !== false,
+        use_skills: active.skills !== false,
+        skills: pickedSkills.length ? pickedSkills : undefined,
+        skills_mode: pickedSkills.length ? 'manual' : (active.skills === false ? 'off' : 'auto')
       }, {
         signal: controller.signal,
         onEvent: (evt) => {
@@ -228,6 +241,7 @@ export default function ChatPage() {
           if (evt.type === 'thinking') setLive((l) => (l ? { ...l, phase: l.phase === 'streaming' ? 'streaming' : 'thinking', thinking: ((l.thinking || '') + evt.text).slice(-40000) } : l));
           if (evt.type === 'delta') setLive((l) => (l ? { ...l, phase: 'streaming', text: (l.text + evt.text).slice(-20000), chars: (l.chars || 0) + evt.text.length } : l));
           if (evt.type === 'tool') setLive((l) => (l ? { ...l, phase: 'tools', tools: [...(l.tools || []), { name: evt.name, status: evt.status }] } : l));
+          if (evt.type === 'skills') setSkillTrail(evt.injected || []);
         }
       });
       // A provider failure comes back as { ok:false, error, settings_link } on a
@@ -260,7 +274,10 @@ export default function ChatPage() {
         note: out.note || undefined,
         // So a thread remembers how slow this answer was.
         first_token_ms: out.first_token_ms ?? null,
-        elapsed_ms: out.elapsed_ms ?? (Date.now() - started)
+        elapsed_ms: out.elapsed_ms ?? (Date.now() - started),
+        // Which skills shaped this answer — kept with the message, so the trail
+        // survives a reload. One of the few things people ask about a good reply.
+        skills: skillTrail.length ? skillTrail : undefined
       };
       const merged = [...next, reply];
       setMessages(merged);
@@ -287,6 +304,29 @@ export default function ChatPage() {
     }
   }
 
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      api.skillkit.stats().catch(() => null),
+      api.sandbox.status().catch(() => null),
+      api.daytona.status().catch(() => null),
+      api.mcp.list().catch(() => null),
+      api.codexMap.map().catch(() => null)
+    ]).then(([sk, sb, dt, mc, cm]) => {
+      if (!alive) return;
+      const runtimes = (sb?.languages || []).filter((l) => l.available).length;
+      const parity = cm?.rows?.length ? Math.round(((cm.tally?.parity || 0) / cm.rows.length) * 100) : 0;
+      setStats({
+        count: sk?.count || 0,
+        sandbox: runtimes,
+        daytona: dt?.configured ? 'Daytona' : 'Daytona off',
+        connectors: (mc?.connections || []).length,
+        parity
+      });
+    });
+    return () => { alive = false; };
+  }, []);
+
   const empty = messages.length === 0;
 
   return (
@@ -295,7 +335,29 @@ export default function ChatPage() {
         {empty && (
           <div className="hero">
             <h1>What can I do for you?</h1>
-            <div className="sub">ANTICODEX · Chat, Codex, Agents, Connectors — powered by your models</div>
+            <div className="sub">
+              {stats
+                ? `${stats.count.toLocaleString()} skills · ${stats.sandbox} runtime${stats.sandbox === 1 ? '' : 's'} · ${stats.daytona} · every model you have connected`
+                : 'Chat, Codex, Agents, Connectors — powered by your models'}
+            </div>
+            <div className="row wrap" style={{ justifyContent: 'center', gap: 5, marginTop: 6 }}>
+              {[
+                { label: 'Skills', value: stats ? stats.count.toLocaleString() : '…', to: '/skills', hint: 'retrievable, and grounded into every turn' },
+                { label: 'Sandbox', value: stats ? `${stats.sandbox} local · ${stats.daytona}` : '…', to: '/sandbox', hint: 'this machine, or Daytona over SSH' },
+                { label: 'Connectors', value: stats ? stats.connectors : '…', to: '/mcp', hint: 'MCP servers, including stdio' },
+                { label: 'Codex parity', value: stats ? `${stats.parity}%` : '…', to: '/parity', hint: 'traced to upstream crates' }
+              ].map((tile) => (
+                <button
+                  key={tile.label}
+                  className="pill"
+                  title={tile.hint}
+                  onClick={() => { window.location.pathname = tile.to; }}
+                  style={{ cursor: 'pointer', padding: '4px 10px' }}
+                >
+                  {tile.label} <b style={{ marginLeft: 4 }}>{tile.value}</b>
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {!empty && (
@@ -360,6 +422,14 @@ export default function ChatPage() {
                         <div className="tiny">{(tc.function?.arguments || '').slice(0, 240)}</div>
                       </div>
                     ))}
+                    {m.skills?.length ? (
+                      <div className="skill-trail" title="Skills injected into this turn">
+                        <span className="tiny" style={{ opacity: .7 }}>skills</span>
+                        {m.skills.map((k) => (
+                          <span key={k.slug} className={`pill ${k.flags?.length ? 'warn' : ''}`} title={k.why || ''}>{k.slug}</span>
+                        ))}
+                      </div>
+                    ) : null}
                     <MessageActions text={m.content} onRegen={i === messages.length - 1 ? () => send() : undefined} />
                   </>
                 )}

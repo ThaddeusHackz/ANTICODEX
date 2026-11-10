@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { qoder as qoderApi } from '../lib/api.js';
+import { qoder as qoderApi, fieldKit } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
-import { Pill } from '../ui.jsx';
+import { Pill, Facts, StatusPill, CopyField } from '../ui.jsx';
 
 // Qoder — what of 49 public repositories this app can actually do.
 //
@@ -27,6 +27,7 @@ const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
 export default function QoderPage() {
   const { notify } = useApp();
   const [status, setStatus] = useState(null);
+  const [kit, setKit] = useState(null);
   const [atlas, setAtlas] = useState(null);
   const [filter, setFilter] = useState('');
   const [kind, setKind] = useState('all');
@@ -38,6 +39,8 @@ export default function QoderPage() {
 
   const [cloud, setCloud] = useState({ probe: null, identities: null, templates: null, session: null, events: null });
   const [sessionTitle, setSessionTitle] = useState('ANTICODEX session');
+
+  useEffect(() => { fieldKit().then(setKit).catch(() => {}); }, []);
   const [message, setMessage] = useState('');
 
   const [wf, setWf] = useState({ prompt: 'Review this pull request for bugs, security issues and missing tests.', version: '0.1.18', mcp: true, trigger: 'pull_request' });
@@ -154,6 +157,49 @@ export default function QoderPage() {
           <Pill kind={status?.local ? 'ok' : 'warn'}>{status?.local ? 'local' : 'hosted'}</Pill>
         </div>
       </div>
+
+      {kit && (
+        <div className="section">
+          <div className="row" style={{ marginBottom: 8, gap: 8 }}>
+            <b style={{ fontSize: 13.5 }}>Field guide</b>
+            <span className="tiny">every Qoder surface, what this app does with it, and the limit — no row is left blank</span>
+          </div>
+          <Facts items={[
+            { k: 'Live here', v: kit.tally.live || 0 },
+            { k: 'Partial', v: kit.tally.partial || 0, d: 'limit named per row' },
+            { k: 'Needs the CLI', v: kit.tally['needs-cli'] || 0 },
+            { k: 'External', v: kit.tally.external || 0, d: 'Qoder-hosted' },
+            { k: 'Skills reachable', v: '2,208 + yours', d: 'open corpus + ~/.qoder/skills' }
+          ]} />
+          <table className="tbl" style={{ marginTop: 12 }}>
+            <thead><tr><th style={{ width: '16%' }}>Surface</th><th style={{ width: '11%' }}>Status</th><th style={{ width: '22%' }}>Evidence</th><th>Here</th><th style={{ width: '20%' }}>Limit</th></tr></thead>
+            <tbody>
+              {kit.surfaces.map((s2) => (
+                <tr key={s2.id}>
+                  <td><b>{s2.label}</b><div className="tiny">{s2.what}</div></td>
+                  <td><StatusPill status={s2.status} /></td>
+                  <td className="tiny">{s2.evidence}</td>
+                  <td style={{ fontSize: 12.5 }}>{s2.here}</td>
+                  <td className="tiny">{s2.limit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-head"><h3>Daytona, as Qoder asks for it</h3><div className="right"><span className="tiny">Sandbox → Daytona has the live values and the probe</span></div></div>
+            <table className="tbl">
+              <tbody>
+                {Object.entries(kit.daytona).map(([k, v]) => (
+                  <tr key={k}><td className="tiny" style={{ width: 130 }}>{k}</td><td className="mono tiny">{v}</td></tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 10 }}>
+              <CopyField label="One paste, then everything runs in the box" value={'export DAYTONA_SSH_USER="<workspace-user>"\nexport DAYTONA_SSH_HOST="ssh.app.daytona.io"\nexport ANTICODEX_SANDBOX=daytona'} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {status && !status.configured && (
         <div className="card" style={{ marginTop: 16 }}>

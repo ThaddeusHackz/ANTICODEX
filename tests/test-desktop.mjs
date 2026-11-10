@@ -439,10 +439,14 @@ try {
     // sources have to be the real endpoints.
     ok('the Skills route exists', /path="\/skills"/.test(read('web/src/App.jsx')) && /SkillsPage/.test(read('web/src/App.jsx')));
     const skillsPage = read('web/src/pages/Skills.jsx');
-    ok('…and reads the registry', /skillsApi\.list/.test(skillsPage));
-    ok('…and the template roots for the plugins tab', /artifactsApi\.list/.test(skillsPage));
+    // Rewritten 2026-11 for the 2,208-skill atlas: the registry read is now the
+    // skillkit engine (`skillkit.list` = the pinned atlas + hybrid retrieval), the
+    // template roots still come from the artifact picker, and the config view now
+    // reports refused roots with the reason the runtime would give.
+    ok('…and reads the registry', /skillkit\.(list|stats|get)/.test(skillsPage));
+    ok('…and the template roots for the plugins tab', /api\.artifacts\.list/.test(skillsPage));
     ok('…with per-account toggles rather than per-browser ones', /userKey\('acx_enabled_skills'/.test(skillsPage));
-    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /duplicates/.test(skillsPage));
+    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /refused/.test(skillsPage));
 
     // Installing a packaged skill is a write to this machine, so it goes through
     // the main process (file picker + the registry's own extractor), never the page.

@@ -1,215 +1,546 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { skills as skillsApi, artifacts as artifactsApi } from '../lib/api.js';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import * as api from '../lib/api.js';
 import { useApp, userKey } from '../lib/state.jsx';
-import { Pill } from '../ui.jsx';
+import { StatusPill, CopyField, Facts } from '../ui.jsx';
+import { renderMarkdown } from '../lib/markdown.js';
 
-// Skill management.
-//
-// The ChatGPT app's webview talks to its main process over a small set of skill
-// channels — `skills/list`, `skills/manage`, `skills/config`, `skills/plugins`
-// and a `skills/changed` event (seen in the asar: 736 files mention SKILL.md,
-// and the strings `skills/remote-skills`, `skills/list`, `skills/config` and
-// `skills/plugins` all appear in the renderer bundles). This page is those five
-// views in one place, against the registry this app already reads from disk:
-//
-//   Installed — every SKILL.md the loader found, with scope and size
-//   Remote    — packaged `.skill` archives, i.e. what `skills/remote-skills`
-//   Plugins   — artifact templates shipped by plugins (document/deck/sheet)
-//   Config    — the roots that were searched, and what failed to parse
-//
-// "Enabled" is per account, not per browser: two people sharing a machine must
-// not inherit each other's toggles, which is why it goes through userKey().
-
-const TABS = [
-  { id: 'installed', label: 'Installed' },
-  { id: 'remote', label: 'Remote' },
-  { id: 'plugins', label: 'Plugins' },
-  { id: 'config', label: 'Config' }
+const TIERS = [
+  { id: '', label: 'All tiers' },
+  { id: 'bundled', label: 'Bundled with ANTICODEX' },
+  { id: 'curated', label: 'Curated' },
+  { id: 'extra', label: 'Extended corpus' }
 ];
 
-const KINDS = [
-  { id: 'document', label: 'Documents (.docx)' },
-  { id: 'presentation', label: 'Decks (.pptx)' },
-  { id: 'spreadsheet', label: 'Sheets (.xlsx)' }
+const TABS = [
+  { id: 'browse', label: 'Browse' },
+  { id: 'retrieve', label: 'Retrieval' },
+  { id: 'scan', label: 'Safety scan' },
+  { id: 'installed', label: 'Installed on this machine' },
+  { id: 'sources', label: 'Sources' }
 ];
 
 export default function SkillsPage() {
   const { notify, user } = useApp();
-  const enabledKey = userKey('acx_enabled_skills', user?.id);
-  const [tab, setTab] = useState('installed');
-  const [query, setQuery] = useState('');
-  const [state, setState] = useState({ loading: true, skills: [], errors: [], duplicates: [], roots: [], local: false, note: null });
-  const [enabled, setEnabled] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem(enabledKey) || '[]')); } catch { return new Set(); }
-  });
-  const [kind, setKind] = useState('document');
-  const [templates, setTemplates] = useState({ loading: false, cards: [], note: null });
-  const [open, setOpen] = useState(null);
+  const loc = useLocation();
+  const initialSlug = new URLSearchParams(loc.search).get('slug') || '';
 
+  const [tab, setTab] = useState(initialSlug ? 'browse' : 'browse');
+  const [stats, setStats] = useState(null);
+  const [q, setQ] = useState('');
+  const [tag, setTag] = useState('');
+  const [tier, setTier] = useState('');
+  const [page, setPage] = useState(1);
+  const [list, setList] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const debounce = useRef(null);
+
+  // --- data ---------------------------------------------------------------
+  useEffect(() => { api.skillkit.stats().then(setStats).catch(() => setStats({ available: false, count: 0 })); }, []);
+
+  const load = useCallback((opts = {}) => {
+    setLoading(true);
+    api.skillkit.list({ q: opts.q ?? q, tag: opts.tag ?? tag, tier: opts.tier ?? tier, page: opts.page ?? page, per: 48 })
+      .then((r) => setList(r))
+      .catch((e) => setList({ skills: [], total: 0, error: e.message }))
+      .finally(() => setLoading(false));
+  }, [q, tag, tier, page]);
+
+  useEffect(() => { load(); }, [tag, tier, page]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    let gone = false;
-    skillsApi.list()
-      .then((r) => { if (!gone) setState({ loading: false, skills: r.skills || [], errors: r.errors || [], duplicates: r.duplicates || [], roots: r.roots || [], local: Boolean(r.local), note: r.note || null }); })
-      .catch((e) => { if (!gone) setState((s) => ({ ...s, loading: false, note: e.message })); });
-    return () => { gone = true; };
-  }, []);
+    clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => { setPage(1); load({ q, page: 1 }); }, 180);
+    return () => clearTimeout(debounce.current);
+  }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    try { localStorage.setItem(enabledKey, JSON.stringify([...enabled])); } catch { /* quota */ }
-  }, [enabled, enabledKey]);
+  const open = useCallback((slug) => {
+    if (!slug) return;
+    setDetailLoading(true);
+    api.skillkit.get(slug)
+      .then((r) => { if (r.ok) setDetail(r.skill); else notify(r.error); })
+      .catch((e) => notify(e.message))
+      .finally(() => setDetailLoading(false));
+  }, [notify]);
 
-  useEffect(() => {
-    setEnabled(() => {
-      try { return new Set(JSON.parse(localStorage.getItem(enabledKey) || '[]')); } catch { return new Set(); }
-    });
-  }, [enabledKey]);
+  useEffect(() => { if (initialSlug) open(initialSlug); }, [initialSlug, open]);
 
-  async function loadTemplates(nextKind = kind) {
-    setKind(nextKind);
-    setTemplates({ loading: true, cards: [], note: null });
-    try {
-      const r = await artifactsApi.list(nextKind);
-      setTemplates({ loading: false, cards: r.cards || [], note: r.note || (r.local && !r.count ? 'No templates installed in ~/.codex yet.' : null) });
-    } catch (e) {
-      setTemplates({ loading: false, cards: [], note: e.message });
-    }
-  }
-
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return state.skills.filter((s) => (tab === 'remote' ? s.packaged : true)).filter((s) => !q || s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q));
-  }, [state.skills, query, tab]);
-
-  const toggle = (name) => {
-    setEnabled((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name); else next.add(name);
-      return next;
-    });
-  };
+  const tiers = list?.tiers || stats?.tiers || {};
 
   return (
-    <div className="page" style={{ maxWidth: 1040, margin: '0 auto', padding: '24px 20px 60px' }}>
-      <div className="row between" style={{ alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+    <div className="page">
+      <div className="page-head">
         <div>
-          <h1 style={{ margin: 0, fontSize: 24 }}>Skills</h1>
-          <p className="muted" style={{ margin: '4px 0 0' }}>
-            {state.loading ? 'Reading skill roots…' : `${state.skills.length} skill(s) from ${new Set(state.skills.map((s) => s.scope)).size} scope(s)`}
-            {state.local ? ' · this machine' : ' · bundled only'}
+          <h1>Skills</h1>
+          <p className="sub">
+            Instructions a model can follow, not prompt snippets. {stats ? stats.count.toLocaleString() : '—'} skills are pinned from
+            seven permissively licensed sources, retrievable by meaning, budgeted into the prompt of whichever model you have
+            connected, and installable into <code className="code-inline">~/.qoder/skills</code> in one click.
           </p>
         </div>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by name or description" style={{ minWidth: 240 }} />
+        <div className="actions">
+          <button className={`btn small ${tab === 'browse' ? 'primary' : ''}`} onClick={() => setTab('browse')}>Browse</button>
+          <button className={`btn small ${tab === 'retrieve' ? 'primary' : ''}`} onClick={() => setTab('retrieve')}>Retrieval</button>
+          <button className={`btn small ${tab === 'scan' ? 'primary' : ''}`} onClick={() => setTab('scan')}>Safety scan</button>
+          <button className={`btn small ${tab === 'installed' ? 'primary' : ''}`} onClick={() => setTab('installed')}>Installed</button>
+          <button className={`btn small ${tab === 'sources' ? 'primary' : ''}`} onClick={() => setTab('sources')}>Sources</button>
+        </div>
       </div>
 
-      {state.note && <div className="card" style={{ marginTop: 16 }}><div className="tiny" style={{ opacity: 0.85 }}>{state.note}</div></div>}
+      <Facts items={[
+        { k: 'Skills', v: (stats?.count ?? 0).toLocaleString(), d: `${(stats?.sources ?? 0)} sources · pinned` },
+        { k: 'Bundled', v: tiers.bundled ?? 0, d: 'ship with the app' },
+        { k: 'Curated', v: tiers.curated ?? 0, d: 'reviewed collections' },
+        { k: 'Extended', v: tiers.extra ?? 0, d: 'indexed, unreviewed prose' },
+        { k: 'Flagged', v: stats?.flagged ?? 0, d: 'safety scan hits' },
+        { k: 'Corpus', v: `${Math.round((stats?.bytes || 0) / 1024 / 1024)} MB`, d: 'of instructions' }
+      ]} />
 
-      <div className="row" style={{ marginTop: 18, gap: 6, flexWrap: 'wrap' }}>
-        {TABS.map((t) => (
-          <button key={t.id} className={`chip-toggle ${tab === t.id ? 'on' : ''}`} onClick={() => { setTab(t.id); if (t.id === 'plugins') loadTemplates(kind); }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab !== 'config' && tab !== 'plugins' && (
-        <div className="card" style={{ marginTop: 14, padding: 0 }}>
-          {shown.length === 0 && !state.loading && (
-            <div className="tiny" style={{ padding: 16, opacity: 0.8 }}>
-              {tab === 'remote' ? 'No packaged .skill archives were found in this checkout.' : 'Nothing matched.'}
+      {tab === 'browse' && (
+        <div className="split" style={{ marginTop: 18 }}>
+          <div>
+            <div className="searchbar">
+              <input
+                type="search"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search 2,208 skills — “playwright test”, “sql injection”, “docx template”, “seo audit”…"
+                aria-label="Search skills"
+              />
+              <select className="select" value={tier} onChange={(e) => { setTier(e.target.value); setPage(1); }}>
+                {TIERS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+              </select>
+              <select className="select" value={tag} onChange={(e) => { setTag(e.target.value); setPage(1); }}>
+                <option value="">Every tag</option>
+                {(list?.tags || stats?.tags || []).map((t) => (
+                  <option key={t.tag || t} value={t.tag || t}>{(t.tag || t)}{t.count ? ` (${t.count})` : ''}</option>
+                ))}
+              </select>
             </div>
-          )}
-          {shown.map((s) => (
-            <div key={`${s.scope}:${s.path}`} style={{ borderBottom: '1px solid var(--border-soft)' }}>
-              <div className="row between" style={{ padding: '10px 14px', gap: 10 }}>
-                <button className="row" style={{ background: 'none', border: 0, textAlign: 'left', cursor: 'pointer', gap: 10, flex: 1, minWidth: 0 }} onClick={() => setOpen(open === s.name ? null : s.name)}>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>{s.name}</span>
-                  <Pill kind={s.tier ? 'ok' : 'warn'}>{s.tier || s.scope}</Pill>
-                  {s.archive_files ? <span className="tiny" style={{ opacity: 0.7 }}>{s.archive_files} entries</span> : null}
+
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+              <span className="tiny">
+                {loading ? 'Searching…' : list ? `${list.total.toLocaleString()} match${list.total === 1 ? '' : 'es'}${list.pages > 1 ? ` · page ${list.page} of ${list.pages}` : ''}` : ''}
+              </span>
+              {q && <button className="btn small ghost" onClick={() => setQ('')}>Clear search</button>}
+            </div>
+
+            {loading && !list ? <div className="empty">Loading the atlas…</div> : null}
+
+            <div className="grid cards">
+              {(list?.skills || []).map((s) => (
+                <button
+                  key={s.slug}
+                  className="skill-card"
+                  onClick={() => open(s.slug)}
+                  style={detail?.slug === s.slug ? { borderColor: 'var(--accent)' } : undefined}
+                >
+                  <div className="sc-top">
+                    <span className="sc-name" title={s.slug}>{s.slug}</span>
+                    {s.tier === 'bundled' && <span className="pill grad">bundled</span>}
+                    {s.flags?.length ? <span className="sc-flag" title={s.flags.join(', ')}>⚠</span> : null}
+                  </div>
+                  <div className="sc-desc">{s.description || 'No description in frontmatter.'}</div>
+                  <div className="sc-foot">
+                    {(s.tags || []).slice(0, 2).map((t) => <span className="pill" key={t}>{t}</span>)}
+                    <span style={{ marginLeft: 'auto' }}>{Math.round((s.bytes || 0) / 1024)} KB</span>
+                    {s.score != null && <span title="retrieval score">{s.score}</span>}
+                  </div>
                 </button>
-                <div className="row" style={{ gap: 6 }}>
-                  {s.bytes ? <span className="tiny" style={{ opacity: 0.6 }}>{(s.bytes / 1024).toFixed(1)} KB</span> : null}
-                  <button className={`chip-toggle ${enabled.has(s.name) ? 'on' : ''}`} onClick={() => toggle(s.name)} title="Enable for this account">
-                    {enabled.has(s.name) ? 'enabled' : 'disabled'}
-                  </button>
-                </div>
-              </div>
-              {open === s.name && (
-                <div className="tiny" style={{ padding: '0 14px 12px', lineHeight: 1.5, opacity: 0.9 }}>
-                  <div>{s.description || 'No description in this SKILL.md.'}</div>
-                  <div style={{ fontFamily: 'var(--mono)', marginTop: 6, opacity: 0.75 }}>{s.path}</div>
-                  {s.license ? <div style={{ marginTop: 4 }}>Licence: {s.license}</div> : null}
-                  {s.dependencies?.length ? <div style={{ marginTop: 4 }}>Dependencies: {s.dependencies.join(', ')}</div> : null}
-                  <button className="btn small ghost" style={{ marginTop: 8 }} onClick={() => { navigator.clipboard?.writeText(s.path || ''); notify('Path copied'); }}>Copy path</button>
-                </div>
-              )}
+              ))}
             </div>
-          ))}
+
+            {list && list.skills?.length === 0 && !loading && (
+              <div className="empty">No skill matches that. Try a broader word — the corpus is prose, so “test”, “design”, “report” all work.</div>
+            )}
+
+            {list && list.pages > 1 && (
+              <div className="row" style={{ justifyContent: 'center', marginTop: 14, gap: 8 }}>
+                <button className="btn small" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>← Previous</button>
+                <span className="tiny">page {list.page} / {list.pages}</span>
+                <button className="btn small" disabled={page >= list.pages} onClick={() => setPage((p) => p + 1)}>Next →</button>
+              </div>
+            )}
+          </div>
+
+          <div className="detail">
+            {!detail && !detailLoading && (
+              <div className="empty" style={{ padding: '40px 20px' }}>
+                Pick a skill to read it, retrieve it for a prompt, or install it.
+                <div className="tiny" style={{ marginTop: 8 }}>Everything shown here is the exact text a model receives.</div>
+              </div>
+            )}
+            {detailLoading && <div className="empty">Loading…</div>}
+            {detail && !detailLoading && <SkillDetail skill={detail} onNotify={notify} signedIn={Boolean(user)} />}
+          </div>
         </div>
       )}
 
-      {tab === 'plugins' && (
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-            {KINDS.map((k) => (
-              <button key={k.id} className={`chip-toggle ${kind === k.id ? 'on' : ''}`} onClick={() => loadTemplates(k.id)}>{k.label}</button>
-            ))}
+      {tab === 'retrieve' && <RetrievalPanel onNotify={notify} onOpen={open} />}
+      {tab === 'scan' && <ScanPanel onNotify={notify} />}
+      {tab === 'installed' && <InstalledPanel onNotify={notify} />}
+      {tab === 'sources' && <SourcesPanel />}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+function SkillDetail({ skill, onNotify, signedIn }) {
+  const [installing, setInstalling] = useState(false);
+  const [ground, setGround] = useState(null);
+  const [showRaw, setShowRaw] = useState(false);
+
+  async function install(target) {
+    setInstalling(true);
+    try {
+      const r = await api.skillkit.export(skill.slug, { target });
+      if (r.ok) onNotify(`Installed ${r.slug} → ${r.file}`);
+      else onNotify(r.error || 'Could not install');
+    } catch (e) { onNotify(e.message); }
+    finally { setInstalling(false); }
+  }
+
+  async function groundIt() {
+    try {
+      const r = await api.skillkit.ground('', { slugs: [skill.slug], max_skills: 1, per_skill_chars: 12000 });
+      setGround(r);
+    } catch (e) { onNotify(e.message); }
+  }
+
+  return (
+    <>
+      <div className="detail-head">
+        <div className="row" style={{ gap: 8 }}>
+          <b style={{ fontSize: 14.5 }}>{skill.slug}</b>
+          <StatusPill status={skill.tier === 'bundled' ? 'parity' : skill.tier === 'curated' ? 'live' : 'partial'} />
+          <div className="between" />
+          <span className="tiny">{Math.round(skill.bytes / 1024)} KB</span>
+        </div>
+        <div className="tiny" style={{ marginTop: 4, lineHeight: 1.5 }}>{skill.description}</div>
+        <div className="row wrap" style={{ gap: 5, marginTop: 8 }}>
+          {(skill.tags || []).map((t) => <span className="pill" key={t}>{t}</span>)}
+          {skill.flags?.length ? <span className="pill warn">⚠ {skill.flags.join(', ')}</span> : null}
+        </div>
+        <div className="row wrap" style={{ gap: 6, marginTop: 10 }}>
+          <button className="btn small primary" disabled={installing} onClick={() => install('qoder')}>Install to ~/.qoder</button>
+          <button className="btn small" disabled={installing} onClick={() => install('workspace')}>Copy into workspace</button>
+          <button className="btn small" onClick={groundIt}>Build prompt block</button>
+          <button className="btn small ghost" onClick={() => setShowRaw((v) => !v)}>{showRaw ? 'Rendered' : 'Raw'}</button>
+        </div>
+        {!signedIn && <div className="tiny" style={{ marginTop: 6 }}>Installing writes to this machine, so it needs the desktop app or a local server.</div>}
+      </div>
+      <div className="detail-body">
+        {ground && (
+          <div className="card tight" style={{ marginBottom: 12 }}>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <b style={{ fontSize: 12.5 }}>What the model receives</b>
+              <span className="pill">{ground.chars} chars</span>
+            </div>
+            <pre style={{ maxHeight: 220, overflowY: 'auto' }}>{ground.text}</pre>
+            <div className="tiny">This is exactly the injected block — budgets applied, excerpt markers included.</div>
           </div>
-          <div className="tiny" style={{ marginTop: 10, opacity: 0.8, minHeight: 18 }}>
-            {templates.loading ? 'Reading templates…' : templates.note || `${templates.cards.length} template(s) offered for this kind`}
+        )}
+        {skill.source?.url && (
+          <div className="tiny" style={{ marginBottom: 8 }}>
+            Source: <a href={skill.source.url} target="_blank" rel="noreferrer">{skill.source.repo}</a>
+            {' · '}{skill.source.license}{skill.source.commit ? ` · ${String(skill.source.commit).slice(0, 10)}` : ''}
           </div>
-          {templates.cards.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12, marginTop: 10 }}>
-              {templates.cards.map((c) => (
-                <div key={c.id} className="card" style={{ padding: 8 }}>
-                  {c.preview
-                    ? <img src={c.preview} alt="" style={{ width: '100%', height: 92, objectFit: 'cover', borderRadius: 8 }} />
-                    : <div style={{ height: 92, borderRadius: 8, background: 'var(--bg-soft)' }} />}
-                  <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600 }}>{c.title}</div>
-                  <div className="tiny" style={{ opacity: 0.75 }}>{c.skillName}</div>
+        )}
+        {skill.files?.length ? (
+          <div className="tiny" style={{ marginBottom: 8 }}>{skill.files.length} side file{skill.files.length === 1 ? '' : 's'}: {skill.files.slice(0, 6).map((f) => f.path).join(', ')}</div>
+        ) : null}
+        {showRaw
+          ? <pre>{skill.body}</pre>
+          : <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(skill.body) }} />}
+      </div>
+    </>
+  );
+}
+
+function RetrievalPanel({ onNotify, onOpen }) {
+  const [text, setText] = useState('Build a React settings page with a danger zone and confirm dialogs');
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run() {
+    setBusy(true);
+    try { setResult(await api.skillkit.resolve(text, { limit: 8 })); }
+    catch (e) { onNotify(e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="section">
+      <div className="card">
+        <div className="card-head">
+          <h3>What would a turn retrieve?</h3>
+          <div className="right"><span className="tiny">hybrid BM25 + name/tag boosts, deterministic</span></div>
+        </div>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={3}
+          style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: 10, fontSize: 13.5, outline: 'none' }}
+          placeholder="Describe the task the way you would type it into chat…"
+        />
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="btn primary" onClick={run} disabled={busy}>{busy ? 'Resolving…' : 'Resolve'}</button>
+          <span className="tiny">The same query runs on every chat turn when skills are on.</span>
+        </div>
+      </div>
+
+      {result && (
+        <div className="section">
+          <div className="row" style={{ marginBottom: 8 }}>
+            <b style={{ fontSize: 13 }}>{result.matched.length} skill{result.matched.length === 1 ? '' : 's'} would be offered</b>
+            <span className="tiny">budget: up to 4 skills, 6,000 chars each, 24,000 total</span>
+          </div>
+          <table className="tbl">
+            <thead><tr><th>Skill</th><th>Score</th><th>Why</th><th>Tier</th><th /></tr></thead>
+            <tbody>
+              {result.matched.map((m) => (
+                <tr key={m.slug}>
+                  <td><b>{m.slug}</b><div className="tiny" style={{ maxWidth: 520 }}>{m.description}</div></td>
+                  <td className="num">{m.score}</td>
+                  <td className="tiny">{m.why}</td>
+                  <td><span className="pill">{m.tier}</span></td>
+                  <td><button className="btn small ghost" onClick={() => onOpen(m.slug)}>Open</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {result.matched.length === 0 && <div className="empty">Nothing cleared the score floor — a turn with this text injects no skills, which is the correct answer for “hello”.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SAMPLE = `const express = require('express');
+const app = express();
+app.get('/user', (req, res) => {
+  db.query("SELECT * FROM users WHERE id = " + req.query.id);
+  res.send(req.query.name);
+});
+const key = "sk-live-abcdefghijklmnopqrstuvwxyz012345";
+eval(process.env.SNIPPET);`;
+
+function ScanPanel({ onNotify }) {
+  const [code, setCode] = useState(SAMPLE);
+  const [filename, setFilename] = useState('server.js');
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run() {
+    setBusy(true);
+    try { setResult(await api.skillkit.scan(code, { filename })); }
+    catch (e) { onNotify(e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="section split">
+      <div className="card">
+        <div className="card-head">
+          <h3>Scan source before it ships</h3>
+          <div className="right">
+            <input className="select" value={filename} onChange={(e) => setFilename(e.target.value)} style={{ width: 150 }} />
+            <button className="btn small primary" onClick={run} disabled={busy}>{busy ? 'Scanning…' : 'Scan'}</button>
+          </div>
+        </div>
+        <textarea
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          rows={16}
+          spellCheck={false}
+          style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: 10, fontFamily: 'var(--mono)', fontSize: 12.5, outline: 'none' }}
+        />
+        <div className="tiny" style={{ marginTop: 6 }}>
+          Nineteen rules with line numbers and a fix for each. This is the fast pass; VibeSec (installed as an MCP server) does taint analysis.
+        </div>
+      </div>
+
+      <div>
+        {!result && <div className="card empty">Press Scan. Findings are ordered by severity, then by line.</div>}
+        {result && (
+          <>
+            <Facts cols={3} items={[
+              { k: 'Verdict', v: <StatusPill status={result.summary.verdict} /> },
+              { k: 'Findings', v: result.summary.total },
+              { k: 'Language', v: result.language }
+            ]} />
+            <div className="card" style={{ marginTop: 10, padding: 0 }}>
+              {result.findings.length === 0 && <div className="empty">No findings. That is not a proof of safety — it means no rule matched.</div>}
+              {result.findings.map((f, i) => (
+                <div key={`${f.id}-${f.line}-${i}`} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <StatusPill status={f.severity === 'critical' ? 'block' : f.severity === 'high' ? 'review' : f.severity === 'medium' ? 'partial' : 'live'} />
+                    <b style={{ fontSize: 13 }}>{f.id}</b>
+                    <span className="tiny" style={{ marginLeft: 'auto' }}>line {f.line}</span>
+                  </div>
+                  <div style={{ fontSize: 12.5, marginTop: 4 }}>{f.message}</div>
+                  <pre style={{ margin: '6px 0 0', padding: '6px 8px', background: 'var(--bg-input)', borderRadius: 7, fontSize: 11.5, overflowX: 'auto' }}>{f.excerpt}</pre>
+                  {f.fix && <div className="tiny" style={{ marginTop: 4 }}>Fix: <code className="code-inline">{f.fix}</code></div>}
                 </div>
               ))}
             </div>
-          )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InstalledPanel({ onNotify }) {
+  const { user } = useApp();
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [artifacts, setArtifacts] = useState(null);
+  // Per-account, not per-browser: a shared machine must not remember that *you*
+  // disabled a skill for the next person who signs in. Same rule as the workspace
+  // data (lib/state.jsx → userKey).
+  const enabledKey = userKey('acx_enabled_skills');
+  const [enabled, setEnabled] = useState(() => {
+    try { const raw = localStorage.getItem(enabledKey); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(enabledKey, JSON.stringify(enabled)); } catch { /* quota / private mode */ }
+  }, [enabled, enabledKey]);
+
+  const load = useCallback(() => {
+    setBusy(true);
+    api.skillkit.installed().then(setData).catch((e) => onNotify(e.message)).finally(() => setBusy(false));
+    api.artifacts.list('document').then(setArtifacts).catch(() => setArtifacts(null));
+  }, [onNotify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const isOn = (name) => enabled[name] !== false;
+  const toggle = (name) => setEnabled((e) => ({ ...e, [name]: e[name] === false }));
+
+  return (
+    <div className="section">
+      <div className="card">
+        <div className="card-head">
+          <h3>What is on this machine</h3>
+          <div className="right">
+            <button className="btn small" onClick={load} disabled={busy}>{busy ? 'Reading…' : 'Re-read'}</button>
+          </div>
         </div>
+        <p className="tiny" style={{ marginTop: 0 }}>
+          Read live from <code className="code-inline">~/.qoder/skills</code>, <code className="code-inline">~/.codex/skills</code> and{' '}
+          <code className="code-inline">~/.claude/skills</code>. Anything installed by Qoder itself shows up here and is resolvable by the
+          same retrieval engine as the pinned corpus — that is how “whatever model is connected can use the skills” covers skills this
+          app did not ship. A skill that the runtime would reject is listed under <b>Refused</b> with the reason, instead of looking
+          installed but silently never loading.
+        </p>
+        {data?.note && <div className="pill warn" style={{ marginBottom: 8 }}>{data.note}</div>}
+        <div className="stat-row">
+          {(data?.roots || []).map((r) => (
+            <div className="stat" key={r.id}>
+              <div className="k">{r.id}</div>
+              <div className="v">{r.count}</div>
+              <div className="d" style={{ wordBreak: 'break-all' }}>{r.path}</div>
+              <div className="d">{r.exists ? 'present' : 'not created yet'}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {data?.installed?.length ? (
+        <table className="tbl" style={{ marginTop: 14 }}>
+          <thead><tr><th>Name</th><th>Root</th><th>Description</th><th className="num">Size</th><th>Enabled</th></tr></thead>
+          <tbody>
+            {data.installed.map((s) => (
+              <tr key={s.path}>
+                <td><b>{s.name}</b><div className="tiny">{s.dir}</div></td>
+                <td><span className="pill">{s.root}</span></td>
+                <td className="tiny" style={{ maxWidth: 520 }}>{s.description}</td>
+                <td className="num">{(s.bytes / 1024).toFixed(1)} KB</td>
+                <td>
+                  <button className={`chip ${isOn(s.name) ? 'active' : ''}`} onClick={() => toggle(s.name)}>
+                    {isOn(s.name) ? 'on' : 'off'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div className="empty">{busy ? 'Reading skill roots…' : 'No skills installed under those roots yet — install one from Browse.'}</div>
       )}
 
-      {tab === 'config' && (
+      {data?.refused?.length ? (
         <div className="card" style={{ marginTop: 14 }}>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>Roots searched</div>
-          <div className="tiny" style={{ marginTop: 8, fontFamily: 'var(--mono)', lineHeight: 1.7 }}>
-            {state.roots.length === 0 && <div style={{ opacity: 0.7 }}>No roots reported.</div>}
-            {state.roots.map((r) => (
-              <div key={typeof r === 'string' ? r : r.path || JSON.stringify(r)} style={{ opacity: r.exists === false ? 0.45 : 1 }}>
-                {typeof r === 'string'
-                  ? r
-                  : `${r.path} · ${r.label || r.scope || ''}${r.skills != null ? ` · ${r.skills} skill(s)` : ''}${r.exists === false ? ' · missing' : ''}`}
-              </div>
-            ))}
+          <div className="card-head">
+            <h3>Refused</h3>
+            <div className="right"><span className="pill warn">{data.refused.length}</span>{data.duplicates ? <span className="pill">{data.duplicates} duplicate{data.duplicates === 1 ? '' : 's'}</span> : null}</div>
           </div>
-          {state.errors.length > 0 && (
-            <>
-              <div style={{ fontWeight: 600, fontSize: 13, marginTop: 16 }}>Refused</div>
-              <div className="tiny" style={{ marginTop: 6, lineHeight: 1.6 }}>
-                {state.errors.map((e, i) => <div key={i}>{typeof e === 'string' ? e : `${e.path || ''} — ${e.error || JSON.stringify(e)}`}</div>)}
-              </div>
-            </>
-          )}
-          {state.duplicates?.length > 0 && (
-            <>
-              <div style={{ fontWeight: 600, fontSize: 13, marginTop: 16 }}>Shadows</div>
-              <div className="tiny" style={{ marginTop: 6, lineHeight: 1.6 }}>
-                {state.duplicates.map((d, i) => (
-                  <div key={i}>
-                    {typeof d === 'string'
-                      ? d
-                      : `${d.name} — kept ${d.kept || 'the earlier root'}, ignored ${d.ignored || 'a later root'}`}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+          <table className="tbl">
+            <thead><tr><th>Name</th><th>Root</th><th>Why it will not load</th></tr></thead>
+            <tbody>
+              {data.refused.map((r) => (
+                <tr key={r.path}>
+                  <td><b>{r.name || '—'}</b><div className="tiny mono">{r.path}</div></td>
+                  <td><span className="pill">{r.root}</span></td>
+                  <td className="tiny">{r.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {artifacts && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div className="card-head">
+            <h3>Template roots</h3>
+            <div className="right"><span className="tiny">artifact templates a skill can point at</span></div>
+          </div>
+          <div className="tiny">
+            {artifacts.count ? `${artifacts.count} template${artifacts.count === 1 ? '' : 's'} discovered in this machine's template roots.` : (artifacts.note || 'No artifact templates installed in this ChatGPT/Codex home.')}
+          </div>
+          <div className="row wrap" style={{ gap: 5, marginTop: 8 }}>
+            {(artifacts.cards || []).slice(0, 12).map((c) => <span className="pill" key={c.id}>{c.title || c.id}</span>)}
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SourcesPanel() {
+  const [data, setData] = useState(null);
+  useEffect(() => { api.skillkit.sources().then(setData).catch(() => setData({ sources: [] })); }, []);
+  return (
+    <div className="section">
+      <div className="card">
+        <div className="card-head">
+          <h3>Where the corpus comes from</h3>
+          <div className="right"><span className="tiny">{data?.count?.toLocaleString?.() || ''} skills · pinned {data?.generated_at ? new Date(data.generated_at).toLocaleDateString() : ''}</span></div>
+        </div>
+        <p className="tiny" style={{ marginTop: 0 }}>
+          <code className="code-inline">node scripts/build-skill-atlas.mjs</code> is the only way this list changes. Every skill keeps its
+          source URL and commit, and a skill whose licence is not permissive is not in the list.
+        </p>
+        <table className="tbl">
+          <thead><tr><th>Source</th><th>Repository</th><th>Licence</th><th>Tier</th><th className="num">Skills</th><th>Commit</th></tr></thead>
+          <tbody>
+            {(data?.sources || []).map((s) => (
+              <tr key={s.id}>
+                <td><b>{s.label}</b></td>
+                <td className="mono">{s.repo || 'this repository'}</td>
+                <td>{s.license}</td>
+                <td><span className="pill">{s.tier}</span></td>
+                <td className="num">{s.found}</td>
+                <td className="mono">{String(s.commit || 'n/a').slice(0, 10)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

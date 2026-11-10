@@ -1,223 +1,254 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { sandbox as sbx, image as imageApi } from '../lib/api.js';
+import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import * as api from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
+import { Facts, CopyField, StatusPill } from '../ui.jsx';
 
-// Sandbox — where generated code is actually run.
-//
-// The point of this page is the thing that makes a code agent trustworthy: the
-// program it wrote either produced that output on this machine, or it did not.
-// No "here is some code, try it" — press Run and the stdout below came from a
-// real process in a temporary directory that is thrown away.
-//
-// Two halves:
-//   * write (or paste) code and run it, with the language, the timeout, and the
-//     files it left behind;
-//   * describe what you want, let the model write it (the same Fast/Balanced/Max
-//     deliberation setting as chat), then run that.
-//
-// It is local-only on purpose: executing arbitrary code is not something a shared
-// server may do for whoever asks. The desktop app runs the same page against the
-// same bridge on your own machine.
 const LANGS = [
-  { id: 'node', label: 'JavaScript', sample: 'const t = Date.now();\nconsole.log("hello from the sandbox");\nconsole.log("node", process.version);\nconsole.log("took", Date.now() - t, "ms (plus startup)");' },
-  { id: 'python', label: 'Python', sample: 'import sys, platform\nprint("hello from the sandbox")\nprint("python", platform.python_version())\nprint("isolated:", not hasattr(sys, "real_prefix"))' },
-  { id: 'bash', label: 'Shell', sample: 'echo "hello from the sandbox"\nuname -srm\nls -la | head -5' }
+  { id: 'node', label: 'JavaScript', ext: 'mjs' },
+  { id: 'python', label: 'Python', ext: 'py' },
+  { id: 'bash', label: 'Shell', ext: 'sh' }
 ];
 
+const SAMPLE = {
+  node: `// node 22 — top-level await works
+const rows = [3, 1, 4, 1, 5, 9, 2, 6];
+const median = (a) => {
+  const s = [...a].sort((x, y) => x - y);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+console.log('sorted', [...rows].sort((a, b) => a - b).join(' '));
+console.log('median', median(rows));
+await new Promise((r) => setTimeout(r, 50));
+console.log('async also works');`,
+  python: `# python 3 — isolated mode, no site-packages surprises
+import statistics, sys
+rows = [3, 1, 4, 1, 5, 9, 2, 6]
+print("python", sys.version.split()[0])
+print("median", statistics.median(rows))
+print("stdev", round(statistics.pstdev(rows), 3))`,
+  bash: `# sh — runs in a disposable directory with a scrubbed environment
+echo "whoami: $(whoami 2>/dev/null || echo sandbox)"
+echo "files here:"; ls -la
+printf 'made by the sandbox\\n' > out.txt
+echo "wrote out.txt ($(wc -c < out.txt) bytes)"`
+};
+
 export default function SandboxPage() {
-  const { model, effort, notify } = useApp();
+  const { notify } = useApp();
+  const loc = useLocation();
   const [lang, setLang] = useState('node');
-  const [code, setCode] = useState(LANGS[0].sample);
-  const [busy, setBusy] = useState('');
+  const [code, setCode] = useState(SAMPLE.node);
   const [status, setStatus] = useState(null);
-  const [result, setResult] = useState(null);
-  const [prompt, setPrompt] = useState('');
-  const [timeoutMs, setTimeoutMs] = useState(8000);
-  const [viewing, setViewing] = useState(null);
-  const taRef = useRef(null);
+  const [run, setRun] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [daytona, setDaytona] = useState(null);
+  const [target, setTarget] = useState(new URLSearchParams(loc.search).get('target') === 'daytona' ? 'daytona' : 'local');
+  const [command, setCommand] = useState('uname -a && node -v && python3 -V && pwd');
+  const [keyInfo, setKeyInfo] = useState(null);
 
   useEffect(() => {
-    sbx.status().then(setStatus).catch((e) => setStatus({ ok: false, error: e.message }));
+    api.sandbox.status().then(setStatus).catch(() => {});
+    api.daytona.status().then((d) => { setDaytona(d); if (d?.configured) setTarget(d.mode === 'local' ? 'local' : 'daytona'); }).catch(() => {});
   }, []);
 
-  const switchLang = (id) => {
-    const next = LANGS.find((l) => l.id === id);
+  function pickLang(id) {
     setLang(id);
-    if (next && (!code.trim() || LANGS.some((l) => l.sample === code))) setCode(next.sample);
-  };
+    setCode(SAMPLE[id]);
+    setRun(null);
+  }
 
-  async function run() {
-    if (busy) return;
-    setBusy('run');
-    setViewing(null);
+  async function execute() {
+    setBusy(true);
+    setRun(null);
     try {
-      const out = await sbx.run({ language: lang, code, timeout_ms: Number(timeoutMs) || 8000 });
-      setResult(out);
-      if (out.timed_out) notify(`Stopped after ${Math.round((out.duration_ms || 0) / 1000)}s — the run hit its limit`, 'warn');
-      else if (out.ok) notify(`Ran in ${out.duration_ms} ms`);
-      else notify(out.error || `Exited ${out.exit_code}`, 'warn');
+      if (target === 'daytona') {
+        const r = await api.daytona.exec(lang === 'bash' ? code : code, { timeout_ms: 20000 });
+        setRun({ ...r, launched: 'daytona', language: lang });
+      } else {
+        const r = await api.sandbox.run({ language: lang, code, timeout_ms: 12000 });
+        setRun({ ...r, launched: 'local' });
+      }
     } catch (e) {
-      setResult({ ok: false, error: e.message || String(e) });
-      notify(e.message || 'Could not run that', 'warn');
-    } finally { setBusy(''); }
+      setRun({ ok: false, error: e.message, launched: target });
+    } finally { setBusy(false); }
   }
 
-  async function generate() {
-    const ask = prompt.trim();
-    if (!ask || busy) return;
-    setBusy('gen');
+  async function runCommand() {
+    setBusy(true);
+    setRun(null);
     try {
-      const [pid, ...rest] = String(model || '').split('::');
-      const out = await sbx.generate({
-        prompt: ask,
-        language: lang === 'python' ? 'python' : lang === 'bash' ? 'shell' : 'JavaScript',
-        model: rest.join('::') || model,
-        provider: rest.length ? pid : undefined,
-        effort
-      });
-      if (!out.ok || !out.code) { notify('The model did not return code — try a narrower ask'); return; }
-      setCode(out.code);
-      notify('Code written — Run to see what it actually does');
-      setTimeout(() => taRef.current?.focus(), 40);
+      const r = target === 'daytona'
+        ? await api.daytona.exec(command, { timeout_ms: 20000 })
+        : await api.workspaceFs.exec(command, { sandbox: 'read-only', approval: 'auto-run' });
+      setRun({ ...r, launched: target, mode: 'command' });
     } catch (e) {
-      notify(e.message || 'Code generation failed', 'warn');
-    } finally { setBusy(''); }
+      setRun({ ok: false, error: e.message, launched: target });
+    } finally { setBusy(false); }
   }
 
-  async function openFile(name) {
-    if (!result?.run_id) return;
+  async function probe() {
+    setBusy(true);
     try {
-      const r = await sbx.read(result.run_id, name);
-      setViewing(r.ok ? { name, content: r.content } : { name, content: r.error || 'could not read it' });
-    } catch (e) { setViewing({ name, content: e.message }); }
+      const r = await api.daytona.probe();
+      setDaytona((d) => ({ ...d, probe: r }));
+      notify(r.ok ? `Reached ${r.identity || 'the box'}` : (r.hint || r.error || 'Probe failed'));
+    } catch (e) { notify(e.message); }
+    finally { setBusy(false); }
   }
 
-  const blocked = status && status.ok === false;
-  const langs = status?.languages || [];
+  async function makeKey() {
+    try {
+      const k = await api.daytona.key();
+      setKeyInfo(k);
+      if (!k.ok) notify(k.error);
+    } catch (e) { notify(e.message); }
+  }
+
+  const d = daytona || {};
+  const daConfigured = Boolean(d.configured);
 
   return (
     <div className="page">
-      <div className="head">
+      <div className="page-head">
         <div>
           <h1>Sandbox</h1>
-          <p className="tiny">
-            Write code, or let the model write it, then run it for real. Every run gets a fresh
-            directory, a scrubbed environment and {Math.round((status?.limits?.max_timeout_ms || 15000) / 1000)}s at most.
+          <p className="sub">
+            Run code where it belongs. Locally: a disposable directory, a scrubbed environment and a wall-clock kill. On Daytona: the
+            same call over SSH to a real remote box. Every result says which machine ran it — <code className="code-inline">local</code>{' '}
+            or <code className="code-inline">daytona:&lt;user&gt;</code>.
           </p>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <Link className="btn small ghost" to="/images">Image gen →</Link>
-          <Link className="btn small ghost" to="/codex">Codex workspace →</Link>
+        <div className="actions">
+          <div className="chips">
+            <button className={`chip ${target === 'local' ? 'active' : ''}`} onClick={() => setTarget('local')}>This machine</button>
+            <button className={`chip ${target === 'daytona' ? 'active' : ''}`} onClick={() => setTarget('daytona')} disabled={!daConfigured && !d.local}>Daytona</button>
+          </div>
         </div>
       </div>
 
-      {blocked && (
-        <div className="card sb-blocked">
-          <strong>Running code happens on your own machine.</strong>
-          <p className="tiny">{status.error}</p>
-          <p className="tiny">Install ANTICODEX Desktop — the Sandbox works there, with your own Node and Python.</p>
-        </div>
-      )}
+      <Facts items={[
+        { k: 'Target', v: target === 'daytona' ? 'Daytona' : 'Local', d: daConfigured ? 'configured' : 'not configured' },
+        { k: 'Runtimes', v: (status?.languages || []).filter((l) => l.available).length, d: (status?.languages || []).map((l) => l.id).join(', ') || '—' },
+        { k: 'Timeout', v: `${(status?.limits?.max_timeout_ms || 15000) / 1000}s`, d: 'hard kill, not a suggestion' },
+        { k: 'Output cap', v: `${Math.round((status?.limits?.max_output_bytes || 64000) / 1024)} KB` },
+        { k: 'SSH key', v: d.ssh?.key ? 'found' : 'none yet', d: d.ssh?.key?.path || 'press “Make a key”' }
+      ]} />
 
-      {status?.ok && (
-        <div className="row sb-meta">
-          {langs.map((l) => (
-            <span key={l.id} className={`sb-lang${l.available ? ' on' : ''}`} title={l.hint || ''}>
-              {l.label} {l.available ? '·' : '· missing'}
-            </span>
-          ))}
-          <span className="tiny">runs kept: {status.runs?.length || 0}</span>
-        </div>
-      )}
-
-      <div className="sb-grid">
-        <div className="card sb-pane">
-          <div className="row sb-pane-head">
-            <select className="sb-select" value={lang} onChange={(e) => switchLang(e.target.value)} aria-label="Language">
-              {LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
-            </select>
-            <select className="sb-select" value={timeoutMs} onChange={(e) => setTimeoutMs(Number(e.target.value))} aria-label="Time limit">
-              {[2000, 5000, 8000, 12000, 15000].map((ms) => <option key={ms} value={ms}>{ms / 1000}s limit</option>)}
-            </select>
-            <div style={{ flex: 1 }} />
-            <button className="btn small" onClick={run} disabled={Boolean(busy) || blocked}>
-              {busy === 'run' ? 'Running…' : '▶ Run'}
-            </button>
-          </div>
-          <textarea
-            ref={taRef}
-            className="sb-code"
-            spellCheck={false}
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); } }}
-            aria-label="Code"
-          />
-          <div className="row sb-gen">
-            <input
-              className="sb-input"
-              placeholder="…or describe it: “fibonacci up to 1000, printed one per line”"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') generate(); }}
-            />
-            <button className="btn small ghost" onClick={generate} disabled={Boolean(busy) || !prompt.trim()}>
-              {busy === 'gen' ? 'Writing…' : `Write with ${effort}`}
-            </button>
-          </div>
-        </div>
-
-        <div className="card sb-pane">
-          <div className="row sb-pane-head">
-            <strong className="tiny">Output</strong>
-            {result?.run_id && <span className="tiny sb-runid">run {result.run_id}</span>}
-            <div style={{ flex: 1 }} />
-            {result && (
-              <span className={`badge ${result.ok ? 'ok' : 'warn'}`}>
-                {result.timed_out ? 'timed out' : result.ok ? 'exit 0' : `exit ${result.exit_code}`} · {result.duration_ms} ms
-              </span>
-            )}
-          </div>
-          {!result && <p className="tiny">Nothing has run yet. Press Run — the output below is the real process.</p>}
-          {result?.error && !result.stdout && <pre className="sb-out sb-err">{result.error}</pre>}
-          {result && (
-            <>
-              <pre className="sb-out">{result.stdout || '(no stdout)'}</pre>
-              {result.stderr ? <pre className="sb-out sb-err">{result.stderr}</pre> : null}
-              {result.truncated && <p className="tiny">Output was cut at {status?.limits?.max_output_bytes || 64000} bytes.</p>}
-              {(result.files || []).length > 0 && (
-                <div className="row sb-files">
-                  <span className="tiny">files:</span>
-                  {result.files.map((f) => (
-                    <button key={f.name} className="pill sb-file" onClick={() => openFile(f.name)} title={`${f.bytes} bytes`}>
-                      {f.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {viewing && (
-                <div className="sb-view">
-                  <div className="row">
-                    <span className="tiny">{viewing.name}</span>
-                    <div style={{ flex: 1 }} />
-                    <button className="icon-btn" title="Close" onClick={() => setViewing(null)}>×</button>
+      <div className="section split">
+        <div>
+          <div className="card">
+            <div className="card-head">
+              <h3>{target === 'daytona' ? 'Remote command (SSH)' : `Code — ${LANGS.find((l) => l.id === lang)?.label}`}</h3>
+              <div className="right">
+                {target === 'local' && (
+                  <div className="chips">
+                    {LANGS.map((l) => <button key={l.id} className={`chip ${lang === l.id ? 'active' : ''}`} onClick={() => pickLang(l.id)}>{l.label}</button>)}
                   </div>
-                  <pre className="sb-out">{viewing.content}</pre>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
+                )}
+                <button className="btn small primary" onClick={execute} disabled={busy}>{busy ? 'Running…' : '▶ Run'}</button>
+              </div>
+            </div>
+            <textarea
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              rows={14}
+              spellCheck={false}
+              style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: 11, fontFamily: 'var(--mono)', fontSize: 12.8, lineHeight: 1.6, outline: 'none' }}
+            />
+            <div className="tiny" style={{ marginTop: 6 }}>
+              {target === 'daytona'
+                ? 'The snippet is written to a temp file on the remote box and executed there; the target and its exit code come back with the output.'
+                : 'Runs with a scrubbed environment in a new directory under the data folder. This is not a container and not a kernel sandbox — it is a process boundary, and the runs are only for the person sitting at this machine. Daytona is the strong version.'}
+            </div>
+          </div>
 
-      <div className="card sb-note">
-        <strong className="tiny">What this is not</strong>
-        <p className="tiny">
-          The sandbox is a separate directory, a scrubbed environment and a hard time limit — not a container.
-          A program can still open sockets and read files it has permission to read. It runs only for the person
-          sitting at the machine (the desktop app, or a server you started yourself), never for a remote visitor.
-        </p>
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-head">
+              <h3>Command</h3>
+              <div className="right"><button className="btn small" onClick={runCommand} disabled={busy}>Run command</button></div>
+            </div>
+            <input
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
+            />
+            <div className="tiny" style={{ marginTop: 6 }}>Same target switch. A remote command runs over SSH; a local one goes through the workspace policy gate.</div>
+          </div>
+        </div>
+
+        <div>
+          <div className="card" style={{ minHeight: 260 }}>
+            <div className="card-head">
+              <h3>Result</h3>
+              <div className="right">
+                {run?.target && <span className="pill info">{run.target}</span>}
+                {run?.exit_code != null && <span className={`pill ${run.exit_code === 0 ? 'ok' : 'err'}`}>exit {run.exit_code}</span>}
+                {run?.duration_ms != null && <span className="pill">{run.duration_ms} ms</span>}
+                {run?.timed_out && <span className="pill warn">timed out</span>}
+              </div>
+            </div>
+            {!run && <div className="empty">Run something. Output, exit code and duration appear here — for whichever machine ran it.</div>}
+            {run?.error && <div className="card" style={{ borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13 }}>{run.error}</div>}
+            {run?.hint && <div className="pill warn" style={{ marginBottom: 8 }}>{run.hint}</div>}
+            {run?.stdout !== undefined && (
+              <>
+                <div className="tiny" style={{ marginBottom: 4 }}>stdout</div>
+                <pre style={{ margin: 0, padding: 11, background: 'var(--bg-input)', borderRadius: 9, fontSize: 12.3, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{run.stdout || '(no output)'}</pre>
+              </>
+            )}
+            {run?.stderr ? (
+              <>
+                <div className="tiny" style={{ marginTop: 8, marginBottom: 4 }}>stderr</div>
+                <pre style={{ margin: 0, padding: 11, background: '#2a1414', borderRadius: 9, fontSize: 12.3, maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', color: '#ffb4b4' }}>{run.stderr}</pre>
+              </>
+            ) : null}
+            {run?.files?.length ? (
+              <>
+                <div className="tiny" style={{ marginTop: 8, marginBottom: 4 }}>files written</div>
+                <div className="row wrap" style={{ gap: 4 }}>{run.files.map((f) => <span className="pill mono" key={f.name || f}>{f.name || f}</span>)}</div>
+              </>
+            ) : null}
+          </div>
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-head">
+              <h3>Daytona</h3>
+              <div className="right">
+                <StatusPill status={daConfigured ? 'live' : 'partial'} />
+                <button className="btn small" onClick={probe} disabled={busy || !d.ssh?.available}>Probe</button>
+              </div>
+            </div>
+            <table className="tbl">
+              <tbody>
+                {Object.entries(d.fields || {}).map(([k, v]) => (
+                  <tr key={k}><td className="tiny" style={{ width: 110 }}>{k}</td><td className="mono tiny">{v}</td></tr>
+                ))}
+              </tbody>
+            </table>
+            {d.note && <div className="tiny" style={{ marginTop: 8 }}>{d.note}</div>}
+            {d.probe && (
+              <div className="card tight" style={{ marginTop: 8, borderColor: d.probe.ok ? 'var(--ok)' : 'var(--danger)' }}>
+                <div className="tiny">{d.probe.ok ? `Reached ${d.probe.identity || 'the box'}` : (d.probe.hint || d.probe.error || 'No answer')}</div>
+                {d.probe.stdout && <pre style={{ margin: '6px 0 0', fontSize: 11.5 }}>{d.probe.stdout}</pre>}
+              </div>
+            )}
+            <div className="row" style={{ marginTop: 8, gap: 6 }}>
+              <button className="btn small" onClick={makeKey}>Make a key</button>
+              <span className="tiny">Generates ~/.qoder/ssh/daytona_ed25519 and shows the public half to paste into Daytona.</span>
+            </div>
+            {keyInfo?.ok && (
+              <div style={{ marginTop: 8 }}>
+                <CopyField label="Public key — add this to the Daytona workspace" value={keyInfo.key} />
+              </div>
+            )}
+            <div style={{ marginTop: 10 }}>
+              <div className="tiny" style={{ marginBottom: 4 }}>Environment for a permanent target</div>
+              <CopyField value={'export DAYTONA_SSH_USER="<workspace-user>"\nexport DAYTONA_SSH_HOST="ssh.app.daytona.io"\nexport ANTICODEX_SANDBOX=daytona'} />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

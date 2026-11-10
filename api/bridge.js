@@ -69,6 +69,11 @@ import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServe
 import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
+import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
+import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser } from '../lib/daytona.js';
+import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
+import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
+import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
 
 // ---------------------------------------------------------------------------
 // Everything routes through /api/bridge with {action:...} so the same handlers
@@ -157,8 +162,34 @@ export default async function handler(req, res) {
       }
       case 'chat': return await handleChat(body, res, req);
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
-      case 'image': return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) }));
-      case 'video_start': return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) }));
+      case 'image': {
+        const out = await generateImage({ ...body, keys: await mergedKeys(req, body) });
+        // Keep the artifact. An image that exists only until the tab closes is the
+        // exact thing the Library page was built to fix.
+        try { recordArtifact(await accountKeyFor(req, body), {
+          kind: 'image',
+          title: String(body.prompt || 'Generated image').slice(0, 120),
+          source: out.provider === 'demo' ? 'demo (no Cloudflare key)' : `flux ${out.model || ''}`.trim(),
+          url: typeof out.image === 'string' && out.image.startsWith('data:') ? null : out.image,
+          thumb: typeof out.image === 'string' && out.image.startsWith('data:') ? out.image : null,
+          mime: 'image/png',
+          meta: { width: body.width || 1024, height: body.height || 1024, demo: Boolean(out.demo) },
+          thread_id: body.thread_id || null
+        }); } catch { /* the library must never break a generation */ }
+        return json(res, 200, out);
+      }
+      case 'video_start': {
+        const out = await startVideo({ ...body, keys: await mergedKeys(req, body) });
+        try { recordArtifact(await accountKeyFor(req, body), {
+          kind: 'video',
+          title: String(body.prompt || 'Generated video').slice(0, 120),
+          source: out.demo ? 'demo (no MiniMax key)' : `hailuo ${out.model || ''}`.trim(),
+          url: `/api/bridge?action=video_status&id=${encodeURIComponent(out.id)}`,
+          meta: { job: out.id, status: out.status, duration: out.duration, resolution: out.resolution },
+          thread_id: body.thread_id || null
+        }); } catch { /* the library must never break a generation */ }
+        return json(res, 200, out);
+      }
       case 'video_status': return json(res, 200, await queryVideo(body.id));
       case 'user_keys': return await handleUserKeys(req, body, res);
       case 'register': return json(res, 200, await safeAuth(() => authx.register(body)));
@@ -200,6 +231,11 @@ export default async function handler(req, res) {
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
+      case 'skillkit': return await handleSkillKit(req, body, res);
+      case 'daytona': return await handleDaytona(req, body, res);
+      case 'codex_map': return handleCodexMap(body, res);
+      case 'qoder_fieldkit': return json(res, 200, qoderFieldKit());
+      case 'library': return await handleLibrary(req, body, res);
       default: return json(res, 404, { error: `unknown action: ${action}` });
     }
   } catch (e) {
@@ -418,9 +454,58 @@ function withTemplate(system, template) {
   return [system, line].filter(Boolean).join('\n');
 }
 
+
+// --- skills in the turn -------------------------------------------------------
+//
+// "Whatever model is connected can access the skills and actually use them."
+// That sentence is only true if the skill text reaches the prompt, so this runs on
+// every chat path (streamed and one-shot) before the model is called.
+//
+// Four rules, because a 2,208-skill corpus is a context-window hazard:
+//   * opt-in per turn (`use_skills:false` disables), and an explicit `skills:[...]`
+//     list always wins over retrieval;
+//   * retrieval looks at the user's last message, not the whole thread;
+//   * budgets are hard (`max_skills`, per-skill chars, total chars) and cut text is
+//     replaced with a `skill_get` pointer rather than silently dropped;
+//   * `skills_mode: "auto" | "manual" | "off"` — a caller that wants the old
+//     behaviour (no injection) just says so.
+//
+// A failing skill subsystem must never take a chat down: any error degrades to
+// "no skills this turn" and says why in the frame metadata.
+
+function lastUserText(messages) {
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && typeof m.content === 'string') return m.content;
+  }
+  return '';
+}
+
+function skillsForTurn(body, messages) {
+  const mode = body.skills_mode || (body.use_skills === false ? 'off' : 'auto');
+  if (mode === 'off') return { text: '', injected: [], mode };
+  try {
+    const explicit = Array.isArray(body.skills) ? body.skills.filter((s) => typeof s === 'string') : null;
+    if (!explicit && mode !== 'auto' && mode !== 'manual') return { text: '', injected: [], mode };
+    const query = explicit && explicit.length ? '' : lastUserText(messages);
+    if (!explicit && !String(query).trim()) return { text: '', injected: [], mode };
+    const grounded = groundSkills(query, {
+      max_skills: body.skills_max || (explicit ? explicit.length : undefined),
+      per_skill_chars: body.skills_chars,
+      total_chars: body.skills_budget,
+      slugs: explicit || undefined,
+      tiers: Array.isArray(body.skills_tiers) ? body.skills_tiers : undefined
+    });
+    return { text: grounded.text || '', injected: grounded.injected || [], omitted: grounded.omitted || [], mode };
+  } catch (e) {
+    return { text: '', injected: [], mode, error: `Skills could not be resolved this turn: ${String(e.message || e).slice(0, 160)}` };
+  }
+}
+
 async function handleChat(body, res, req) {
   const { messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort } = body;
-  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
+  const skills = skillsForTurn(body, messages);
+  const systemPrompt = withTemplate([system, skills.text].filter(Boolean).join('\n\n') || undefined, normalizeChatTemplate(body.template));
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
   if (provider && (keys.__provider_defs_dropped_ids__ || []).includes(provider)) {
@@ -851,7 +936,15 @@ async function handleChatStream(req, res, body) {
   req.on('close', () => controller.abort());
 
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
-  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
+  // Skills for this turn are resolved before anything is called, and announced on
+  // the stream, so the UI can show which skill shaped the answer.
+  const skills = skillsForTurn(body, msgs);
+  const systemPrompt = withTemplate([system, skills.text].filter(Boolean).join('\n\n') || undefined, normalizeChatTemplate(body.template));
+  if (skills.injected.length) {
+    stream.send({ type: 'skills', injected: skills.injected.map((s2) => ({ slug: s2.slug, tier: s2.tier, why: s2.why, flags: s2.flags })), omitted: skills.omitted || [], mode: skills.mode });
+  } else if (skills.error) {
+    stream.send({ type: 'skills', injected: [], error: skills.error, mode: skills.mode });
+  }
 
   // A local agent instead of an HTTP model. Same SSE frames, so Chat renders it
   // exactly like any other answer — including the reasoning panel.
@@ -2213,4 +2306,194 @@ async function handleUpdateCheck(body, res) {
   } catch (e) {
     return json(res, 200, { ok: false, error: String(e.message || e) });
   }
+}
+
+// --- skills engine (skillkit) -------------------------------------------------
+//
+// The atlas is a build artifact (2,208 pinned skills), so listing and resolving it
+// is pure CPU and safe anywhere. Anything that *writes* — exporting a skill into
+// this machine's ~/.qoder/skills, reading a local skill root — is loopback-only,
+// exactly like the existing skills ops.
+//
+// The two ops that matter for an agent:
+//   resolve  — "which skills are being asked for?" (hybrid retrieval, scores, why)
+//   ground   — the prompt block itself, with budgets and a pointer to fetch more
+// Both are deterministic given the atlas, so a test can pin the behaviour.
+
+async function handleSkillKit(req, body, res) {
+  const op = body.op || 'stats';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+
+  if (op === 'stats') return json(res, 200, { ok: true, ...skillStats(), local });
+  if (op === 'list') return json(res, 200, listSkills({
+    q: body.q, tag: body.tag, tier: body.tier, source: body.source,
+    sort: body.sort, page: body.page, per: body.per
+  }));
+  if (op === 'get') {
+    const one = skillBody(body.slug);
+    if (!one) return json(res, 404, { ok: false, error: `No skill named "${body.slug}".` });
+    return json(res, 200, { ok: true, skill: one });
+  }
+  // `include_local` merges the skills installed on this machine (Qoder's own,
+  // Codex's, Claude's) into the retrieval corpus. Only a local caller can read
+  // that directory, so it is not offered to a hosted request.
+  const withLocal = Boolean(body.include_local) && local;
+  if (op === 'resolve') return json(res, 200, resolveSkills(body.text || body.q || '', {
+    limit: body.limit, slugs: body.slugs, tiers: body.tiers, include_local: withLocal
+  }));
+  if (op === 'ground') return json(res, 200, groundSkills(body.text || body.q || '', {
+    max_skills: body.max_skills, per_skill_chars: body.per_skill_chars, total_chars: body.total_chars,
+    slugs: body.slugs, tiers: body.tiers, include_local: withLocal
+  }));
+  if (op === 'scan') {
+    if (String(body.code || '').length > 400_000) return json(res, 413, { ok: false, error: 'Source is larger than 400 KB.' });
+    return json(res, 200, scanCode(body.code, { language: body.language, filename: body.filename }));
+  }
+  if (op === 'sources') {
+    const atlas = loadAtlas();
+    return json(res, 200, {
+      ok: true,
+      available: atlas.available,
+      generated_at: atlas.generated_at,
+      count: atlas.count,
+      sources: atlas.sources,
+      note: 'Pinned at these commits by scripts/build-skill-atlas.mjs. Re-running it is the only way this list changes.'
+    });
+  }
+  if (op === 'export') {
+    if (!local) return needsLocal(res, 'Exporting a skill writes to this machine — open the desktop app or run `npm start` locally.');
+    const slug = String(body.slug || '');
+    const destByTarget = {
+      qoder: path.join(os.homedir(), '.qoder', 'skills'),
+      codex: path.join(os.homedir(), '.codex', 'skills'),
+      claude: path.join(os.homedir(), '.claude', 'skills'),
+      workspace: null   // resolved per account below
+    };
+    const target = Object.keys(destByTarget).includes(body.target) ? body.target : 'qoder';
+    let dest = destByTarget[target];
+    if (!dest) {
+      const account = await accountKeyFor(req, body);
+      dest = path.join(wsRootFor(account), '.skills');
+    }
+    const out = exportSkill(slug, dest, { overwrite: body.overwrite === true });
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  if (op === 'installed') {
+    if (!local) {
+      return json(res, 200, {
+        ok: true, local: false, roots: [], installed: [], refused: [],
+        note: 'Reading ~/.qoder/skills is a filesystem read on your machine, so it needs the desktop app or a local server.'
+      });
+    }
+    return json(res, 200, { ok: true, local: true, ...installedSkills() });
+  }
+  if (op === 'local_corpus') {
+    if (!local) return json(res, 200, { ok: true, local: false, skills: [] });
+    return json(res, 200, { ok: true, local: true, skills: localCorpus() });
+  }
+  return json(res, 400, { ok: false, error: `Unknown skillkit op "${op}".` });
+}
+
+// --- Daytona ------------------------------------------------------------------
+//
+// SSH is the path that works everywhere, so it is the default. Nothing here runs
+// for a remote caller unless the caller is this machine: an HTTP request from the
+// internet must not be able to make the server SSH into a user's sandbox.
+
+async function handleDaytona(req, body, res) {
+  const op = body.op || 'status';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const status = daytonaStatus();
+
+  if (op === 'status') return json(res, 200, { ...status, local, recipe: setupRecipe() });
+  if (op === 'key') {
+    if (!local) return needsLocal(res, 'Creating and reading SSH keys is a local operation.');
+    const k = publicKey();
+    return json(res, 200, { ...k, note: 'Add this public key to the Daytona workspace once; then SSH works with no password.' });
+  }
+  if (!local) {
+    return needsLocal(res, 'Running commands over SSH is a local operation — the desktop app, or `npm start` on this machine.');
+  }
+  if (op === 'probe') return json(res, 200, { ok: true, ...(await sshProbe()), fields: setupRecipe().fields });
+  if (op === 'list') {
+    if (body.path !== undefined && body.path !== null && body.path !== '') {
+      return json(res, 200, await sshList(String(body.path)));
+    }
+    const out = await sshSandboxes();
+    return json(res, 200, out);
+  }
+  if (op === 'read') return json(res, 200, await sshRead(String(body.path || '')));
+  if (op === 'write') return json(res, 200, await sshWrite(String(body.path || ''), body.content));
+  if (op === 'exec') {
+    const out = await sshExec(String(body.command || ''), {
+      timeoutMs: body.timeout_ms, cwd: body.cwd || undefined
+    });
+    await audit({ type: 'daytona.exec', ok: Boolean(out.ok), exit_code: out.exit_code ?? null, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'api') {
+    const sub = String(body.method || 'list');
+    if (sub === 'list') return json(res, 200, await listSandboxes());
+    if (sub === 'create') return json(res, 200, await createSandbox(body.spec || {}));
+    if (sub === 'delete') return json(res, 200, await deleteSandbox(String(body.id || '')));
+    return json(res, 400, { ok: false, error: `Unknown daytona api method "${sub}".` });
+  }
+  return json(res, 400, { ok: false, error: `Unknown daytona op "${op}".` });
+}
+
+/** REST listing, with an honest answer when only SSH is configured. */
+async function sshSandboxes() {
+  const r = await listSandboxes();
+  if (r.ok) {
+    const list = Array.isArray(r.data) ? r.data : (r.data?.items || []);
+    return { ok: true, source: 'rest', sandboxes: list.slice(0, 100) };
+  }
+  return {
+    ok: true,
+    source: 'ssh',
+    sandboxes: [],
+    note: `${r.error} SSH still works for exec/files — only listing and creating need an API key.`
+  };
+}
+
+// --- Codex parity map ---------------------------------------------------------
+
+function handleCodexMap(body, res) {
+  const op = body.op || 'map';
+  if (op === 'crate') {
+    const detail = crateDetail(String(body.name || ''));
+    if (!detail) return json(res, 404, { ok: false, error: `No crate named "${body.name}" in the sweep.` });
+    return json(res, 200, { ok: true, ...detail });
+  }
+  const map = codexParity();
+  if (op === 'biggest') return json(res, 200, { ok: true, source: map.source, crates: biggestCrates(Number(body.n) || 12) });
+  return json(res, 200, { ...map, biggest: biggestCrates(10) });
+}
+
+// --- Library ------------------------------------------------------------------
+
+async function handleLibrary(req, body, res) {
+  const op = body.op || 'list';
+  const account = await accountKeyFor(req, body);
+  if (op === 'summary') return json(res, 200, librarySummary(account));
+  if (op === 'record') {
+    const out = recordArtifact(account, body.item || body);
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  if (op === 'kinds') {
+    return json(res, 200, {
+      ok: true,
+      kinds: Object.entries(ARTIFACT_CATALOG).map(([id, v]) => ({ id, label: v.label, icon: v.icon, extensions: v.extensions }))
+    });
+  }
+  return json(res, 200, listLibrary(account, { kind: body.kind, q: body.q, limit: body.limit, since: body.since }));
+}
+
+/** Who this request is acting for: the signed-in user's id, else the local
+ *  desktop, else `default`. Same rule the workspace uses. */
+async function accountKeyFor(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  const user = auth ? await authx.findByToken(auth).catch(() => null) : null;
+  if (user?.id) return String(user.id);
+  return 'default';
 }

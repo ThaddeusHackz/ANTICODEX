@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { chat as chatApi, skills as skillsApi } from '../lib/api.js';
+import { chat as chatApi, skills as skillsApi, skillkit } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { modelLabel } from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -28,6 +28,12 @@ export default function ClaudePage() {
     try { return JSON.parse(localStorage.getItem('acx_active_skills') || '[]'); } catch { return []; }
   });
   const [installing, setInstalling] = useState(false);
+  // Which skills shaped the last answer, and a real search over the atlas so the
+  // agent's skill picker is not a list of six hand-written names.
+  const [lastSkills, setLastSkills] = useState([]);
+  const [skillQuery, setSkillQuery] = useState('');
+  const [skillHits, setSkillHits] = useState([]);
+  const [skillStats, setSkillStats] = useState(null);
   // Installing writes to this machine, so it is offered only where the app can
   // reach the filesystem — the desktop build, not a hosted page.
   const canInstall = typeof window !== 'undefined' && Boolean(window.anticodexDesktop?.installSkill);
@@ -52,6 +58,19 @@ export default function ClaudePage() {
   // Skills are read from disk by the bridge (Codex's rules: a root is a `skills`
   // dir, a skill is a SKILL.md, a broken one is an error row, and the first root
   // to define a name wins).
+  useEffect(() => { skillkit.stats().then(setSkillStats).catch(() => {}); }, []);
+  useEffect(() => {
+    const term = skillQuery.trim();
+    if (term.length < 2) { setSkillHits([]); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      skillkit.resolve(term, { limit: 8, include_local: true })
+        .then((r) => { if (alive) setSkillHits(r.matched || []); })
+        .catch(() => {});
+    }, 160);
+    return () => { alive = false; clearTimeout(t); };
+  }, [skillQuery]);
+
   useEffect(() => {
     skillsApi.list()
       .then((r) => { setSkills(r.skills || []); setSkillErrors(r.errors || []); setSkillNote(r.note || null); })
@@ -75,22 +94,26 @@ export default function ClaudePage() {
     setMessages(next);
     setToolLog((l) => [...l, { tool: 'plan.update', args: content.slice(0, 60), ok: true }]);
     try {
-      // Active skills + any $mention in the message, resolved from the registry
-      // rather than from a hardcoded list.
+      // Skills come from the atlas engine, not a hardcoded list: the picks you made
+      // are honoured exactly, and anything else is retrieved from the pinned corpus
+      // with a hard character budget. The agent sees the same text a chat turn sees.
       let skillBlock = '';
       try {
-        const mentioned = await skillsApi.resolve(content);
-        const names = new Set([...activeSkills, ...(mentioned.matched || []).map((m) => m.name)]);
-        const blocks = [];
-        for (const n of names) {
-          const g = await skillsApi.get(n).catch(() => null);
-          if (g?.ok) blocks.push(g.instructions);
+        const grounded = await skillkit.ground(content, {
+          slugs: activeSkills.length ? activeSkills : undefined,
+          max_skills: activeSkills.length ? activeSkills.length : 3,
+          per_skill_chars: 5000,
+          total_chars: 18000
+        });
+        if (grounded.text) {
+          skillBlock = '\n\n' + grounded.text;
+          const names = (grounded.injected || []).map((s) => s.slug);
+          setToolLog((l) => [...l, { tool: 'skills.load', args: names.join(', '), ok: true }]);
+          setLastSkills(grounded.injected || []);
+        } else {
+          setLastSkills([]);
         }
-        if (blocks.length) {
-          skillBlock = '\n\n' + blocks.join('\n\n');
-          setToolLog((l) => [...l, { tool: 'skills.load', args: [...names].join(', '), ok: true }]);
-        }
-      } catch { /* skills are optional */ }
+      } catch { /* skills are optional — a failure here must not stop the answer */ }
 
       const r = await chatApi({
         model,
@@ -186,9 +209,48 @@ export default function ClaudePage() {
             </div>
           )}
           <div className="tiny" style={{ marginTop: 8 }}>
-            {skills.length} skill(s) from {new Set(skills.map((s) => s.scope)).size} scope(s)
-            {activeSkills.length ? ` · ${activeSkills.length} active` : ''} · mention one with <span className="mono">$name</span>
+            {skills.length} installed · {skillStats ? skillStats.count.toLocaleString() : '—'} in the atlas
+            {activeSkills.length ? ` · ${activeSkills.length} pinned for every turn` : ' · retrieval picks them per message'}
             {skillNote ? ` — ${skillNote}` : ''}
+          </div>
+
+          {/* The atlas, searchable. Picking here pins a skill to every turn; leaving
+              it empty lets retrieval choose per message from all 2,208. */}
+          <div style={{ marginTop: 10 }}>
+            <input
+              type="search"
+              value={skillQuery}
+              onChange={(e) => setSkillQuery(e.target.value)}
+              placeholder="Search the atlas to pin a skill…"
+              style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 9, color: 'var(--text)', padding: '7px 10px', fontSize: 12.5, outline: 'none' }}
+            />
+            {skillHits.length ? (
+              <div style={{ maxHeight: 190, overflowY: 'auto', marginTop: 6 }}>
+                {skillHits.map((h) => (
+                  <div key={h.slug} className="row" style={{ gap: 8, padding: '5px 2px', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600 }}>{h.slug} <span className="pill" style={{ fontSize: 10 }}>{h.tier}</span></div>
+                      <div className="tiny" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.description}</div>
+                    </div>
+                    <button className="btn small" onClick={() => toggleSkill(h.slug)}>
+                      {activeSkills.includes(h.slug) ? 'Unpin' : 'Pin'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : skillQuery.trim().length >= 2 ? <div className="tiny" style={{ padding: '6px 2px' }}>No atlas match.</div> : null}
+            {activeSkills.length ? (
+              <div className="row wrap" style={{ gap: 4, marginTop: 8 }}>
+                {activeSkills.map((n) => (
+                  <button key={n} className="pill" onClick={() => toggleSkill(n)} title="Unpin">{n} ✕</button>
+                ))}
+              </div>
+            ) : null}
+            {lastSkills.length ? (
+              <div className="tiny" style={{ marginTop: 8 }}>
+                Last turn used: {lastSkills.map((s) => s.slug).join(', ')}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
