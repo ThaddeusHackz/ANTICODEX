@@ -197,5 +197,28 @@ console.log('\n— ⌕Search spans every corpus —');
   ok('…that reads the atlas and the API catalogue', /loadAtlas\(\)/.test(bridge) && /loadCatalogue\(\)/.test(bridge));
 }
 
+
+console.log('\n— MCP permissions are enforced, not decorative —');
+{
+  const { toolAllowedByPermissions } = await import('../lib/mcp.js');
+  const ro = { id: 'rea', name: 'rea', permissions: { tools: true, read: true, write: false } };
+  const rw = { id: 'rea', name: 'rea', permissions: { tools: true, read: true, write: true } };
+  const off = { id: 'x', name: 'x', permissions: { tools: false, read: true, write: true } };
+
+  ok('a read-only connection allows reading', toolAllowedByPermissions(ro, 'read_file').ok === true);
+  ok('…and blocks a write', toolAllowedByPermissions(ro, 'write_file').ok === false);
+  ok('…with a reason that names the switch to flip', /Allow write/.test(toolAllowedByPermissions(ro, 'write_file').reason || ''));
+  ok('…and blocks a shell command', toolAllowedByPermissions(ro, 'bash').ok === false);
+  ok('a writable connection allows the same write', toolAllowedByPermissions(rw, 'write_file').ok === true);
+  ok('tools:false blocks everything', toolAllowedByPermissions(off, 'read_file').ok === false);
+  ok('a connection with no permission block is not blocked', toolAllowedByPermissions({ id: 'y' }, 'write_file').ok === true);
+
+  // The enforcement point, not just the classifier: a blocked call must come back as
+  // an error the model can read, never reach the server, and never silently succeed.
+  const mcp = fs.readFileSync(path.join(root, 'lib', 'mcp.js'), 'utf8');
+  ok('executeTool consults the permission check', /toolAllowedByPermissions\(conn, t\.name\)/.test(mcp));
+  ok('…and returns a blocked_by marker instead of calling through', /blocked_by: 'permissions'/.test(mcp));
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

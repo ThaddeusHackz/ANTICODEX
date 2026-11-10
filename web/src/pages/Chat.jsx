@@ -205,6 +205,16 @@ export default function ChatPage() {
     }
   }
 
+  /** Send with search forced on, even though `setActive` has not committed yet —
+   *  React state updates are asynchronous, so `send()` would read the old value. */
+  function sendSearch(text) {
+    const q = String(text || '').replace(/^search:\s*/i, '').trim();
+    setActive((a) => ({ ...a, search: true }));
+    // One tick later the state is committed; the chip visibly turns on first, which
+    // is the honest order (you see the mode you asked for).
+    setTimeout(() => send(q), 0);
+  }
+
   async function send(text) {
     const content = (text ?? input).trim();
     if (!content || busy) return;
@@ -226,6 +236,27 @@ export default function ChatPage() {
     setMessages(next);
     setBusy(true);
     const started = Date.now();
+
+    // ⌕ Search means: search, then answer. Before this, the chip only added a line
+    // to the system prompt ("use search results when available") and hoped a tool
+    // would fire — with no key, or no MCP search server, nothing was ever searched
+    // and the model just answered from memory while the chip looked active.
+    let searchContext = null;
+    let searchNote = null;
+    if (active.search && text === undefined) {
+      setLive((l) => (l ? { ...l, phase: 'searching' } : l));
+      try {
+        const r = await api.search({ query: content, max_results: 6 });
+        if (r?.results?.length) {
+          searchContext = r.results;
+          searchNote = `${r.results.length} source${r.results.length === 1 ? '' : 's'}${r.answer ? ' · summarised' : ''}`;
+        } else {
+          searchNote = r?.error || 'no results';
+        }
+      } catch (e) {
+        searchNote = e.message || 'search failed';
+      }
+    }
     setLive({ phase: 'contacting', elapsed: 0, text: '', thinking: '', firstToken: null, chars: 0, tools: [] });
     setSkillTrail([]);
     const controller = new AbortController();
@@ -239,7 +270,13 @@ export default function ChatPage() {
       let system = active.research
         ? 'You are ANTICODEX in Deep Research mode. Plan, use the search tool when available, and produce a structured, cited report.'
         : undefined;
-      if (active.search) system = ((system ? system + '\n' : '') + 'Use web search results when the search tool is available; cite sources as [n].');
+      if (active.search) {
+        system = (system ? system + '\n\n' : '') + (searchContext
+          ? `Web search results for the user's question are below. Answer from them, cite each claim as [n] matching the number, and say plainly if they do not answer the question.\n\n${
+            searchContext.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet || ''}`).join('\n\n')
+          }`
+          : `Search returned nothing usable (${searchNote || 'unavailable'}). Say so instead of answering from memory.`);
+      }
       const out = await api.chatStream({
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
@@ -578,7 +615,13 @@ export default function ChatPage() {
               {SUGGESTIONS.map((s) => (
                 <button key={s.title} className="suggest-card" onClick={() => {
                   if (s.to) { window.location.href = s.to + (s.text ? `?q=${encodeURIComponent(s.text)}` : ''); return; }
-                  if (s.tool) setActive((a) => ({ ...a, [s.tool]: true }));
+                  if (s.tool) {
+                    // Turn the mode on *and* send in one gesture: the card's promise
+                    // is "this will search", so the send must carry the search.
+                    setActive((a) => ({ ...a, [s.tool]: true }));
+                    sendSearch(s.text);
+                    return;
+                  }
                   send(s.text);
                 }}>
                   <strong>{s.icon} {s.title}</strong>

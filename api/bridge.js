@@ -1480,7 +1480,10 @@ async function handleRea(req, body, res) {
       };
       const existing = await findOne('mcp_connections', (x) => x.id === row.id);
       if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
-      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: false } });
+      // REA edits the app it is analysing, so its own registration needs write. The
+      // gate that matters is `permissions` on the row — and it is enforced now
+      // (`toolAllowedByPermissions`), not decorative.
+      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: true } });
       forgetTools();
       await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
       return json(res, 200, { ok: true, connection: row, tools: (probe.tools || []).length });

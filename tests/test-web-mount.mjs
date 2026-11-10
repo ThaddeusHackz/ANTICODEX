@@ -651,6 +651,19 @@ globalThis.__mount = (route) => {
       const after = win.document.querySelector('#root .main')?.textContent || '';
       ok('pressing it does not tear down the page', /Sandbox/.test(after) && errors.length === 0, errors.join(' | ').slice(0, 200));
     }
+    // Every rail destination gets mounted at least once. These four were never
+    // opened by any test, so a mount-time crash in them would have shipped.
+    for (const [route, needle] of [
+      ['/mcp', /Connectors/i],
+      ['/computer', /Computer/i],
+      ['/images', /Image/i],
+      ['/video', /Video/i]
+    ]) {
+      const before = errors.length;
+      const text3 = await mountAt(route, { token: reg.token, user: reg.user });
+      ok(`${route} renders`, needle.test(text3), text3.slice(0, 120));
+      ok(`${route} mounts without throwing`, errors.length === before, errors.slice(before).join(' | ').slice(0, 200));
+    }
     ok('no uncaught errors from the new pages', errors.length === 0, errors.join(' | ').slice(0, 300));
   }
 
