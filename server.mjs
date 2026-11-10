@@ -5,6 +5,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,8 +44,36 @@ const server = http.createServer(async (req, res) => {
     return res.end(fallbackPage());
   }
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' });
-  fs.createReadStream(filePath).pipe(res);
+  const type = MIME[ext] || 'application/octet-stream';
+  const headers = { 'Content-Type': type, 'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600' };
+
+  // Compress the things that are big and textual. The skill atlas index is 2 MB of
+  // JSON and 0.28 MB gzipped — on a phone over a hotspot that is the difference
+  // between the Skills page appearing and not. Streamed, so a large body never sits
+  // in memory; below 1 KB the framing costs more than it saves.
+  const compressible = /\.(json|js|css|svg|txt|webmanifest|map)$/.test(ext) || type.startsWith('text/');
+  const accept = String(req.headers['accept-encoding'] || '');
+  const encoding = !compressible ? null : /\bbr\b/.test(accept) ? 'br' : /\bgzip\b/.test(accept) ? 'gzip' : null;
+  const size = fs.statSync(filePath).size;
+  const useEncoding = encoding && size > 1024 ? encoding : null;
+
+  if (!useEncoding) {
+    headers['Content-Length'] = size;
+    res.writeHead(200, headers);
+    return fs.createReadStream(filePath).pipe(res);
+  }
+  headers['Vary'] = 'Accept-Encoding';
+  headers['Content-Encoding'] = useEncoding;
+  res.writeHead(200, headers);
+  const coder = useEncoding === 'br'
+    ? zlib.createBrotliCompress({ params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: size } })
+    : zlib.createGzip({ level: 6 });
+  const stream = fs.createReadStream(filePath).pipe(coder);
+  // A truncated gzip stream is worse than no compression: if the client hangs up
+  // mid-body, drop the pipe instead of writing to a dead socket.
+  stream.on('error', () => { try { res.destroy(); } catch { /* gone */ } });
+  res.on('close', () => { try { stream.destroy(); } catch { /* gone */ } });
+  stream.pipe(res);
 });
 
 function fallbackPage() {

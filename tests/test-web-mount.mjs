@@ -10,6 +10,7 @@
 //   node tests/test-web-mount.mjs
 
 import { spawn } from 'node:child_process';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -685,6 +686,39 @@ globalThis.__mount = (route) => {
         ok('…that searches message bodies', /Mount Rail Chat/.test(win.document.getElementById('root').textContent));
       }
     }
+  }
+
+
+  console.log('\n— the phone can actually load the atlas —');
+  {
+    // The skill atlas index is 2 MB of JSON. Serving it identity-encoded is ~7s on
+    // a 3G phone; the Skills page cannot wait that long. Assert on the wire.
+    const th = await import('node:http');
+    const get = (pathname, headers) => new Promise((resolve, reject) => {
+      const r = th.request({ host: '127.0.0.1', port: 8787, path: pathname, headers }, (res) => {
+        const chunks = [];
+        res.on('data', (d) => chunks.push(d));
+        res.on('end', () => resolve({ headers: res.headers, bytes: Buffer.concat(chunks).length, body: Buffer.concat(chunks) }));
+      });
+      r.on('error', reject); r.end();
+    });
+    const raw = await get('/skills-atlas/index.json', {});
+    const gz = await get('/skills-atlas/index.json', { 'accept-encoding': 'gzip' });
+    const br = await get('/skills-atlas/index.json', { 'accept-encoding': 'br' });
+    ok('the atlas index is served', raw.bytes > 1e6, `${raw.bytes} bytes`);
+    ok('…gzipped when the client asks', gz.headers['content-encoding'] === 'gzip' && gz.bytes < raw.bytes / 4, `${gz.bytes} vs ${raw.bytes}`);
+    ok('…and brotli when it can', br.headers['content-encoding'] === 'br' && br.bytes <= gz.bytes, `${br.bytes} vs ${gz.bytes}`);
+    ok('…and the compressed body is really the index', (() => {
+      try { return JSON.parse(zlib.gunzipSync(gz.body)).skills.length > 2000; } catch { return false; }
+    })());
+    ok('…without corrupting it for clients that do not compress', (() => {
+      try { return JSON.parse(String(raw.body)).skills.length > 2000; } catch { return false; }
+    })());
+    ok('a compressed response varies by encoding (no cache poisoning)', /accept-encoding/i.test(String(raw.headers.vary || gz.headers.vary)));
+    const small = await get('/manifest.webmanifest', { 'accept-encoding': 'gzip' });
+    ok('tiny files are not compressed (framing costs more)', !small.headers['content-encoding'] && Number(small.headers['content-length']) > 0);
+    const png = await get('/icon-192.png', { 'accept-encoding': 'gzip, br' });
+    ok('binary assets are never re-compressed', !png.headers['content-encoding'], String(png.headers['content-type']));
   }
 
   ok('server stayed alive throughout', server.exitCode === null, `exit ${server.exitCode}`);
