@@ -383,3 +383,158 @@ export const userKeys = {
   remove: (key_env) => api('user_keys', { op: 'delete', key_env })
 };
 export const updateCheck = () => api('update_check', {});
+
+// --- skills engine ----------------------------------------------------------
+// `list` and `resolve` are server-side over the pinned atlas, so the browser never
+// re-downloads the 2 MB index just to type in a search box.
+export const skillkit = {
+  stats: () => api('skillkit', { op: 'stats' }),
+  list: (p = {}) => api('skillkit', { op: 'list', ...p }),
+  get: (slug) => api('skillkit', { op: 'get', slug }),
+  resolve: (text, p = {}) => api('skillkit', { op: 'resolve', text, ...p }),
+  ground: (text, p = {}) => api('skillkit', { op: 'ground', text, ...p }),
+  scan: (code, p = {}) => api('skillkit', { op: 'scan', code, ...p }),
+  sources: () => api('skillkit', { op: 'sources' }),
+  installed: () => api('skillkit', { op: 'installed' }),
+  export: (slug, p = {}) => api('skillkit', { op: 'export', slug, ...p })
+};
+
+// --- Daytona ----------------------------------------------------------------
+// In the desktop app these run in the main process: SSH keys stay out of the page,
+// and the answer is the same JSON the bridge would have produced.
+const desktopDaytona = (op, args) => (typeof window !== 'undefined' && window.anticodexDesktop?.daytona
+  ? window.anticodexDesktop.daytona(op, args)
+  : api('daytona', { op, ...args }));
+
+export const daytona = {
+  status: () => desktopDaytona('status'),
+  key: () => desktopDaytona('key'),
+  probe: () => desktopDaytona('probe'),
+  list: (path) => desktopDaytona('list', { path }),
+  read: (path) => desktopDaytona('read', { path }),
+  write: (path, content) => desktopDaytona('write', { path, content }),
+  exec: (command, p = {}) => desktopDaytona('exec', { command, ...p }),
+  anywhere: (command, p = {}) => desktopDaytona('anywhere', { command, ...p }),
+  api: (method, p = {}) => api('daytona', { op: 'api', method, ...p }),
+  // Save a typed connection to ~/.qoder/daytona.json (local only). The status
+  // comes back with it, so the page never renders a stale "not configured".
+  configure: (set) => desktopDaytona('config', { set }),
+  steps: () => desktopDaytona('steps'),
+  provision: (opts = {}) => desktopDaytona('provision', opts),
+  revoke: () => desktopDaytona('revoke')
+};
+
+
+// --- the agent (OpenCode-shaped loop) ---------------------------------------
+export const agent = {
+  status: (target) => api('agent', { op: 'status', target }),
+  tools: (which) => api('agent', { op: 'tools', agent: which }),
+  // One-shot: the whole run resolves once. For scripts and tests.
+  run: (payload) => api('agent', { op: 'run', ...payload }),
+  /**
+   * Streamed run. Frames are the loop's own events:
+   * session, skills, assistant_delta, tool_start, tool_end, permission, todo,
+   * step_limit, done, error. `onEvent` sees every one; the caller renders them.
+   */
+  stream: async (payload, { onEvent, signal } = {}) => {
+    const body = { action: 'agent', op: 'stream', ...payload };
+    const token = localStorage.getItem('acx_token');
+    if (token) body.token = token;
+    if (!body.provider_defs) {
+      const defs = localGateways();
+      if (defs.length) body.provider_defs = defs;
+    }
+    const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch('/api/bridge', { method: 'POST', headers, body: JSON.stringify(body), signal });
+    if (!res.ok || !String(res.headers.get('content-type') || '').includes('text/event-stream')) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let text = '';
+    let final = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block2 = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const data = block2.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+        if (!data) continue;
+        let evt;
+        try { evt = JSON.parse(data); } catch { continue; }
+        if (evt.type === 'assistant_delta') text += (text ? '\n\n' : '') + (evt.text || '');
+        if (evt.type === 'done') final = evt;
+        if (evt.type === 'error') final = evt;
+        try { onEvent?.(evt); } catch { /* a view error must not kill the run */ }
+      }
+    }
+    return final ? { ...final, text: final.text || text } : { type: 'done', text };
+  }
+};
+
+// --- public-apis (Glasser's replacement) -----------------------------------
+export const publicApis = {
+  stats: () => api('publicapi', { op: 'stats' }),
+  search: (q, opts = {}) => api('publicapi', { op: 'search', q, ...opts }),
+  categories: () => api('publicapi', { op: 'categories' }),
+  call: (id, opts = {}) => api('publicapi', { op: 'call', id, ...opts })
+};
+
+// --- Codex parity map -------------------------------------------------------
+export const codexMap = {
+  map: () => api('codex_map', { op: 'map' }),
+  crate: (name) => api('codex_map', { op: 'crate', name }),
+  biggest: (n = 12) => api('codex_map', { op: 'biggest', n })
+};
+
+// --- Qoder field guide ------------------------------------------------------
+export const fieldKit = () => api('qoder_fieldkit', {});
+
+// --- Library ----------------------------------------------------------------
+export const library = {
+  list: (p = {}) => api('library', { op: 'list', ...p }),
+  summary: () => api('library', { op: 'summary' }),
+  kinds: () => api('library', { op: 'kinds' }),
+  record: (item) => api('library', { op: 'record', item })
+};
+
+// --- thread search ----------------------------------------------------------
+// Client-side over the local copy *and* the account copy, because a search that
+// only sees the server cannot find the chat you just wrote offline.
+export function searchThreads(list, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return [];
+  const terms = q.split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const t of list || []) {
+    if (!t) continue;
+    const title = String(t.title || '').toLowerCase();
+    const body = (t.messages || []).map((m) => String(m.content || '')).join('\n').toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (title.includes(term)) score += 8;
+      if (t.id.toLowerCase().includes(term)) score += 4;
+      const hits = body.split(term).length - 1;
+      if (hits) score += Math.min(hits, 6);
+    }
+    if (score > 0) {
+      const at = body.indexOf(terms[0]);
+      scored.push({
+        ...t,
+        score,
+        snippet: at >= 0 ? body.slice(Math.max(0, at - 50), at + 120).replace(/\s+/g, ' ') : ''
+      });
+    }
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, 40);
+}
+
+/** Escape hatch: call a bridge action by name (used by pages that read one
+ *  status endpoint and nothing else, e.g. the install page's release check). */
+export const raw = (action, payload = {}) => api(action, payload);

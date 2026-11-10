@@ -26,8 +26,13 @@ contextBridge.exposeInMainWorld('anticodexDesktop', {
   keychainStatus: () => ipcRenderer.invoke('acx:keychainStatus'),
   saveCustoms: (list) => ipcRenderer.invoke('acx:saveCustoms', list),
   getCustoms: () => ipcRenderer.invoke('acx:getCustoms'),
-  // Opens a file picker for a `.skill` archive and installs it into ~/.codex/skills.
-  installSkill: () => ipcRenderer.invoke('acx:skillInstall'),
+  // Installs a skill. With a slug it writes the atlas copy (works offline);
+  // without one it opens a picker for a `.skill` archive. `target` picks the root
+  // (qoder|codex|claude) and defaults to qoder, matching the web UI.
+  installSkill: (opts = {}) => ipcRenderer.invoke('acx:skillInstall', opts),
+  skillRoots: () => ipcRenderer.invoke('acx:skillRoots'),
+  // SSH to the Daytona workspace, executed in main so the key never reaches a page.
+  daytona: (op, args = {}) => ipcRenderer.invoke('acx:daytona', op, args),
   // Streamed chat: events arrive on a private channel, filtered by stream id.
   // The caller generates the id (or gets one back) because cancelling needs the
   // same id: a stream the renderer cannot name is a Stop button that only hides

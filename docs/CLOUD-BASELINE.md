@@ -46,21 +46,30 @@ Forensic baseline: `docs/FORENSIC-REPORT.md:34–95, 199–223` — Codex deskto
 | P2 | MISSING | OS integration — `.skill` install dialog-only; no file association, Explorer menu, login startup, tray; `anticodex://` runtime-registered only | main.mjs:40–74, 571; package-win.mjs:47–63; FORENSIC-REPORT.md:46–50 |
 | P2 | MISSING | Account COM bridge, app-server daemon, code-mode host, dictation/pets/personality; execpolicy DSL/cloud explicitly unknown | FORENSIC-REPORT.md:45, 86–87, 205; REA-EVIDENCE.md:326–333 |
 
-### iOS PWA installability
+### iOS PWA installability — shipped 2026-11-10
 
-| Priority | State | Gap | Evidence |
-|---|---|---|---|
-| P0 | MISSING | No `manifest.webmanifest`; web/public holds only logo + favicon; no manifest link | web/index.html:1–14 |
-| P0 | MISSING | No `apple-touch-icon`, `apple-mobile-web-app-capable`, `apple-mobile-web-app-status-bar-style`, `theme-color` → Add-to-Home-Screen yields a Safari tab, not a standalone app | web/index.html:3–9 |
-| P1 | MISSING | No service worker / offline cache / registration anywhere | zero grep hits; vite.config.js has only the react plugin |
-| P2 | MISSING | No 192/512px maskable icons, no `beforeinstallprompt` handling | web/public inventory |
+Audited as MISSING in the baseline; every row below was implemented and is asserted
+in `tests/test-atlas.mjs` (the "installers" block) so it cannot silently regress.
+
+| State | Item | Evidence |
+|---|---|---|
+| SHIPPED | `manifest.webmanifest` (name, short_name, standalone, theme/background colour, start_url, scope) linked from the document head | web/public/manifest.webmanifest, web/index.html |
+| SHIPPED | `apple-touch-icon` (180²), `apple-mobile-web-app-capable`, `apple-mobile-web-app-status-bar-style=black-translucent`, `apple-mobile-web-app-title`, `theme-color` → Add to Home Screen opens standalone, not a Safari tab | web/index.html |
+| SHIPPED | Service worker with a precached app shell, network-first for `/api/*`, cache-first for hashed assets, and a versioned cache that drops the previous one on activate | web/public/sw.js, registered from web/src/main.jsx |
+| SHIPPED | 192², 512² and 512²-maskable icons; `beforeinstallprompt` captured before first paint, a real prompt on Chromium, Share → Add to Home Screen on iOS, an honest "this browser cannot install installed" on Firefox, and a 14-day dismissal that can be cleared | web/public/icon-*.png, web/src/lib/pwa.js, web/src/pages/Install.jsx, tests/test-pwa.mjs (16 assertions across five user agents) |
+| SHIPPED | 12 launch screens generated for every iPhone/iPad size + `dist/ios/install.html` step-by-step guide | scripts/build-ios.mjs → dist/ios/ |
+| SHIPPED | Capacitor project for a real `.ipa` when a Mac and a signing team exist (`--archive` refuses honestly when `xcodebuild` is absent) | web/ios/, scripts/build-ios.mjs |
+
+Still not possible here, stated rather than implied: a signed `.ipa` needs macOS +
+Xcode + an Apple Developer team, and the sandbox has none of the three. The PWA is
+the deliverable on iOS today; the Capacitor project is the path to the App Store.
 
 ## 3. Top 5 next implementations (agreed order)
 
 1. **Real workspace**: wire the Codex file tree + terminal to real reads/exec through `api/bridge.js`, with `decideApproval` enforced server-side on every action (one bridge rule).
 2. **Real diff proposals**: parse → preview → approve → apply patches (Codex apply-patch parity).
 3. **Desktop auto-update finished**: zip extract-and-apply (or ship NSIS), renderer Accept UI wired to `onUpdateAvailable`, persisted `dismissed_version`.
-4. **iOS PWA bundle**: manifest + 192/512 maskable icons + Apple meta tags + minimal service worker (user chose PWA; no Mac/Xcode available for a native build).
+4. ~~**iOS PWA bundle**~~ — **done** (see "iOS PWA installability — shipped" above), plus a Capacitor project for the eventual `.ipa`.
 5. **Durable local state**: SQLite-backed threads/memories + goals engine on desktop, replacing localStorage strings and fake tool logs.
 
 ## 4. Constraints honored

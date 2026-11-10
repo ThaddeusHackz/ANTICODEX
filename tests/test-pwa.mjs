@@ -117,5 +117,103 @@ if (exists(path.join(dist, 'assets'))) {
   ok('built assets exist for registration checks (run `npm run build`)', false);
 }
 
+
+// --- the install state machine ------------------------------------------------
+// lib/pwa.js decides what the Install page is allowed to promise, and every branch
+// depends on the user agent plus whether the browser fired `beforeinstallprompt`.
+// It is pure enough to exercise directly, with a stubbed window.
+console.log('\n— lib/pwa.js across browsers —');
+{
+  const { pathToFileURL } = await import('node:url');
+  const store = new Map();
+  const makeWin = ({ ua, standalone = false, touch = 0, search = '' }) => {
+    const listeners = new Map();
+    const win = {
+      location: { search },
+      navigator: { userAgent: ua, maxTouchPoints: touch, standalone },
+      matchMedia: (q) => ({ matches: q.includes('standalone') ? standalone : false, addEventListener: () => {} }),
+      addEventListener: (n, f) => listeners.set(n, f),
+      localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) }
+    };
+    return { win, listeners };
+  };
+  const load = async ({ ua, standalone, touch, search }) => {
+    const { win, listeners } = makeWin({ ua, standalone, touch, search });
+    // The module reads window/navigator/document/localStorage at call time, so a
+    // rebuild of the globals between cases is enough — no module cache reset needed.
+    // Node exposes `navigator` as a getter-only global, so it is redefined rather
+    // than assigned. The module reads it through `navigator` at call time.
+    Object.defineProperty(globalThis, 'window', { value: win, configurable: true, writable: true });
+    Object.defineProperty(globalThis, 'navigator', { value: win.navigator, configurable: true, writable: true });
+    Object.defineProperty(globalThis, 'document', { value: { querySelector: () => null }, configurable: true, writable: true });
+    Object.defineProperty(globalThis, 'localStorage', { value: win.localStorage, configurable: true, writable: true });
+    Object.defineProperty(globalThis, 'matchMedia', { value: win.matchMedia, configurable: true, writable: true });
+    const mod = await import(pathToFileURL(path.join(root, 'web', 'src', 'lib', 'pwa.js')).href + `?v=${Math.random()}`);
+    return { mod, listeners, win };
+  };
+
+  const IOS = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  const IOS_CHROME = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0 Mobile/15E148 Safari/604.1';
+  const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
+  const MAC_CHROME = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+  const FIREFOX = 'Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0';
+
+  {
+    const { mod } = await load({ ua: IOS });
+    const st = mod.platformState();
+    ok('iOS Safari is offered the two taps, not a prompt', st.can === 'ios-steps' && st.ios && st.safari && !st.promptable);
+    ok('…and promptInstall says why there is nothing to click', (await mod.promptInstall()).outcome === 'unavailable');
+  }
+  {
+    const { mod } = await load({ ua: IOS_CHROME });
+    ok('Chrome on iOS is told to open Safari', mod.platformState().can === 'ios-other-browser');
+  }
+  {
+    const { mod } = await load({ ua: ANDROID });
+    ok('Chrome on Android awaits the browser prompt', mod.platformState().can === 'awaiting-prompt');
+  }
+  {
+    const { mod, listeners } = await load({ ua: ANDROID });
+    // Fire a fake beforeinstallprompt: the module must keep it and allow prompt().
+    let prompted = 0;
+    mod.watchInstallability();   // main.jsx does this before the first render
+    const evt = { preventDefault() {}, prompt() { prompted++; }, userChoice: Promise.resolve({ outcome: 'accepted' }) };
+    listeners.get('beforeinstallprompt')(evt);
+    const st = mod.platformState();
+    ok('…and becomes promptable the moment the event fires', st.can === 'prompt' && st.promptable);
+    const r = await mod.promptInstall();
+    ok('…prompt() is called exactly once', prompted === 1 && r.outcome === 'accepted');
+    ok('…and the event is not reusable', !mod.platformState().promptable);
+  }
+  {
+    const { mod, listeners } = await load({ ua: ANDROID });
+    mod.watchInstallability();
+    const evt = { preventDefault() {}, prompt() {}, userChoice: Promise.resolve({ outcome: 'dismissed' }) };
+    listeners.get('beforeinstallprompt')(evt);
+    await mod.promptInstall();
+    ok('a dismissed prompt is remembered', mod.platformState().dismissed === true);
+    ok('…and can be cleared', (mod.clearDismiss(), mod.platformState().dismissed === false));
+  }
+  {
+    const { mod } = await load({ ua: FIREFOX });
+    ok('Firefox desktop is told plainly that it cannot install', mod.platformState().can === 'unsupported');
+  }
+  {
+    const { mod } = await load({ ua: MAC_CHROME, standalone: true });
+    ok('an installed app knows it is installed', mod.platformState().can === 'installed' && mod.isStandalone());
+  }
+  {
+    const { mod } = await load({ ua: MAC_CHROME });
+    ok('a Chromium desktop tab waits for the prompt', mod.platformState().can === 'awaiting-prompt' && !mod.platformState().installed);
+  }
+  // The page must be wired to it, and the state must be captured before first paint.
+  const entry = read(path.join(root, 'web', 'src', 'main.jsx'));
+  ok('installability is captured before React renders', entry.indexOf('watchInstallability()') < entry.indexOf('ReactDOM.createRoot'));
+  const page = read(path.join(root, 'web', 'src', 'pages', 'Install.jsx'));
+  ok('the Install page offers the real prompt where one exists', /promptInstall\(\)/.test(page) && /Install ANTICODEX/.test(page));
+  ok('…the iOS two taps where it does not', /Add to Home Screen/.test(page));
+  ok('…and says when the browser cannot install at all', /cannot install a web app/.test(page));
+}
+
 console.log(`\n  ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

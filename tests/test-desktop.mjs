@@ -127,6 +127,21 @@ ok('desktop main loads the same bridge the website runs', /api\/bridge\.js|'brid
 {
   const preload = read('desktop/preload.mjs');
   const main = read('desktop/main.mjs');
+  // Skill install: one handler, three roots, and the atlas path must not need a
+  // picker (a slug is enough because the body ships with the app).
+  ok('skill install defaults to the same root the web UI exports to', /SKILL_TARGETS\[opts\.target\] \? opts\.target : 'qoder'/.test(main));
+  ok('…and knows all three roots Qoder/Codex/Claude read', /qoder:.*'\.qoder'.*'skills'/.test(main.replace(/\n\s*/g, ' ')) && /codex:/.test(main) && /claude:/.test(main));
+  ok('…writing an atlas skill without a file picker', /exportSkill\(String\(opts\.slug\)/.test(main));
+  ok('…and the picker path receives the chosen root', /installSkillArchive\(\{ dest:/.test(main));
+  ok('so the Installed tab can see what Browse installed', /acx:skillRoots/.test(main) && /skillRoots: \(\) => ipcRenderer\.invoke/.test(preload));
+  // Daytona in main: the private key must never be reachable from a page.
+  ok('SSH to Daytona runs in the main process', /ipcMain\.handle\('acx:daytona'/.test(main));
+  ok('…exposing no key material, only the ops', (() => {
+    const at = main.indexOf("ipcMain.handle('acx:daytona'");
+    const block = main.slice(at, at + 1600);
+    return /case 'exec'/.test(block) && !/privateKey|readFileSync.*id_/.test(block);
+  })());
+  ok('…and the renderer routes through it when it is there', /anticodexDesktop\?\.daytona/.test(read('web/src/lib/api.js')));
   const wanted = [...preload.matchAll(/invoke\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]);
   const offered = new Set([...main.matchAll(/ipcMain\.handle\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]));
   const missing = wanted.filter((c) => !offered.has(c));
@@ -439,10 +454,14 @@ try {
     // sources have to be the real endpoints.
     ok('the Skills route exists', /path="\/skills"/.test(read('web/src/App.jsx')) && /SkillsPage/.test(read('web/src/App.jsx')));
     const skillsPage = read('web/src/pages/Skills.jsx');
-    ok('…and reads the registry', /skillsApi\.list/.test(skillsPage));
-    ok('…and the template roots for the plugins tab', /artifactsApi\.list/.test(skillsPage));
+    // Rewritten 2026-11 for the 2,208-skill atlas: the registry read is now the
+    // skillkit engine (`skillkit.list` = the pinned atlas + hybrid retrieval), the
+    // template roots still come from the artifact picker, and the config view now
+    // reports refused roots with the reason the runtime would give.
+    ok('…and reads the registry', /skillkit\.(list|stats|get)/.test(skillsPage));
+    ok('…and the template roots for the plugins tab', /api\.artifacts\.list/.test(skillsPage));
     ok('…with per-account toggles rather than per-browser ones', /userKey\('acx_enabled_skills'/.test(skillsPage));
-    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /duplicates/.test(skillsPage));
+    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /refused/.test(skillsPage));
 
     // Installing a packaged skill is a write to this machine, so it goes through
     // the main process (file picker + the registry's own extractor), never the page.
@@ -453,7 +472,7 @@ try {
     ok('…into this machine\'s skill root', /\.codex.*'skills'|'skills'\)/.test(main));
     ok('…and refuses an archive with no SKILL.md before writing', /does not contain a SKILL\.md/.test(main));
     ok('…asks before replacing an installed skill', /already installed/.test(main) && /overwrite: true/.test(main));
-    ok('the renderer reaches it through the preload bridge only', /installSkill: \(\) => ipcRenderer\.invoke\('acx:skillInstall'\)/.test(preload));
+    ok('the renderer reaches it through the preload bridge only', /installSkill: \(opts = \{\}\) => ipcRenderer\.invoke\('acx:skillInstall', opts\)/.test(preload));
     ok('the install button only exists where the bridge does', /canInstall[\s\S]{0,160}installSkill/.test(read('web/src/pages/Claude.jsx')));
 
     const relative = await call(local.base, 'skills', { op: 'install', file: 'notes.skill' });

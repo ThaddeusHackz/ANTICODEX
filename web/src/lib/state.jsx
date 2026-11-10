@@ -14,7 +14,12 @@ export function AppProvider({ children }) {
   const [model, setModel] = useState(localStorage.getItem('acx_model') || 'anticodex/demo-core');
   // fast | balanced | max — how much deliberation the next answer is worth.
   const [effort, setEffort] = useState(localStorage.getItem('acx_effort') || 'balanced');
+  // On a phone the rail is a drawer, so it starts closed: 264px of navigation and
+  // 116px of chat is not a workspace. >= 900px keeps the column it always had.
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 900);
+  // A rail of glyphs (64px) instead of the full 264px column. Persisted: a person
+  // who works on a laptop should not have to re-collapse it every session.
+  const [railed, setRailedState] = useState(() => localStorage.getItem('acx_rail') === '1');
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -22,6 +27,7 @@ export function AppProvider({ children }) {
   }, [theme]);
 
   useEffect(() => { localStorage.setItem('acx_effort', effort); }, [effort]);
+  useEffect(() => { localStorage.setItem('acx_rail', railed ? '1' : '0'); }, [railed]);
 
   useEffect(() => {
     localStorage.setItem('acx_model', model);
@@ -76,7 +82,7 @@ export function AppProvider({ children }) {
     <Ctx.Provider value={{
       user, setUser, signIn, signOut, theme, setTheme,
       toast, notify, cfg, setCfg, model, setModel, effort, setEffort,
-      sidebarOpen, setSidebarOpen
+      sidebarOpen, setSidebarOpen, railed, setRailed: setRailedState
     }}>
       {children}
     </Ctx.Provider>

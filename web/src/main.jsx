@@ -3,7 +3,13 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App.jsx';
 import { AppProvider } from './lib/state.jsx';
+import { watchInstallability } from './lib/pwa.js';
 import './styles.css';
+
+// Capture `beforeinstallprompt` before the first paint: the event fires once, and
+// a component that starts listening after it has fired can never install the app.
+// A no-op inside Electron and on any browser that has no prompt.
+watchInstallability();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

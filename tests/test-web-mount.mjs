@@ -10,6 +10,7 @@
 //   node tests/test-web-mount.mjs
 
 import { spawn } from 'node:child_process';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -563,8 +564,20 @@ globalThis.__mount = (route) => {
   {
     const text = await mountAt('/sandbox', { token: reg.token, user: reg.user });
     ok('the page renders', /Sandbox/.test(text) && /Run/.test(text), text.slice(0, 120));
-    ok('it says what it will run', /JavaScript/.test(text) && /Python/.test(text));
-    ok('…and what it will not do', /not a container|only for the person sitting/i.test(text), text.slice(-200));
+    // The target the page opens on depends on whether a Daytona connection is saved
+    // on this machine (it defaults to Daytona when one is). The local-target claims
+    // are asserted with the local chip selected, so the test is about the app and
+    // not about the runner's home directory.
+    const text2 = () => win.document.querySelector('#root .main').textContent;
+    const machine = [...win.document.querySelectorAll('#root .chip')].find((b) => /This machine/.test(b.textContent));
+    ok('both targets are offered', Boolean(machine) && [...win.document.querySelectorAll('#root .chip')].some((b) => /Daytona/.test(b.textContent)));
+    if (machine) { click(machine); await settle(4); }
+    ok('it says what it will run', /JavaScript/.test(text2()) && /Python/.test(text2()), `has=${(text2().match(/JavaScript|Python/g) || []).join(',')}`);
+    ok('…and what it will not do', /not a container|only for the person sitting/i.test(text2()), text2().slice(-200));
+    // The connection form: the one field a user types into, and the honesty about
+    // where it is stored.
+    ok('the connection is editable in the page', Boolean(win.document.querySelector('#root input[placeholder*="daytona.io"]')));
+    ok('…and says where it is saved, without pretending to hold a key', /daytona\.json/.test(text2()) && /never a key or a token/.test(text2()));
   }
 
   console.log('\n— the Qoder page —');
@@ -599,6 +612,177 @@ globalThis.__mount = (route) => {
   ok('workspace files are keyed by account, not shared', !/(^|,)acx_fs(,|$)/.test(String(keys)) || String(keys).includes('acx_fs:'), String(keys));
   const railOther = await mountAt('/', { token: r2.token, user: r2.user });
   ok("one account's chats do not leak into another's rail", !railOther.includes('Mount Rail Chat'), railOther.slice(0, 180));
+
+
+  console.log('\n— the new surfaces render with real data —');
+  {
+    // Each of these pages pulls from a bridge action added in 2026-11. A page that
+    // builds but throws on mount is exactly the bug this suite exists for, so each
+    // is asserted on text that can only come from the endpoint.
+    const skillsText = await mountAt('/skills', { token: reg.token, user: reg.user });
+    ok('the Skills page renders', /Skills/.test(skillsText), skillsText.slice(0, 140));
+    ok('…with the real corpus size', /2,208|2208/.test(skillsText), skillsText.slice(0, 300));
+    ok('…and real skill cards', /skill/.test(skillsText) && skillsText.length > 600, `${skillsText.length} chars`);
+    const libraryText = await mountAt('/library', { token: reg.token, user: reg.user });
+    ok('the Library page renders', /Library/.test(libraryText), libraryText.slice(0, 140));
+    ok('…and either lists artifacts or says how to make one', /artifacts|Nothing here yet/i.test(libraryText), libraryText.slice(0, 300));
+    const parityText = await mountAt('/parity', { token: reg.token, user: reg.user });
+    ok('the Codex parity page renders', /Codex parity/.test(parityText), parityText.slice(0, 160));
+    ok('…with the swept commit and crate count', /[0-9a-f]{7,}/.test(parityText) && /12[0-9]|[0-9]{2,} crates/.test(parityText + ' crates'), parityText.slice(0, 400));
+    ok('…and names surfaces as implemented or partial', /implemented|partial|missing/i.test(parityText));
+    const evidenceText = await mountAt('/evidence', { token: reg.token, user: reg.user });
+    ok('the Evidence page renders', /Evidence/.test(evidenceText), evidenceText.slice(0, 160));
+    ok('…separating seen from inferred', /\[seen\]/.test(evidenceText) && /\[inferred\]/.test(evidenceText));
+    const installText = await mountAt('/install', { token: reg.token, user: reg.user });
+    ok('the Install page renders', /Install/.test(installText), installText.slice(0, 160));
+    ok('…for macOS and iOS', /macOS/.test(installText) && /iPhone/.test(installText));
+    const studioText = await mountAt('/studio', { token: reg.token, user: reg.user });
+    ok('Agent Studio renders at /studio', /Agent Studio/.test(studioText), studioText.slice(0, 160));
+    ok('…with the atlas reachable from it', /atlas/.test(studioText));
+    const sandboxText = await mountAt('/sandbox', { token: reg.token, user: reg.user });
+    ok('the Sandbox page offers both targets', /This machine/.test(sandboxText) && /Daytona/.test(sandboxText), sandboxText.slice(-160));
+    ok('no uncaught errors from the new pages', errors.length === 0, errors.join(' | ').slice(0, 300));
+  }
+
+
+  console.log('\n— the rail does what it says —');
+  {
+    // A brand-new chat has to clear the thread. The rail routes to "/?new=…" and
+    // renders the same page, so this is the difference between a working button and
+    // one that appears to do nothing.
+    await mountAt('/', { token: reg.token, user: reg.user });
+    const ta = () => win.document.querySelector('#root .composer textarea');
+    ok('the composer is on the empty state', Boolean(ta()), 'no textarea');
+    typeIn(ta(), 'a message that must disappear on New chat');
+    keydown(ta(), 'Enter');
+    await settle(20);
+    ok('a message is on screen', /a message that must disappear/.test(win.document.getElementById('root').textContent));
+    const newBtn = [...win.document.querySelectorAll('#root .nav-item')].find((b) => /New chat/.test(b.textContent));
+    ok('the rail has a New chat action', Boolean(newBtn));
+    click(newBtn);
+    await settle(12);
+    // Scope the assertion to the chat column: the rail legitimately still lists the
+    // thread by its title, which is the first message. The bug being tested is a
+    // conversation left in the message area.
+    const mainText = () => win.document.querySelector('#root .main').textContent;
+    ok('…and it clears the thread', !/a message that must disappear/.test(mainText()), 'still on screen; main=' + mainText().slice(0, 200));
+    ok('…back to the empty state', /What can I do for you\?/.test(mainText()), mainText().slice(0, 120));
+
+    // The command palette is the only way to reach 20 destinations from a keyboard.
+    win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
+    await settle(4);
+    const palette = win.document.querySelector('#root .modal[aria-label="Command palette"]');
+    ok('⌘K opens the command palette', Boolean(palette));
+    if (palette) {
+      const input = palette.querySelector('input');
+      typeIn(input, 'parity');
+      await settle(6);
+      ok('…and searching it finds a destination', /Codex parity/.test(palette.textContent));
+      ok('…by keyboard, with a selection', Boolean(palette.querySelector('.kbd')));
+    }
+    win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle(2);
+    ok('Escape closes it', !win.document.querySelector('#root .modal[aria-label="Command palette"]'));
+
+    // Chat search: the drawer input must find a thread by its body, not just title.
+    const searchBtn = [...win.document.querySelectorAll('#root .nav-item')].find((b) => /Search chats/.test(b.textContent));
+    ok('the rail has a chat search', Boolean(searchBtn));
+    if (searchBtn) {
+      click(searchBtn);
+      await settle(4);
+      const box = win.document.querySelector('#root .sidebar input[type="search"]');
+      ok('…which opens an input', Boolean(box));
+      if (box) {
+        typeIn(box, 'mount rail chat');
+        await settle(6);
+        ok('…that searches message bodies', /Mount Rail Chat/.test(win.document.getElementById('root').textContent));
+      }
+    }
+  }
+
+
+  console.log('\n— the phone can actually load the atlas —');
+  {
+    // The skill atlas index is 2 MB of JSON. Serving it identity-encoded is ~7s on
+    // a 3G phone; the Skills page cannot wait that long. Assert on the wire.
+    const th = await import('node:http');
+    const get = (pathname, headers) => new Promise((resolve, reject) => {
+      // PORT, not 8787: the harness starts the server on an ephemeral port so it can
+      // run beside a developer's dev server. Hardcoding 8787 here passed locally
+      // (where one was running) and failed in CI with ECONNREFUSED.
+      const r = th.request({ host: '127.0.0.1', port: PORT, path: pathname, headers }, (res) => {
+        const chunks = [];
+        res.on('data', (d) => chunks.push(d));
+        res.on('end', () => resolve({ headers: res.headers, bytes: Buffer.concat(chunks).length, body: Buffer.concat(chunks) }));
+      });
+      r.on('error', reject); r.end();
+    });
+    const raw = await get('/skills-atlas/index.json', {});
+    const gz = await get('/skills-atlas/index.json', { 'accept-encoding': 'gzip' });
+    const br = await get('/skills-atlas/index.json', { 'accept-encoding': 'br' });
+    ok('the atlas index is served', raw.bytes > 1e6, `${raw.bytes} bytes`);
+    ok('…gzipped when the client asks', gz.headers['content-encoding'] === 'gzip' && gz.bytes < raw.bytes / 4, `${gz.bytes} vs ${raw.bytes}`);
+    ok('…and brotli when it can', br.headers['content-encoding'] === 'br' && br.bytes <= gz.bytes, `${br.bytes} vs ${gz.bytes}`);
+    ok('…and the compressed body is really the index', (() => {
+      try { return JSON.parse(zlib.gunzipSync(gz.body)).skills.length > 2000; } catch { return false; }
+    })());
+    ok('…without corrupting it for clients that do not compress', (() => {
+      try { return JSON.parse(String(raw.body)).skills.length > 2000; } catch { return false; }
+    })());
+    ok('a compressed response varies by encoding (no cache poisoning)', /accept-encoding/i.test(String(raw.headers.vary || gz.headers.vary)));
+    const small = await get('/manifest.webmanifest', { 'accept-encoding': 'gzip' });
+    ok('tiny files are not compressed (framing costs more)', !small.headers['content-encoding'] && Number(small.headers['content-length']) > 0);
+    const png = await get('/icon-192.png', { 'accept-encoding': 'gzip, br' });
+    ok('binary assets are never re-compressed', !png.headers['content-encoding'], String(png.headers['content-type']));
+  }
+
+
+  console.log('\n— the rail is the specified rail —');
+  {
+    await mountAt('/', { token: reg.token, user: reg.user });
+    // The visible label, not the tooltip: the tooltip is the description ("Flux
+    // image generation"), which would make a rail that is right look wrong.
+    const labels = [...win.document.querySelectorAll('#root .sidebar .nav-item')]
+      .map((b) => (b.querySelector('.label')?.textContent || '').trim())
+      .filter(Boolean);
+    // The order the rail was specified in, verbatim from the request.
+    const SPEC = [
+      'New chat', 'Search chats', 'Library',
+      'Chat', 'Codex', 'Agent Studio',
+      'Sandbox', 'Images', 'Video', 'Connectors', 'Computer Use',
+      'Skills', 'REA', 'Qoder', 'Bring your setup'
+    ];
+    const positions = SPEC.map((l) => labels.findIndex((t) => t === l || t.startsWith(l)));
+    ok('every specified item is in the rail', positions.every((p) => p >= 0), SPEC.filter((_, i) => positions[i] < 0).join(', '));
+    ok('…in the specified order', positions.every((p, i) => i === 0 || p > positions[i - 1]), positions.join(','));
+    ok('…with Workspace as a group label', /Workspace/.test(win.document.querySelector('#root .sidebar').textContent));
+    ok('…and Chats once there are chats', /Chats|Type to search/.test(win.document.querySelector('#root .sidebar').textContent));
+    // No destination may appear twice: Library was in both the top actions and the
+    // Workspace group, which reads as two different pages.
+    const paths = [...win.document.querySelectorAll('#root .sidebar .nav-item')].map((b) => b.getAttribute('href') || b.dataset.to).filter(Boolean);
+    ok('no destination is listed twice', new Set(paths).size === paths.length, paths.join(' '));
+  }
+
+
+  console.log('\n— the agent and the catalogue render —');
+  {
+    const agentText = await mountAt('/agent', { token: reg.token, user: reg.user });
+    ok('the Agent page renders', /Agent/.test(agentText), agentText.slice(0, 120));
+    ok('…with Build / Plan / Explore', /Build/.test(agentText) && /Plan/.test(agentText) && /Explore/.test(agentText));
+    ok('…naming the machine it will run on', /This machine|Daytona/.test(agentText), agentText.slice(0, 200));
+    ok('…a task box and a run button', Boolean(win.document.querySelector('#root textarea')) && /Run/.test(agentText));
+    ok('…and a permissions panel, not a hidden policy', /Permissions/.test(agentText));
+    ok('…with auto-approve off by default', (() => {
+      const box = [...win.document.querySelectorAll('#root input[type=checkbox]')].find((b) => /auto-approve/i.test(b.closest('label')?.textContent || ''));
+      return box ? box.checked === false : false;
+    })());
+    const apisText = await mountAt('/apis', { token: reg.token, user: reg.user });
+    ok('the Public APIs page renders', /Public APIs/.test(apisText), apisText.slice(0, 120));
+    ok('…with the real catalogue count', /2,335|2335/.test(apisText), apisText.slice(0, 300));
+    ok('…and lists endpoints to pick from', /Cat Facts|Exchange|API/i.test(apisText) && apisText.length > 700, `${apisText.length} chars`);
+    ok('…a search box', Boolean(win.document.querySelector('#root input[placeholder*="data"]')));
+    ok('no uncaught errors from the new pages', errors.length === 0, errors.join(' | ').slice(0, 200));
+  }
 
   ok('server stayed alive throughout', server.exitCode === null, `exit ${server.exitCode}`);
 } catch (e) {
