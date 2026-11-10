@@ -361,23 +361,32 @@ console.log('\n— the connection doctor —');
   ok('…and says refused, not blocked', /refus/i.test(refused.rows[1].detail), refused.rows[1]?.detail);
   ok('…and the hint says the network is fine', /network path is fine/i.test(refused.rows[1].hint), refused.rows[1]?.hint);
 
-  // The layers must be reported in causal order and never after a failure.
-  d.saveDaytonaConfig({ user: 'nlhOT5bG7KrWEDanZJZuhyWCeYVQSOTL', host: 'ssh.app.daytona.io', port: 22 });
-  const live = await d.diagnose({ timeoutMs: 6000 });
+  // The live layers, with local fixtures. A test that needs the real
+  // ssh.app.daytona.io is a test that fails on a runner with different egress — it
+  // threw before asserting and turned into "exited 1, no ✗ lines listed". So the
+  // three shapes the doctor must distinguish are produced here instead:
+  //   1. a port that accepts and says nothing  → banner failure, "not a key problem"
+  //   2. a port that is closed                 → tcp failure, "refused"
+  //   3. layers in causal order, stopping at the first failure
+  const net = await import('node:net');
+  const silent = net.createServer((sock) => { sock.on('error', () => {}); /* accept, never speak */ });
+  await new Promise((r) => silent.listen(0, '127.0.0.1', r));
+  const silentPort = silent.address().port;
+  d.saveDaytonaConfig({ user: 'abc1234def', host: '127.0.0.1', port: silentPort });
+  const noBanner = await d.diagnose({ timeoutMs: 1200 });
+  ok('a host that accepts and stays silent fails at the banner', noBanner.failed_at === 'banner', JSON.stringify(noBanner.rows?.map((r) => `${r.layer}:${r.ok}`)));
+  const bRow = noBanner.rows.find((r) => r.layer === 'banner');
+  ok('…and is called neither a key problem nor a bad username', /not a key problem/.test(bRow?.hint || '') && /username/.test(bRow?.hint || ''));
+  ok('…and the rows before it are green, which is the useful part', noBanner.rows.filter((r) => r.ok).length === 2, JSON.stringify(noBanner.rows?.map((r) => r.layer)));
+  silent.close();
+
   const order = ['dns', 'tcp', 'banner', 'auth', 'tools'];
-  const idx = live.rows.map((r) => order.indexOf(r.layer));
-  ok('layers are reported in causal order', idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1])), JSON.stringify(live.rows.map((r) => r.layer)));
-  ok('a failure names the layer it stopped at', live.ok ? live.failed_at === null : order.includes(live.failed_at));
-  ok('every row carries a detail', live.rows.every((r) => typeof r.detail === 'string' && r.detail.length > 0));
-  ok('a failed row carries a hint, a passing one does not', live.rows.every((r) => (r.ok ? !r.hint : r.hint.length > 10)));
-  if (live.failed_at === 'banner') {
-    // The exact wording matters: it is the difference between "your key is wrong"
-    // and "your key was never looked at".
-    const b = live.rows.find((r) => r.layer === 'banner');
-    ok('a silent close is called neither a key problem nor a bad username', /not a key problem/.test(b.hint) && /username/.test(b.hint));
-    ok('…and it points at the alternative that works (REST)', /REST|API_KEY/.test(b.hint));
-  }
-  ok('the report includes what is installed once auth passes', live.failed_at !== 'tools' ? Array.isArray(live.missing) : live.missing.length >= 0);
+  const idx = noBanner.rows.map((r) => order.indexOf(r.layer));
+  ok('layers are reported in causal order', idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1])), JSON.stringify(noBanner.rows.map((r) => r.layer)));
+  ok('a failure names the layer it stopped at', order.includes(noBanner.failed_at));
+  ok('every row carries a detail', noBanner.rows.every((r) => typeof r.detail === 'string' && r.detail.length > 0));
+  ok('a failed row carries a hint, a passing one does not', noBanner.rows.every((r) => (r.ok ? !r.hint : r.hint.length > 10)));
+  ok('the report always includes `missing` (absent reads as "nothing missing")', Array.isArray(noBanner.missing));
 
   const bridge = fs.readFileSync(path.join(ROOT, 'api', 'bridge.js'), 'utf8');
   ok('the bridge exposes it as an op', /op === 'diagnose'/.test(bridge) && /await diagnose\(/.test(bridge));
