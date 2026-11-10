@@ -104,7 +104,7 @@ function NavButton({ item, active, railed, count, onClick }) {
 
 const newChatCounter = { current: 0 };
 
-function Sidebar({ threads, onOpenPalette, onSearch, searching, setSearching, searchQuery, setSearchQuery, searchHits }) {
+function Sidebar({ threads, onOpenPalette, onSearch, searching, setSearching, searchQuery, setSearchQuery, searchHits, searchGroups }) {
   const { user, signOut, sidebarOpen, setSidebarOpen, cfg, railed, setRailed } = useApp();
   const nav = useNavigate();
   const loc = useLocation();
@@ -171,13 +171,44 @@ function Sidebar({ threads, onOpenPalette, onSearch, searching, setSearching, se
               }}
             />
             {searchQuery.trim() ? (
-              searchHits.length ? searchHits.slice(0, 12).map((t) => (
-                <button key={t.id} className="thread-item" onClick={() => { nav(`/?thread=${encodeURIComponent(t.id)}`); setSearching(false); }}>
-                  <div style={{ color: 'var(--text)', fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title || 'Untitled chat'}</div>
-                  {t.snippet && <div style={{ fontSize: 11, opacity: .7, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.snippet}</div>}
-                </button>
-              )) : <div className="tiny" style={{ padding: '6px 8px' }}>No chat matches “{searchQuery}”.</div>
-            ) : <div className="tiny" style={{ padding: '6px 8px' }}>Type to search {threads.length} chat{threads.length === 1 ? '' : 's'}.</div>}
+              (searchGroups?.total || searchHits.length) ? (
+                <>
+                  {(searchGroups?.groups || []).map((g) => (
+                    <div key={g.id} className="thread-group">
+                      <div className="tiny thread-group-label"><span aria-hidden="true">{g.icon}</span> {g.label} · {g.items.length}</div>
+                      {g.items.map((it) => (
+                        <button
+                          key={`${g.id}-${it.id}`}
+                          className="thread-item search-hit"
+                          onClick={() => { nav(it.to); setSearching(false); }}
+                          title={it.title}
+                        >
+                          <span className="search-hit-title">{it.title}</span>
+                          {(it.subtitle || it.snippet) && (
+                            <span className="search-hit-sub">{it.subtitle || it.snippet}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                  {searchHits.length > 0 && (
+                    <div className="thread-group">
+                      <div className="tiny thread-group-label"><span aria-hidden="true">⌗</span> Chat snippets</div>
+                      {searchHits.slice(0, 6).map((t) => (
+                        <button key={t.id} className="thread-item" onClick={() => { nav(`/?thread=${encodeURIComponent(t.id)}`); setSearching(false); }}>
+                          <span className="search-hit-title">{t.title || 'Untitled chat'}</span>
+                          {t.snippet && <span className="search-hit-sub">{t.snippet}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : <div className="tiny" style={{ padding: '6px 8px' }}>Nothing matches “{searchQuery}” in chats, APIs, skills or connectors.</div>
+            ) : (
+              <div className="tiny" style={{ padding: '6px 8px' }}>
+                Searches {threads.length} chat{threads.length === 1 ? '' : 's'}, the API catalogue, the skill atlas and your connectors.
+              </div>
+            )}
           </div>
         )}
 
@@ -240,7 +271,7 @@ function MobileScrim() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   if (!narrow || !sidebarOpen || railed) return null;
-  return <div className="scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" />;
+  return <div className="scrim" onClick={() => setSidebarOpen(false)} aria-hidden="true" role="presentation" />;
 }
 
 function Topbar({ onOpenPalette }) {
@@ -309,6 +340,18 @@ function Shell({ children }) {
   }, [user?.id, loc.pathname]);
 
   const searchHits = useMemo(() => api.searchThreads(threads, searchQuery), [threads, searchQuery]);
+  // The local hits appear on the first keystroke; the cross-corpus groups arrive a
+  // moment later from the bridge. Debounced because the API catalogue is 2,335
+  // entries and typing "weather" should not run five full scans.
+  const [searchGroups, setSearchGroups] = useState(null);
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) { setSearchGroups(null); return; }
+    const t = setTimeout(() => {
+      api.searchAll(q).then(setSearchGroups).catch(() => setSearchGroups(null));
+    }, 140);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
 
   return (
     <div className="app">
@@ -321,6 +364,7 @@ function Shell({ children }) {
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         searchHits={searchHits}
+        searchGroups={searchGroups}
       />
       <MobileScrim />
       <main className="main">

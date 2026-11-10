@@ -41,7 +41,7 @@ import {
   streamAcpAnswer
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally as qoderAtlasTally } from '../lib/qoder-repos.js';
-import { webSearch } from '../lib/search.js';
+import { webSearch, searchEverything } from '../lib/search.js';
 import { generateImage } from '../lib/flux.js';
 import { startVideo, queryVideo } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
@@ -72,6 +72,7 @@ import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
+import { loadCatalogue } from '../lib/publicapis.js';
 import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState, diagnose } from '../lib/daytona.js';
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
 import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
@@ -164,6 +165,28 @@ export default async function handler(req, res) {
       }
       case 'chat': return await handleChat(body, res, req);
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
+      // ⌕Search has to find more than chats: the sidebar box searches the API
+      // catalogue, the skill atlas and this machine's connectors too, or people
+      // learn not to use it.
+      case 'search_all': {
+        const q = body.q || body.query || '';
+        const chats = await find('threads', () => true, 500).catch(() => []);
+        // The atlas is a build artifact: 2,208 skills, loaded lazily and cached by
+        // the module. `loadAtlas()` throws if the artifact is missing, which is a
+        // normal state on a fresh checkout — so a missing atlas must not break chat
+        // search, it just contributes no group.
+        let skills = null;
+        try { skills = loadAtlas(); } catch { skills = null; }
+        let apis = null;
+        try { apis = loadCatalogue(); } catch { apis = null; }
+        return json(res, 200, searchEverything(q, {
+          limit: Math.min(Number(body.limit) || 6, 20),
+          chats,
+          skills,
+          apis,
+          connectors: MCP_CATALOG
+        }));
+      }
       case 'image': {
         const out = await generateImage({ ...body, keys: await mergedKeys(req, body) });
         // Keep the artifact. An image that exists only until the tab closes is the

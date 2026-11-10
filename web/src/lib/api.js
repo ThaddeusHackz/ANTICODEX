@@ -169,6 +169,10 @@ export async function chatStream(payload, { onEvent, signal } = {}) {
   };
 }
 export const search = (payload) => api('search', payload);
+// Every local corpus at once — chats, the API catalogue, the skill atlas, this
+// machine's connectors. Web search stays separate because it costs money and can
+// fail; this one is free, offline and instantaneous.
+export const searchAll = (q, opts = {}) => api('search_all', { q, ...opts });
 export const image = (payload) => api('image', payload);
 export const videoStart = (payload) => api('video_start', payload);
 export const videoStatus = (id) => api('video_status', { id });

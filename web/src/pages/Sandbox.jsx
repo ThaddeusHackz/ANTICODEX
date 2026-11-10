@@ -290,11 +290,12 @@ export default function SandboxPage() {
                 row is the useful part: it proves the network works and moves the
                 suspicion to the one thing a user can actually change. */}
             <table className="table" style={{ fontSize: 12 }}>
+              <caption className="sr-only">Connection layers, in the order they are tested</caption>
               <tbody>
                 {(diag.rows || []).map((r) => (
                   <tr key={r.layer}>
-                    <td style={{ width: 16 }}>{r.ok ? '✓' : '✗'}</td>
-                    <td style={{ width: 58, fontFamily: 'var(--mono)' }}>{r.layer}</td>
+                    <td style={{ width: 16 }}><span aria-hidden="true">{r.ok ? '✓' : '✗'}</span><span className="sr-only">{r.ok ? 'ok' : 'failed'}</span></td>
+                    <th scope="row" style={{ width: 58, fontFamily: 'var(--mono)', textAlign: 'left' }}>{r.layer}</th>
                     <td style={{ whiteSpace: 'pre-wrap' }}>{r.detail}</td>
                     <td className="tiny" style={{ color: r.ok ? undefined : 'var(--danger)' }}>{r.hint}</td>
                   </tr>
@@ -348,8 +349,8 @@ export default function SandboxPage() {
                 <tbody>
                   {(provision?.steps || []).map((st) => (
                     <tr key={st.id}>
-                      <td style={{ width: 18 }}>{st.ok ? '✓' : st.optional ? '·' : '✗'}</td>
-                      <td>{st.label}</td>
+                      <td style={{ width: 18 }}><span aria-hidden="true">{st.ok ? '✓' : st.optional ? '·' : '✗'}</span><span className="sr-only">{st.ok ? 'done' : st.optional ? 'skipped' : 'failed'}</span></td>
+                      <th scope="row" style={{ textAlign: 'left', fontWeight: 500 }}>{st.label}</th>
                       <td className="tiny" style={{ whiteSpace: 'pre-wrap', opacity: .8 }}>{st.detail || st.error}</td>
                       <td className="tiny" style={{ textAlign: 'right' }}>{st.seconds}s</td>
                     </tr>
@@ -404,6 +405,8 @@ export default function SandboxPage() {
             <input
               value={command}
               onChange={(e) => setCommand(e.target.value)}
+              aria-label="Shell command to run"
+              spellCheck={false}
               style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
             />
             <div className="tiny" style={{ marginTop: 6 }}>Same target switch. A remote command runs over SSH; a local one goes through the workspace policy gate.</div>
@@ -455,7 +458,7 @@ export default function SandboxPage() {
             <table className="tbl">
               <tbody>
                 {Object.entries(d.fields || {}).map(([k, v]) => (
-                  <tr key={k}><td className="tiny" style={{ width: 110 }}>{k}</td><td className="mono tiny">{v}</td></tr>
+                  <tr key={k}><th scope="row" className="tiny" style={{ width: 110, textAlign: 'left', fontWeight: 500 }}>{k}</th><td className="mono tiny">{v}</td></tr>
                 ))}
               </tbody>
             </table>

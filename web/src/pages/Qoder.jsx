@@ -188,9 +188,10 @@ export default function QoderPage() {
           <div className="card" style={{ marginTop: 12 }}>
             <div className="card-head"><h3>Daytona, as Qoder asks for it</h3><div className="right"><span className="tiny">Sandbox → Daytona has the live values and the probe</span></div></div>
             <table className="tbl">
+              <caption className="sr-only">ACP run details</caption>
               <tbody>
                 {Object.entries(kit.daytona).map(([k, v]) => (
-                  <tr key={k}><td className="tiny" style={{ width: 130 }}>{k}</td><td className="mono tiny">{v}</td></tr>
+                  <tr key={k}><th scope="row" className="tiny" style={{ width: 130, textAlign: 'left', fontWeight: 500 }}>{k}</th><td className="mono tiny">{v}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -358,7 +359,7 @@ export default function QoderPage() {
           </select>
           <input value={wf.version} onChange={(e) => setWf({ ...wf, version: e.target.value })} style={{ width: 90 }} aria-label="qodercli version" />
           <label className="tiny" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input type="checkbox" checked={wf.mcp} onChange={(e) => setWf({ ...wf, mcp: e.target.checked })} /> qoder-github MCP
+            <input type="checkbox" checked={wf.mcp} onChange={(e) => setWf({ ...wf, mcp: e.target.checked })} aria-label="qoder-github MCP" /> qoder-github MCP
           </label>
         </div>
         <textarea

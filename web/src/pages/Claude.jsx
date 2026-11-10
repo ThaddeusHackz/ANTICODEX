@@ -151,7 +151,7 @@ export default function ClaudePage() {
           {plan.map((p, i) => (
             <div key={i} className="row" style={{ gap: 8, marginBottom: 8 }}>
               <span className="pill">{i + 1}</span>
-              <input value={p} onChange={(e) => setPlan(plan.map((x, j) => j === i ? e.target.value : x))} />
+              <input value={p} onChange={(e) => setPlan(plan.map((x, j) => j === i ? e.target.value : x))} aria-label={`Plan step ${i + 1}`} />
             </div>
           ))}
           <button className="btn small" onClick={() => setPlan([...plan, 'New step'])}>+ Add step</button>

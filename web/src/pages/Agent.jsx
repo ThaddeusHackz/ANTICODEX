@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../lib/state.jsx';
 import * as api from '../lib/api.js';
-import { Facts, StatusPill } from '../ui.jsx';
+import { Facts, StatusPill, Modal } from '../ui.jsx';
 
 // Agent — the OpenCode-shaped loop, on the machine you point it at.
 //
@@ -203,7 +203,7 @@ export default function AgentPage() {
             </span>
           )}
           <label className="tiny row" style={{ gap: 6, alignItems: 'center' }}>
-            <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} />
+            <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} />  {/* the wrapping <label> names it */}
             auto-approve changes on Daytona
           </label>
           <button className="btn small" onClick={runProvision} disabled={!status?.daytona?.configured || provisioning?.running}>
@@ -219,12 +219,14 @@ export default function AgentPage() {
         {provisioning && !provisioning.running && (
           <div style={{ marginTop: 8 }}>
             <div className="tiny" style={{ marginBottom: 4 }}>{provisioning.summary?.line || provisioning.error}</div>
+            {/* Row-header table: each cell is meaningless without the step name
+                beside it, so the first cell is a <th scope="row">, not a <td>. */}
             <table className="table" style={{ fontSize: 12 }}>
               <tbody>
                 {(provisioning.steps || []).map((s) => (
                   <tr key={s.id}>
-                    <td style={{ width: 20 }}>{s.ok ? '✓' : s.optional ? '·' : '✗'}</td>
-                    <td>{s.label}</td>
+                    <td style={{ width: 20 }}><span aria-hidden="true">{s.ok ? '✓' : s.optional ? '·' : '✗'}</span><span className="sr-only">{s.ok ? 'done' : s.optional ? 'skipped' : 'failed'}</span></td>
+                    <th scope="row" style={{ textAlign: 'left', fontWeight: 500 }}>{s.label}</th>
                     <td className="tiny" style={{ whiteSpace: 'pre-wrap', opacity: .8 }}>{s.detail || s.error}</td>
                     <td className="tiny" style={{ textAlign: 'right' }}>{s.seconds}s</td>
                   </tr>
@@ -318,16 +320,15 @@ export default function AgentPage() {
       </div>
 
       {diff && (
-        <div className="modal-backdrop" onClick={() => setDiff(null)}>
-          <div className="modal" style={{ maxWidth: 900 }} onClick={(e) => e.stopPropagation()}>
-            <div className="card-head"><h3>{diff.tool} diff</h3><div className="right"><button className="btn small ghost" onClick={() => setDiff(null)}>Close</button></div></div>
+        <Modal title={`${diff.tool} diff`} onClose={() => setDiff(null)} width={900}>
+          <div>
             <pre style={{ margin: 0, padding: 12, background: 'var(--bg-input)', borderRadius: 10, fontSize: 12, maxHeight: '70vh', overflow: 'auto' }}>
               {diff.text.split('\n').map((l, i) => (
                 <div key={i} style={{ color: l.startsWith('+') ? 'var(--ok)' : l.startsWith('-') ? 'var(--danger)' : 'var(--text-2)' }}>{l || ' '}</div>
               ))}
             </pre>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

@@ -214,6 +214,8 @@ export default function InstallPage() {
               <>
                 <div className="tiny" style={{ marginBottom: 8 }}>Release {release.version} · {new Date(release.published_at).toLocaleString()}</div>
                 <table className="tbl">
+                  <caption className="sr-only">macOS downloads in this release</caption>
+                  <thead><tr><th scope="col">File</th><th scope="col">Size</th><th scope="col">Download</th></tr></thead>
                   <tbody>
                     {macArm && <tr><td className="mono tiny">{macArm.name}</td><td className="num">{(macArm.size / 1024 / 1024).toFixed(1)} MB</td><td><a className="btn small" href={macArm.url}>Download</a></td></tr>}
                     {macX64 && <tr><td className="mono tiny">{macX64.name}</td><td className="num">{(macX64.size / 1024 / 1024).toFixed(1)} MB</td><td><a className="btn small" href={macX64.url}>Download</a></td></tr>}

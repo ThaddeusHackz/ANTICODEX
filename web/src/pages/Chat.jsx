@@ -4,6 +4,7 @@ import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/sta
 import { modelLabel, rememberLabel } from '../ModelPicker.jsx';
 import * as api from '../lib/api.js';
 import { renderMarkdown } from '../lib/markdown.js';
+import { Modal } from '../ui.jsx';
 
 const SUGGESTIONS = [
   { icon: '⌘', title: 'Write code with Codex', text: 'Build me a REST API scaffold with auth and tests', to: '/codex' },
@@ -539,12 +540,12 @@ export default function ChatPage() {
         </div>
 
         {picker && (
-          <div className="modal-back" onClick={(e) => { if (e.target === e.currentTarget) setPicker(null); }}>
-            <div className="modal" style={{ width: 720, maxWidth: '94vw' }}>
-              <div className="modal-head row between">
-                <span>What style should this {TEMPLATE_KINDS.find((k) => k.id === picker.kind)?.label.toLowerCase() || 'document'} use?</span>
-                <button className="icon-btn" onClick={() => setPicker(null)}>×</button>
-              </div>
+          <Modal
+            title={`What style should this ${TEMPLATE_KINDS.find((k) => k.id === picker.kind)?.label.toLowerCase() || 'document'} use?`}
+            onClose={() => setPicker(null)}
+            width={720}
+          >
+            <div>
               <div className="row" style={{ padding: '0 22px', gap: 6 }}>
                 {TEMPLATE_KINDS.map((k) => (
                   <button key={k.id} className={`chip-toggle ${picker.kind === k.id ? 'on' : ''}`} onClick={() => openTemplates(k.id)}>{k.label}</button>
@@ -568,7 +569,7 @@ export default function ChatPage() {
                 )}
               </div>
             </div>
-          </div>
+          </Modal>
         )}
 
         {empty && (

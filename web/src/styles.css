@@ -1031,3 +1031,33 @@ h3 { font-size: 16px; }
 }
 :where(button, [role="button"]):disabled { cursor: not-allowed; }
 ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* Visually hidden, still spoken. Every "✓ / ✗ / ·" glyph and every table status
+   cell needs words behind it for a screen reader; this is the standard way to put
+   them there without changing the layout. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+/* A caption is invisible but is the table's accessible name. */
+caption.sr-only { caption-side: top; }
+
+/* ---------- ⌕Search results ----------------------------------------------
+   One search box over five corpora. Each row is two lines (what, then where it
+   came from) so a skill and an API are distinguishable at a glance, and a group
+   label so "12 results" is not a wall of unrelated words. */
+.thread-group-label {
+  display: flex; align-items: center; gap: 5px;
+  padding: 8px 9px 3px; color: var(--muted); font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; font-size: 10px;
+}
+.search-hit { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; }
+.search-hit-title {
+  color: var(--text); font-size: 13px; font-weight: 550;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.search-hit-sub {
+  font-size: 11px; color: var(--muted); line-height: 1.35;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.search-hit:hover .search-hit-sub { color: var(--text-2); }

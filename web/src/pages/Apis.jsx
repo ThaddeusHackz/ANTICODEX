@@ -118,8 +118,8 @@ export default function ApisPage() {
             <option value="apiKey">API key</option>
             <option value="oauth">OAuth</option>
           </select>
-          <label className="tiny row" style={{ gap: 5, alignItems: 'center' }}><input type="checkbox" checked={ssl} onChange={(e) => setSsl(e.target.checked)} /> HTTPS only</label>
-          <label className="tiny row" style={{ gap: 5, alignItems: 'center' }}><input type="checkbox" checked={cors} onChange={(e) => setCors(e.target.checked)} /> browser-safe</label>
+          <label className="tiny row" style={{ gap: 5, alignItems: 'center' }}><input type="checkbox" checked={ssl} onChange={(e) => setSsl(e.target.checked)} aria-label="HTTPS only" /> HTTPS only</label>
+          <label className="tiny row" style={{ gap: 5, alignItems: 'center' }}><input type="checkbox" checked={cors} onChange={(e) => setCors(e.target.checked)} aria-label="Browser-safe (CORS) only" /> browser-safe</label>
           <button className="btn small" onClick={() => search(q)} disabled={busy}>{busy ? 'Searching…' : 'Search'}</button>
         </div>
         {result && <div className="tiny" style={{ marginTop: 6 }}>{result.total ? `${result.total.toLocaleString()} match${result.total === 1 ? '' : 'es'}${result.query ? ` for “${result.query}”` : ' — browsing all'}` : (result.note || 'No match. Try fewer words.')}</div>}

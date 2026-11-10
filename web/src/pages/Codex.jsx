@@ -442,7 +442,7 @@ export default function CodexPage() {
           </button>
         ))}
         <label className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px' }}>
-          <input type="checkbox" checked={net} onChange={(e) => toggleNet(e.target.checked)} /> allow network
+          <input type="checkbox" checked={net} onChange={(e) => toggleNet(e.target.checked)} aria-label="Allow network in the sandbox" /> allow network
         </label>
         <div className="tiny mono" style={{ padding: '0 10px 8px', opacity: 0.8 }}>
           {egress.running
