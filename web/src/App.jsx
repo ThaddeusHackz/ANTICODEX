@@ -21,6 +21,8 @@ import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
 import SetupPage from './pages/Setup.jsx';
 import LibraryPage from './pages/Library.jsx';
+import AgentPage from './pages/Agent.jsx';
+import ApisPage from './pages/Apis.jsx';
 import ParityPage from './pages/Parity.jsx';
 import EvidencePage from './pages/Evidence.jsx';
 import InstallPage from './pages/Install.jsx';
@@ -64,6 +66,8 @@ const NAV_WORKSPACE = [
 // Beyond the specified rail: the pages that back up what the app claims. Kept in
 // their own group so the named list above stays exactly the named list.
 const NAV_INTEL = [
+  { to: '/agent', icon: '⚙', label: 'Agent', title: 'OpenCode-style agent: read, write, edit, bash on Daytona' },
+  { to: '/apis', icon: '⛁', label: 'Public APIs', title: '2,335 free endpoints the agent can call' },
   { to: '/parity', icon: '◎', label: 'Codex parity', title: 'Every crate, and where we implement it' },
   { to: '/evidence', icon: '⌸', label: 'Evidence', title: 'The reverse-engineering record' },
   { to: '/install', icon: '⤓', label: 'Install', title: 'macOS app, iPhone app, PWA' }
@@ -357,6 +361,8 @@ export default function App() {
         <Route path="/images" element={<Shell><Guarded><ImagesPage /></Guarded></Shell>} />
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
         <Route path="/library" element={<Shell><Guarded><LibraryPage /></Guarded></Shell>} />
+        <Route path="/agent" element={<Shell><Guarded><AgentPage /></Guarded></Shell>} />
+        <Route path="/apis" element={<Shell><Guarded><ApisPage /></Guarded></Shell>} />
         <Route path="/skills" element={<Shell><Guarded><SkillsPage /></Guarded></Shell>} />
         <Route path="/rea" element={<Shell><Guarded><ReaPage /></Guarded></Shell>} />
         <Route path="/qoder" element={<Shell><Guarded><QoderPage /></Guarded></Shell>} />

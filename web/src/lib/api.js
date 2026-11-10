@@ -418,7 +418,72 @@ export const daytona = {
   api: (method, p = {}) => api('daytona', { op: 'api', method, ...p }),
   // Save a typed connection to ~/.qoder/daytona.json (local only). The status
   // comes back with it, so the page never renders a stale "not configured".
-  configure: (set) => desktopDaytona('config', { set })
+  configure: (set) => desktopDaytona('config', { set }),
+  steps: () => desktopDaytona('steps'),
+  provision: (opts = {}) => desktopDaytona('provision', opts),
+  revoke: () => desktopDaytona('revoke')
+};
+
+
+// --- the agent (OpenCode-shaped loop) ---------------------------------------
+export const agent = {
+  status: (target) => api('agent', { op: 'status', target }),
+  tools: (which) => api('agent', { op: 'tools', agent: which }),
+  // One-shot: the whole run resolves once. For scripts and tests.
+  run: (payload) => api('agent', { op: 'run', ...payload }),
+  /**
+   * Streamed run. Frames are the loop's own events:
+   * session, skills, assistant_delta, tool_start, tool_end, permission, todo,
+   * step_limit, done, error. `onEvent` sees every one; the caller renders them.
+   */
+  stream: async (payload, { onEvent, signal } = {}) => {
+    const body = { action: 'agent', op: 'stream', ...payload };
+    const token = localStorage.getItem('acx_token');
+    if (token) body.token = token;
+    if (!body.provider_defs) {
+      const defs = localGateways();
+      if (defs.length) body.provider_defs = defs;
+    }
+    const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch('/api/bridge', { method: 'POST', headers, body: JSON.stringify(body), signal });
+    if (!res.ok || !String(res.headers.get('content-type') || '').includes('text/event-stream')) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let text = '';
+    let final = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block2 = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const data = block2.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+        if (!data) continue;
+        let evt;
+        try { evt = JSON.parse(data); } catch { continue; }
+        if (evt.type === 'assistant_delta') text += (text ? '\n\n' : '') + (evt.text || '');
+        if (evt.type === 'done') final = evt;
+        if (evt.type === 'error') final = evt;
+        try { onEvent?.(evt); } catch { /* a view error must not kill the run */ }
+      }
+    }
+    return final ? { ...final, text: final.text || text } : { type: 'done', text };
+  }
+};
+
+// --- public-apis (Glasser's replacement) -----------------------------------
+export const publicApis = {
+  stats: () => api('publicapi', { op: 'stats' }),
+  search: (q, opts = {}) => api('publicapi', { op: 'search', q, ...opts }),
+  categories: () => api('publicapi', { op: 'categories' }),
+  call: (id, opts = {}) => api('publicapi', { op: 'call', id, ...opts })
 };
 
 // --- Codex parity map -------------------------------------------------------

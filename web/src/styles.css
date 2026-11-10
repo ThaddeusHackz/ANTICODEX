@@ -258,6 +258,13 @@ h3 { font-size: 16px; }
   position: fixed; inset: 0; background: rgba(0, 0, 0, .55); z-index: 100;
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
+/* The scrim: a real overlay so a dialog cannot be clicked past, plus an alias for
+   the older `.modal-back` name still used by a couple of pages. */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: rgba(6, 8, 12, .62); backdrop-filter: blur(3px);
+}
+.modal-backdrop .modal { max-height: 86vh; }
 .modal {
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: 18px;
   width: min(860px, 100%); max-height: 86vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: var(--shadow);
@@ -981,4 +988,15 @@ h3 { font-size: 16px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
   .chat-wrap { scroll-behavior: auto; }
+}
+
+/* Tables: the agent's step checklist and the sandbox installer report are tables
+   because a list of commands deserves columns (what, whether, how long). */
+.table { width: 100%; border-collapse: collapse; }
+.table td, .table th { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.table tr:last-child td { border-bottom: none; }
+.table code { font-family: var(--mono); font-size: 11.8px; }
+@media (max-width: 900px) {
+  /* On a phone a wide table scrolls rather than pushing the page sideways. */
+  .table { display: block; overflow-x: auto; white-space: nowrap; }
 }

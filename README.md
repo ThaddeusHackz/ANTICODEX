@@ -365,6 +365,45 @@ See [`docs/REA-EVIDENCE.md`](docs/REA-EVIDENCE.md) for the evidence behind each 
 Apache-2.0 (see `LICENSE`). Architecture study credits `openai/codex` (Apache-2.0) — see `NOTICE`.
 All ANTICODEX branding, UI and code are original; no proprietary OpenAI/Anthropic assets are redistributed.
 
+## The agent, and the machine it runs on (2026-11)
+
+ANTICODEX now has a coding agent with hands, built to the shape
+[sst/opencode](https://github.com/sst/opencode) uses: three agents (Build, Plan,
+Explore), a permission set of `allow` / `ask` / `deny` with glob patterns instead of
+a boolean per tool, a stepped loop that forces a text answer at its cap, and tools
+that are thin — read, write, edit, patch, bash, grep, glob, list, skill, todos.
+
+What it adds is the part opencode does not have: **the machine is chosen**. Every
+tool runs on this host or inside the Daytona sandbox over SSH, and every result says
+which one. Plan mode is read-only by construction — the write tools are never
+offered to the model, so they cannot be talked into being used.
+
+| | |
+| --- | --- |
+| Page | `/agent` — Build/Plan/Explore, a visible part per tool call, diffs, a task list, a permissions panel |
+| Bridge | `action: "agent"` → `op: status \| tools \| run \| stream` (SSE) |
+| Docs | `docs/AGENT.md` |
+
+The Daytona connection is a saved token with a **1,440-minute countdown** and a
+rotation log (`~/.qoder/daytona.json`, mode 600, never a key). **Install / repair
+the sandbox** provisions the box in nine idempotent steps — git, ripgrep, Node,
+Python, qodercli, skillui, vibesec, the agent workspace — and reports each one by
+reading its output. Details: `docs/DAYTONA.md`.
+
+### Glasser is gone
+
+The paid broker is replaced by a catalogue of **2,335 free APIs** from
+[public-apis](https://github.com/public-apis/public-apis) (MIT), pinned by commit,
+searchable by the agent and callable with one GET. 1,136 need no key. The tool
+refuses loopback, private ranges, the cloud metadata address, non-GET methods and
+any API whose key it does not have — and says what to do instead. Page: `/apis`.
+Docs: `docs/PUBLIC-APIS.md`.
+
+```bash
+npm run apis                 # rebuild the catalogue from the pinned copy
+npm run test:agent           # 106 assertions: the loop, permissions, diffs, refusals
+```
+
 ## The workspace shell (2026-11)
 
 The rail, the pages and the phone build were rebuilt around one rule: **a number on

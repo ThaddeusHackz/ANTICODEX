@@ -49,6 +49,8 @@ import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
+import { runAgent, agentList, resolveAgent, resolveTarget, decide } from '../lib/agent.js';
+import { catalogueStats, search as publicApiSearch, callApi as publicApiCall, publicApiPrompt, publicApiTools, PUBLIC_API_LIMITS } from '../lib/publicapis.js';
 import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
 import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
 import { startEgressProxy, checkEgress, normalizeEgressPolicy, EGRESS_MODES, DEFAULT_ALLOW, egressEnv } from '../lib/egress.js';
@@ -70,7 +72,7 @@ import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
-import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget } from '../lib/daytona.js';
+import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState } from '../lib/daytona.js';
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
 import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
 import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
@@ -233,6 +235,8 @@ export default async function handler(req, res) {
       case 'update_check': return await handleUpdateCheck(body, res);
       case 'skillkit': return await handleSkillKit(req, body, res);
       case 'daytona': return await handleDaytona(req, body, res);
+      case 'agent': return await handleAgent(req, body, res);
+      case 'publicapi': return await handlePublicApi(req, body, res);
       case 'codex_map': return handleCodexMap(body, res);
       case 'qoder_fieldkit': return json(res, 200, qoderFieldKit());
       case 'library': return await handleLibrary(req, body, res);
@@ -2394,6 +2398,158 @@ async function handleSkillKit(req, body, res) {
   return json(res, 400, { ok: false, error: `Unknown skillkit op "${op}".` });
 }
 
+// --- the agent ------------------------------------------------------------------
+//
+// An OpenCode-shaped agent loop (permission set → tools → steps) whose tools run on
+// a chosen machine. Two shapes:
+//
+//   op=run      POST, answers once (a script, a test, a caller without SSE)
+//   op=stream   SSE, one frame per step — the shape the UI renders
+//
+// The model is whatever this session already uses: the same keys, the same
+// provider resolution, the same `chat()` the rest of the app calls. That is the
+// point — the agent is not a second product with a second key.
+
+async function handleAgent(req, body, res) {
+  const op = body.op || 'status';
+  if (op === 'status') {
+    const target = resolveTarget(body.target);
+    return json(res, 200, {
+      ok: true,
+      agents: agentList(),
+      target,
+      daytona: daytonaStatus(),
+      // Reading and writing files on the machine that serves this request is a
+      // local power; a hosted caller gets the catalogue, not the filesystem.
+      local: canSpawnLocalMcp() && isLoopback(req),
+      limits: { max_steps: 40, max_tool_output: 24000 }
+    });
+  }
+  if (op === 'tools') {
+    const { toolDefs, allowedTools } = await import('../lib/agent.js');
+    const agent = resolveAgent(body.agent);
+    const pub = publicApiTools();
+    const defs = allowedTools(agent, toolDefs(agent, { includePublicApi: true, publicApiTool: pub[0] || null }));
+    return json(res, 200, { ok: true, agent: agent.id, tools: defs.map((d) => ({ name: d.function?.name, description: d.function?.description, parameters: d.function?.parameters })) });
+  }
+
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const target = resolveTarget(body.target);
+  if (target.mode === 'local' && !local) {
+    return needsLocal(res, 'An agent that reads and runs things on this machine needs the desktop app, or `npm start` here.');
+  }
+
+  // A workspace the agent works in: the account's, so two accounts cannot collide.
+  const account = await accountKeyFor(req, body);
+  const msgs = Array.isArray(body.messages) ? body.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant')) : [];
+  if (!msgs.length) return json(res, 400, { ok: false, error: 'messages is required (at least one user message).' });
+
+  const skills = skillsForTurn(body, msgs);
+  const skillsBlock = [skills.text, publicApiPrompt()].filter(Boolean).join('\n\n');
+  const mcpTools = body.use_mcp === false ? [] : (await (async () => {
+    const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 20)).slice(0, 8);
+    if (!conns.length) return [];
+    try { return (await toolsFor(conns)).tools || []; } catch { return []; }
+  })());
+
+  // Permission answers arrive as a queue of already-decided ids, and anything not
+  // pre-decided is asked over the stream when the loop pauses on it.
+  const grants = body.grants && typeof body.grants === 'object' ? body.grants : {};
+  const decided = new Map(Array.isArray(body.permissions) ? body.permissions.map((p) => [String(p.id), String(p.decision || 'deny')]) : []);
+  const session = { id: body.session_id, grants: { ...grants }, todos: body.todos || [] };
+
+  const callModel = async ({ messages, tools, agent }) => {
+    const out = await chat({
+      messages, model: body.model, system: body.system, temperature: body.temperature,
+      max_tokens: body.max_tokens, provider: body.provider, keys: await mergedKeys(req, body),
+      tools: tools && tools.length ? tools : undefined, effort: body.effort
+    });
+    if (String(body.agent_mode || '') === 'plan') void agent;
+    return out;
+  };
+
+  // SSE is one-way, so an `ask` cannot be answered mid-stream. Two honest answers:
+  //   * `auto_approve` is a switch the user flipped on the page, which is consent
+  //     for this turn — and the grant is recorded so the transcript shows it;
+  //   * otherwise the call is denied and the model is told, rather than the turn
+  //     hanging forever on a question nobody can hear.
+  const makeAsker = () => async (request) => {
+    if (decided.has(request.id)) return decided.get(request.id);
+    if (body.auto_approve === true && target.mode === 'daytona') return 'allow_always';
+    return 'deny';
+  };
+
+  const run = () => runAgent({
+    messages: msgs,
+    agent: body.agent || 'build',
+    target: body.target || 'auto',
+    account,
+    session,
+    callModel,
+    askPermission: makeAsker(op === 'stream'),
+    onStep: () => {},
+    skillsBlock,
+    mcpTools,
+    publicApiEnabled: body.use_publicapi !== false,
+    maxSteps: body.max_steps
+  });
+
+  if (op === 'stream') {
+    const stream = sse(res);
+    let aborted = false;
+    req.on('close', () => { aborted = true; });
+    try {
+      for await (const evt of run()) {
+        if (aborted || stream.closed) break;
+        stream.send(evt);
+      }
+    } catch (e) {
+      stream.send({ type: 'error', error: String(e?.message || e) });
+    }
+    await audit({ type: 'agent.stream', ok: true, target: target.mode, ip: clientIp(req) }).catch(() => {});
+    return stream.end();
+  }
+
+  // Non-streamed: collect the frames into the answer plus the steps.
+  const events = [];
+  const toolSteps = [];
+  let text = '';
+  try {
+    for await (const evt of run()) {
+      events.push(evt.type);
+      if (evt.type === 'assistant_delta') text += (text ? '\n\n' : '') + evt.text;
+      if (evt.type === 'tool_end') toolSteps.push({ tool: evt.tool, ok: evt.ok, error: evt.error, target: evt.target, duration_ms: evt.duration_ms, diff: evt.diff });
+      if (evt.type === 'session') session.id = evt.sessionId;
+    }
+  } catch (e) {
+    return json(res, 200, { ok: false, error: String(e?.message || e), steps: toolSteps });
+  }
+  await audit({ type: 'agent.run', ok: true, target: target.mode, tools: toolSteps.length, ip: clientIp(req) }).catch(() => {});
+  return json(res, 200, { ok: true, text, steps: toolSteps, session_id: session.id, grants: session.grants, events });
+}
+
+// --- public-apis ---------------------------------------------------------------
+// Glasser's replacement: a catalogue the agent can search, and one GET it can make.
+// Reads are pure CPU; a `call` reaches the internet, so it is loopback-only — a
+// hosted deployment must not become an open proxy for arbitrary hosts.
+
+async function handlePublicApi(req, body, res) {
+  const op = body.op || 'stats';
+  if (op === 'stats') return json(res, 200, { ok: true, ...catalogueStats(), limits: PUBLIC_API_LIMITS, local: canSpawnLocalMcp() && isLoopback(req) });
+  if (op === 'search') return json(res, 200, { ok: true, ...publicApiSearch(body.q || '', { limit: body.limit, category: body.category, auth: body.auth, https: body.https, cors: body.cors, page: body.page, per: body.per }) });
+  if (op === 'categories') {
+    const st = catalogueStats();
+    return json(res, 200, { ok: true, categories: Object.entries(st.by_category || {}).map(([name, n]) => ({ name, count: n })).sort((a, b) => b.count - a.count) });
+  }
+  if (op === 'call') {
+    if (!(canSpawnLocalMcp() && isLoopback(req))) return needsLocal(res, 'Calling a third-party API from this server is a local operation.');
+    const out = await publicApiCall(String(body.id || ''), { path: body.path, headers: body.headers, timeoutMs: body.timeout_ms, method: body.method });
+    await audit({ type: 'publicapi.call', ok: Boolean(out.ok), id: body.id, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  return json(res, 400, { ok: false, error: `Unknown publicapi op "${op}" (stats | search | categories | call)` });
+}
+
 // --- Daytona ------------------------------------------------------------------
 //
 // SSH is the path that works everywhere, so it is the default. Nothing here runs
@@ -2405,7 +2561,12 @@ async function handleDaytona(req, body, res) {
   const local = canSpawnLocalMcp() && isLoopback(req);
   const status = daytonaStatus();
 
-  if (op === 'status') return json(res, 200, { ...status, local, recipe: setupRecipe(), config: daytonaConfig() });
+  if (op === 'status') {
+    // `session_token` (not `token`) is the name the UI renders: it is a *session*
+    // credential with a countdown, and calling it a token invited it to be pasted
+    // into a config as if it were permanent.
+    return json(res, 200, { ...status, local, recipe: setupRecipe(), config: daytonaConfig(), session_token: status.token });
+  }
   if (op === 'config') {
     // Saving a connection writes ~/.qoder/daytona.json, which is a local file — a
     // hosted caller must not be able to aim this machine's SSH somewhere else.
@@ -2437,7 +2598,26 @@ async function handleDaytona(req, body, res) {
   if (!local) {
     return needsLocal(res, 'Running commands over SSH is a local operation — the desktop app, or `npm start` on this machine.');
   }
-  if (op === 'probe') return json(res, 200, { ok: true, ...(await sshProbe()), fields: setupRecipe().fields });
+  if (op === 'probe') {
+    const out = await sshProbe();
+    // A probe is also the only truthful check of an expiry countdown: the countdown
+    // is a hint from the paste time, while the box either answers or it does not.
+    return json(res, 200, { ...out, fields: setupRecipe().fields, session_token: status.token });
+  }
+  if (op === 'provision') {
+    const out = await provisionWorkspace({ only: body.only || null, timeoutMs: body.timeout_ms });
+    await audit({ type: 'daytona.provision', ok: Boolean(out.ok), steps: (out.steps || []).length, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'steps') {
+    return json(res, 200, { ok: true, steps: PROVISION_STEPS.map((x) => ({ id: x.id, label: x.label, why: x.why, optional: Boolean(x.optional) })), session_token: status.token });
+  }
+  if (op === 'revoke') {
+    // Forgetting a token locally is the only revocation this app can honestly do:
+    // the credential itself is retired in Daytona's console.
+    const out = saveDaytonaConfig({ clear_token: true, user: null });
+    return json(res, 200, { ok: true, cleared: true, file: out.file, note: 'The saved token is gone from this machine. To invalidate it for real, rotate or delete the workspace user in Daytona.' });
+  }
   if (op === 'list') {
     if (body.path !== undefined && body.path !== null && body.path !== '') {
       return json(res, 200, await sshList(String(body.path)));

@@ -1,5 +1,17 @@
 # Qoder user-level setup — what was installed, and what could not be
 
+> **Superseded in part (2026-11-10).** Glasser has been removed from this app: its
+> MCP server entry, its login and its role are replaced by the public-apis
+> catalogue (`docs/PUBLIC-APIS.md`). The sections below are kept because they record
+> what was actually run on this machine — including the failures — and because the
+> `glasser` *skill* is still in `~/.qoder/skills`. To finish the removal:
+>
+> ```bash
+> rm -rf ~/.qoder/skills/glasser
+> # then remove the "glasser" entry from ~/.qoder/settings.json → mcpServers
+> ```
+
+
 Record of the machine configuration this repository was built alongside
 (2026-11-10). Every line is a command that was run or a check that was made, so it
 can be repeated or audited.

@@ -49,6 +49,9 @@ export default function SandboxPage() {
   const [keyInfo, setKeyInfo] = useState(null);
   const [conn, setConn] = useState('');
   const [saving, setSaving] = useState(false);
+  const [steps, setSteps] = useState(null);
+  const [provision, setProvision] = useState(null);
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     api.sandbox.status().then(setStatus).catch(() => {});
@@ -60,6 +63,38 @@ export default function SandboxPage() {
       if (ssh.target) setConn(ssh.target);
     }).catch(() => {});
   }, []);
+
+  // The countdown has to move without a refetch, or "23h 59m left" is a screenshot
+  // of a number rather than a clock.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+
+
+  async function revoke() {
+    if (!window.confirm('Forget the saved workspace token on this machine? You will need to paste a new one to reconnect.')) return;
+    try {
+      const r = await api.daytona.revoke();
+      if (r?.ok) {
+        notify('Token forgotten on this machine — rotate it in Daytona too if it may have leaked.');
+        api.daytona.status().then((dd) => { setDaytona(dd); setConn(''); }).catch(() => {});
+      } else notify(r?.error || 'Could not clear the token');
+    } catch (e) { notify(e.message); }
+  }
+
+  async function runProvision(only) {
+    setProvision({ running: true, steps: [] });
+    try {
+      const r = await api.daytona.provision(only ? { only } : {});
+      setProvision({ running: false, ...r });
+      notify(r?.ok ? (r.summary?.line || 'Sandbox ready') : (r?.error || r?.summary?.line || 'Provisioning failed'));
+    } catch (e) {
+      setProvision({ running: false, error: e.message });
+      notify(e.message);
+    }
+  }
 
   function pickLang(id) {
     setLang(id);
@@ -141,6 +176,14 @@ export default function SandboxPage() {
   const d = daytona || {};
   const daConfigured = Boolean(d.configured);
 
+  // Declared after `daConfigured` on purpose: a hook body runs in render order, so
+  // reading it above its `const` is a temporal-dead-zone crash — which is exactly
+  // what the mount suite caught ("Cannot access 'daConfigured' before initialization").
+  useEffect(() => {
+    if (!daConfigured) return;
+    api.daytona.steps().then(setSteps).catch(() => {});
+  }, [daConfigured]);
+
   return (
     <div className="page">
       <div className="page-head">
@@ -197,12 +240,77 @@ export default function SandboxPage() {
           <button className="btn small" onClick={probe} disabled={busy || !daConfigured}>Probe</button>
           <button className="btn small ghost" onClick={makeKey} disabled={busy}>Make a key</button>
         </div>
+        {d.session_token?.known && (
+          <div style={{ marginTop: 8 }}>
+            {/* The countdown. A Daytona workspace user is issued for 1,440 minutes;
+                a long agent run that starts at 23h55m has five minutes to live, and
+                the page has to say so before the run, not after it fails. */}
+            <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+              <span className={`pill ${d.session_token.state === 'valid' ? 'ok' : d.session_token.state === 'soon' ? 'warn' : 'err'}`}>
+                {d.session_token.state === 'expired'
+                  ? `expired ${Math.abs(Math.round((d.session_token.expires_at - now) / 60000))} min ago`
+                  : `${Math.floor(Math.max(0, d.session_token.expires_at - now) / 3600000)}h ${Math.floor((Math.max(0, d.session_token.expires_at - now) % 3600000) / 60000)}m left`}
+              </span>
+              <span className="tiny">…{d.session_token.suffix} · {d.session_token.ttl_minutes} min lifetime</span>
+              <div style={{ flex: 1, minWidth: 80, height: 6, background: 'var(--bg-input)', borderRadius: 99, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.max(0, Math.min(100, 100 * (1 - Math.max(0, d.session_token.expires_at - now) / (d.session_token.ttl_minutes * 60000))))}%`, height: '100%', background: d.session_token.state === 'valid' ? 'var(--ok, #2e7d32)' : 'var(--danger)' }} />
+              </div>
+              <button className="btn tiny ghost" onClick={revoke}>Forget token</button>
+            </div>
+            <div className="tiny" style={{ marginTop: 4 }}>{d.session_token.note}</div>
+            {Array.isArray(d.rotation) && d.rotation.length > 0 && (
+              <div className="tiny" style={{ marginTop: 4, opacity: .75 }}>
+                Rotated {d.rotation.length}× this machine · last: …{d.rotation[d.rotation.length - 1].replaced_suffix} → …{d.rotation[d.rotation.length - 1].set_suffix} on {new Date(d.rotation[d.rotation.length - 1].replaced_at).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
         {d.source && (
           <div className="tiny" style={{ marginTop: 6 }}>
             Source: user {d.source.user}, host {d.source.host}, port {d.source.port}, key {d.source.key}.
           </div>
         )}
         {d.note && <div className="tiny" style={{ marginTop: 4 }}>{d.note}</div>}
+
+        {/* Install / repair: the checklist that makes the remote box usable by the
+            agent (git, rg, node, python, qodercli…). Every row is a command whose
+            output was read — no row says "done" because a script exited 0. */}
+        {daConfigured && (
+          <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+            <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+              <b style={{ fontSize: 13 }}>Install / repair the sandbox</b>
+              <div className="between" />
+              <button className="btn small primary" onClick={() => runProvision()} disabled={provision?.running}>
+                {provision?.running ? 'Installing…' : 'Run all steps'}
+              </button>
+            </div>
+            <div className="tiny" style={{ marginTop: 4 }}>
+              Idempotent, sequential, and honest per step. A required step that fails stops the run; an optional one (qodercli,
+              skillui, vibesec) is reported and skipped.
+            </div>
+            {(provision?.steps?.length > 0 || steps?.steps?.length > 0) && (
+              <table className="table" style={{ fontSize: 12, marginTop: 8 }}>
+                <tbody>
+                  {(provision?.steps || []).map((st) => (
+                    <tr key={st.id}>
+                      <td style={{ width: 18 }}>{st.ok ? '✓' : st.optional ? '·' : '✗'}</td>
+                      <td>{st.label}</td>
+                      <td className="tiny" style={{ whiteSpace: 'pre-wrap', opacity: .8 }}>{st.detail || st.error}</td>
+                      <td className="tiny" style={{ textAlign: 'right' }}>{st.seconds}s</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {provision?.summary?.line && <div className="tiny" style={{ marginTop: 6 }}>{provision.summary.line}</div>}
+            {provision?.error && <div className="tiny" style={{ marginTop: 6, color: 'var(--danger)' }}>{provision.error}</div>}
+            {!provision && (steps?.steps || []).length > 0 && (
+              <div className="tiny" style={{ marginTop: 8 }}>
+                Steps: {(steps.steps || []).map((x) => x.label).join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="section split">

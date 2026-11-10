@@ -763,6 +763,27 @@ globalThis.__mount = (route) => {
     ok('no destination is listed twice', new Set(paths).size === paths.length, paths.join(' '));
   }
 
+
+  console.log('\n— the agent and the catalogue render —');
+  {
+    const agentText = await mountAt('/agent', { token: reg.token, user: reg.user });
+    ok('the Agent page renders', /Agent/.test(agentText), agentText.slice(0, 120));
+    ok('…with Build / Plan / Explore', /Build/.test(agentText) && /Plan/.test(agentText) && /Explore/.test(agentText));
+    ok('…naming the machine it will run on', /This machine|Daytona/.test(agentText), agentText.slice(0, 200));
+    ok('…a task box and a run button', Boolean(win.document.querySelector('#root textarea')) && /Run/.test(agentText));
+    ok('…and a permissions panel, not a hidden policy', /Permissions/.test(agentText));
+    ok('…with auto-approve off by default', (() => {
+      const box = [...win.document.querySelectorAll('#root input[type=checkbox]')].find((b) => /auto-approve/i.test(b.closest('label')?.textContent || ''));
+      return box ? box.checked === false : false;
+    })());
+    const apisText = await mountAt('/apis', { token: reg.token, user: reg.user });
+    ok('the Public APIs page renders', /Public APIs/.test(apisText), apisText.slice(0, 120));
+    ok('…with the real catalogue count', /2,335|2335/.test(apisText), apisText.slice(0, 300));
+    ok('…and lists endpoints to pick from', /Cat Facts|Exchange|API/i.test(apisText) && apisText.length > 700, `${apisText.length} chars`);
+    ok('…a search box', Boolean(win.document.querySelector('#root input[placeholder*="data"]')));
+    ok('no uncaught errors from the new pages', errors.length === 0, errors.join(' | ').slice(0, 200));
+  }
+
   ok('server stayed alive throughout', server.exitCode === null, `exit ${server.exitCode}`);
 } catch (e) {
   failed++;

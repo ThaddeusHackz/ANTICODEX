@@ -25,3 +25,7 @@ coverage/
 google_drive/
 relay/work/
 .rea-scan/
+
+# The upstream README is 343 KB of build input; the catalogue in lib/ and
+# web/public/ is what ships. `npm run apis -- --refresh` re-fetches it.
+vendor/public-apis-README.md

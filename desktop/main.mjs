@@ -266,7 +266,10 @@ ipcMain.handle('acx:daytona', async (_e, op, args = {}) => {
   try {
     const d = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'daytona.js')).href);
     switch (op) {
-      case 'status': return { ok: true, ...d.daytonaStatus(), recipe: d.setupRecipe(), config: d.daytonaConfig() };
+      case 'status': {
+        const st = d.daytonaStatus();
+        return { ok: true, ...st, recipe: d.setupRecipe(), config: d.daytonaConfig(), session_token: st.token };
+      }
       case 'config': {
         // Same normalisation as the bridge: one canonical target, never a ragged
         // `ssh user@host:port` that only some code paths understand.
@@ -290,6 +293,12 @@ ipcMain.handle('acx:daytona', async (_e, op, args = {}) => {
       case 'read': return await d.sshRead(String(args.path || ''));
       case 'write': return await d.sshWrite(String(args.path || ''), args.content);
       case 'anywhere': return await d.execAnywhere(String(args.command || ''), { target: args.target, timeoutMs: args.timeout_ms, cwd: args.cwd });
+      case 'steps': return { ok: true, steps: d.PROVISION_STEPS.map((x) => ({ id: x.id, label: x.label, why: x.why, optional: Boolean(x.optional) })), session_token: d.daytonaStatus().token };
+      case 'provision': return await d.provisionWorkspace({ only: args.only || null, timeoutMs: args.timeout_ms });
+      case 'revoke': {
+        const out = d.saveDaytonaConfig({ clear_token: true, user: null });
+        return { ok: true, cleared: true, file: out.file, note: 'The saved token is gone from this machine. To invalidate it for real, rotate or delete the workspace user in Daytona.' };
+      }
       default: return { ok: false, error: `unknown daytona op: ${op}` };
     }
   } catch (e) { return { ok: false, error: String(e?.message || e) }; }
