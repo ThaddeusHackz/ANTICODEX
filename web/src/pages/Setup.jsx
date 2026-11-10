@@ -234,7 +234,7 @@ export default function SetupPage() {
             </div>
           )}
           {plan.warnings?.length > 0 && (
-            <div className="tiny" style={{ marginTop: 8, color: 'var(--warn, #fbbf24)' }}>
+            <div className="tiny" style={{ marginTop: 8, color: 'var(--warn)' }}>
               {plan.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
             </div>
           )}

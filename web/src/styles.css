@@ -681,6 +681,17 @@ h3 { font-size: 16px; }
   --ok: #38d39f;
   --warn: #f5b544;
   --danger: #ff6b6b;
+  /* Used by the sandbox panes but never defined, so those inputs and outputs
+     rendered with no background and no border — the "why does this look
+     unfinished" bug, in one line each. */
+  --bg-soft: #101216;
+  --border-soft: rgba(255, 255, 255, 0.10);
+  --text-3: #7c8496;
+  --violet: #8b5cf6;
+  /* Tinted backgrounds for error/diff blocks, so a red box is a token and not a
+     hex someone picked at the time. */
+  --danger-bg: #2a1414;
+  --ok-bg: #10261d;
   --radius: 14px;
   --radius-lg: 18px;
   --radius-sm: 10px;
@@ -692,9 +703,12 @@ h3 { font-size: 16px; }
 }
 [data-theme="light"] {
   --bg: #fbfbfc; --bg-sidebar: #f3f4f7; --bg-elev: #ffffff; --bg-elev-2: #f6f7fa;
-  --bg-composer: #ffffff; --bg-input: #f4f5f8; --hover: #0d0f1410;
+  --bg-composer: #ffffff; --bg-input: #f4f5f8; --bg-soft: #f4f5f8; --hover: #0d0f1410;
   --border: rgba(9, 12, 20, 0.09); --border-2: rgba(9, 12, 20, 0.18);
-  --text: #10131a; --text-2: #414a5a; --muted: #6b7385;
+  --border-soft: rgba(9, 12, 20, 0.12);
+  --text: #10131a; --text-2: #414a5a; --muted: #6b7385; --text-3: #6b7385;
+  --ok: #147a55; --warn: #8a5a00; --danger: #b3261e;
+  --danger-bg: #fdecea; --ok-bg: #e9f7ef;
 }
 
 /* ---------- shell ---------- */
@@ -1000,3 +1014,20 @@ h3 { font-size: 16px; }
   /* On a phone a wide table scrolls rather than pushing the page sideways. */
   .table { display: block; overflow-x: auto; white-space: nowrap; }
 }
+
+/* ---------- interaction primitives ---------------------------------------
+   Two rules that were missing app-wide rather than per component:
+
+   :focus-visible — every page wrote its own inputs and buttons, and none of them
+   showed the keyboard focus ring, so the app could not be used without a mouse.
+   outline-offset keeps the ring off the border it sits against.
+
+   :disabled on a .btn.ghost — a disabled ghost button looked identical to an
+   enabled one because only opacity was lowered by one rule that did not apply. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+:where(button, [role="button"]):disabled { cursor: not-allowed; }
+::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }

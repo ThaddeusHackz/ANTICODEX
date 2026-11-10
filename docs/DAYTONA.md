@@ -90,12 +90,30 @@ and with an expired token it says how long ago it went and what to do.
 
 ## 4. What actually happened here
 
-This sandbox's egress allowlist admits GitHub, npm and PyPI only — **port 22 is
-filtered**. Every connection attempt dies at the TCP/kex boundary:
+The first reading of this was "port 22 is filtered". That was wrong, and the
+difference matters, so it is recorded properly:
 
 ```
-kex_exchange_identification: Connection closed by remote host
+✓ dns     ssh.app.daytona.io → 3.227.28.221, 3.214.160.170, 13.223.35.70
+✓ tcp     ssh.app.daytona.io:22 connected in 6 ms
+✗ banner  connected, then the host closed without an SSH banner
 ```
+
+A filtered port **times out**. This connected in six milliseconds, from three
+different addresses, and then the peer closed with **zero bytes** — no `SSH-2.0`
+greeting, which means sshd never spoke and the key was never offered. So:
+
+- not a firewall drop (that would be silence, not a fast close),
+- not a wrong key and not a wrong username (both require a banner first),
+- not an expired token (also requires a banner first).
+
+Something in front of the host accepts the connection and drops it. `diagnose()`
+says exactly that, in those words, and points at the path that does work from here:
+`DAYTONA_API_KEY` over REST.
+
+`ssh` still reports it as `kex_exchange_identification: Connection closed by remote
+host`, which is why the doctor exists — that one line is true of four different
+faults.
 
 So the honest state of the Daytona path from *this* machine is:
 
@@ -104,7 +122,8 @@ So the honest state of the Daytona path from *this* machine is:
 | the token saves, counts down and rotates | that the workspace accepts the key |
 | every pasted shape normalises to one target | that the box has git/node/python |
 | the SSH argv (port, key, timeouts, known-hosts) is right | that provisioning completes |
-| the failure is reported with the exact reason and the command to run | a real remote tool call |
+| the failure is reported layer by layer, with what it is *not* | a real remote tool call |
+| the doctor distinguishes dns / tcp / refused / silent close (tests) | the REST path against a live key |
 | the agent loop, permissions and tools against a local target | — |
 
 Run one command from a network that allows outbound SSH:
@@ -120,6 +139,28 @@ cat ~/.qoder/ssh/daytona_ed25519.pub   # printed by "Make a key" on the Sandbox 
 ```
 
 then run **Install / repair the sandbox** and the same checklist runs for real.
+
+## 4b. Diagnose, don't guess
+
+**Sandbox → Diagnose** (bridge `op=diagnose`, desktop IPC `diagnose`) tests the path
+one layer at a time and stops at the first failure:
+
+| Layer | What it proves | What a failure means |
+| --- | --- | --- |
+| `dns` | the hostname resolves, and to what | a typo or your resolver; nothing after this can work |
+| `tcp` | a SYN gets a SYN-ACK | **refused** = nothing listening; **timeout** = dropped on the way out |
+| `banner` | the host says `SSH-2.0-…` | sshd is down, or something in front accepts and drops |
+| `auth` | the key opens a shell (`true`) | the hint names the key and prints its public half |
+| `tools` | node, python3, rg, qodercli are on PATH | run the install checklist; it names what is missing |
+
+Three distinctions the report refuses to blur, because each one changes who fixes it:
+
+- **refused vs dropped** — an RST means something is listening and saying no; a
+  timeout means packets are swallowed. Different owners.
+- **silent close vs auth failure** — a socket closed before any banner is not a key
+  problem, and the hint says so in those words.
+- **expired token vs unreachable host** — the token countdown is a field in the
+  report, since both look like "it did not work".
 
 ## 5. How the agent uses it
 

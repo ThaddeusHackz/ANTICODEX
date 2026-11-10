@@ -31,7 +31,7 @@ function ToolPart({ part, onOpenDiff }) {
   const st = STATES[part.state] || STATES.pending;
   const arg = part.args?.command || part.args?.file_path || part.args?.path || part.args?.pattern || part.args?.query || part.args?.slug || part.args?.id || '';
   return (
-    <div className={`card`} style={{ padding: '8px 10px', marginBottom: 6, borderColor: part.state === 'failed' ? 'var(--danger)' : part.state === 'denied' ? 'var(--warn, #b8860b)' : undefined }}>
+    <div className={`card`} style={{ padding: '8px 10px', marginBottom: 6, borderColor: part.state === 'failed' ? 'var(--danger)' : part.state === 'denied' ? 'var(--warn)' : undefined }}>
       <div className="row" style={{ gap: 8, alignItems: 'center' }}>
         <StatusPill status={st.pill || 'partial'} />
         <b style={{ fontSize: 12.5, fontFamily: 'var(--mono)' }}>{part.tool}</b>
@@ -49,7 +49,7 @@ function ToolPart({ part, onOpenDiff }) {
           style={{ margin: '6px 0 0', padding: 8, background: 'var(--bg-input)', borderRadius: 8, fontSize: 11.5, maxHeight: 220, overflow: 'auto', cursor: 'pointer' }}
         >
           {part.diff.split('\n').slice(0, 40).map((l, i) => (
-            <div key={i} style={{ color: l.startsWith('+') ? 'var(--ok, #2e7d32)' : l.startsWith('-') ? 'var(--danger)' : 'var(--text-dim)' }}>{l || ' '}</div>
+            <div key={i} style={{ color: l.startsWith('+') ? 'var(--ok)' : l.startsWith('-') ? 'var(--danger)' : 'var(--text-2)' }}>{l || ' '}</div>
           ))}
         </pre>
       )}
@@ -323,7 +323,7 @@ export default function AgentPage() {
             <div className="card-head"><h3>{diff.tool} diff</h3><div className="right"><button className="btn small ghost" onClick={() => setDiff(null)}>Close</button></div></div>
             <pre style={{ margin: 0, padding: 12, background: 'var(--bg-input)', borderRadius: 10, fontSize: 12, maxHeight: '70vh', overflow: 'auto' }}>
               {diff.text.split('\n').map((l, i) => (
-                <div key={i} style={{ color: l.startsWith('+') ? 'var(--ok, #2e7d32)' : l.startsWith('-') ? 'var(--danger)' : 'var(--text-dim)' }}>{l || ' '}</div>
+                <div key={i} style={{ color: l.startsWith('+') ? 'var(--ok)' : l.startsWith('-') ? 'var(--danger)' : 'var(--text-2)' }}>{l || ' '}</div>
               ))}
             </pre>
           </div>

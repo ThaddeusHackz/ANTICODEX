@@ -295,6 +295,7 @@ ipcMain.handle('acx:daytona', async (_e, op, args = {}) => {
       case 'anywhere': return await d.execAnywhere(String(args.command || ''), { target: args.target, timeoutMs: args.timeout_ms, cwd: args.cwd });
       case 'steps': return { ok: true, steps: d.PROVISION_STEPS.map((x) => ({ id: x.id, label: x.label, why: x.why, optional: Boolean(x.optional) })), session_token: d.daytonaStatus().token };
       case 'provision': return await d.provisionWorkspace({ only: args.only || null, timeoutMs: args.timeout_ms });
+      case 'diagnose': return await d.diagnose({ timeoutMs: args.timeout_ms });
       case 'revoke': {
         const out = d.saveDaytonaConfig({ clear_token: true, user: null });
         return { ok: true, cleared: true, file: out.file, note: 'The saved token is gone from this machine. To invalidate it for real, rotate or delete the workspace user in Daytona.' };

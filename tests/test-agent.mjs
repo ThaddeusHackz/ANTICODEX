@@ -337,6 +337,59 @@ console.log('\n— Glasser is gone —');
   ok('the catalogue tool replaced it in the agent', /public_api/.test(read('lib/agent.js')));
 }
 
+
+// ---------------------------------------------------------------------------
+console.log('\n— the connection doctor —');
+{
+  const d = await mod('lib/daytona.js');
+  ok('diagnose is exported', typeof d.diagnose === 'function');
+
+  // A host that does not resolve must stop at dns, attempt no TCP, and name the
+  // host — "SSH failed" here would send the user to rotate a token for nothing.
+  d.saveDaytonaConfig({ user: 'abc1234def', host: 'no-such-workspace.invalid', port: 22 });
+  const dnsFail = await d.diagnose({ timeoutMs: 2500 });
+  ok('an unresolvable host stops at dns', dnsFail.ok === false && dnsFail.failed_at === 'dns', JSON.stringify(dnsFail.rows?.map((r) => r.layer)));
+  ok('…and stops there (no tcp row)', dnsFail.rows.length === 1, JSON.stringify(dnsFail.rows?.map((r) => r.layer)));
+  ok('…naming the host it tried', /no-such-workspace\.invalid/.test(dnsFail.rows[0].detail));
+  ok('…with one sentence of advice', typeof dnsFail.rows[0].hint === 'string' && dnsFail.rows[0].hint.length > 20);
+
+  // A closed port must be reported as *refused*, not as a firewall drop: the two
+  // have different owners and different fixes.
+  d.saveDaytonaConfig({ user: 'abc1234def', host: '127.0.0.1', port: 9 });
+  const refused = await d.diagnose({ timeoutMs: 2500 });
+  ok('a closed port stops at tcp', refused.failed_at === 'tcp', JSON.stringify(refused.rows?.map((r) => r.layer)));
+  ok('…and says refused, not blocked', /refus/i.test(refused.rows[1].detail), refused.rows[1]?.detail);
+  ok('…and the hint says the network is fine', /network path is fine/i.test(refused.rows[1].hint), refused.rows[1]?.hint);
+
+  // The layers must be reported in causal order and never after a failure.
+  d.saveDaytonaConfig({ user: 'nlhOT5bG7KrWEDanZJZuhyWCeYVQSOTL', host: 'ssh.app.daytona.io', port: 22 });
+  const live = await d.diagnose({ timeoutMs: 6000 });
+  const order = ['dns', 'tcp', 'banner', 'auth', 'tools'];
+  const idx = live.rows.map((r) => order.indexOf(r.layer));
+  ok('layers are reported in causal order', idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1])), JSON.stringify(live.rows.map((r) => r.layer)));
+  ok('a failure names the layer it stopped at', live.ok ? live.failed_at === null : order.includes(live.failed_at));
+  ok('every row carries a detail', live.rows.every((r) => typeof r.detail === 'string' && r.detail.length > 0));
+  ok('a failed row carries a hint, a passing one does not', live.rows.every((r) => (r.ok ? !r.hint : r.hint.length > 10)));
+  if (live.failed_at === 'banner') {
+    // The exact wording matters: it is the difference between "your key is wrong"
+    // and "your key was never looked at".
+    const b = live.rows.find((r) => r.layer === 'banner');
+    ok('a silent close is called neither a key problem nor a bad username', /not a key problem/.test(b.hint) && /username/.test(b.hint));
+    ok('…and it points at the alternative that works (REST)', /REST|API_KEY/.test(b.hint));
+  }
+  ok('the report includes what is installed once auth passes', live.failed_at !== 'tools' ? Array.isArray(live.missing) : live.missing.length >= 0);
+
+  const bridge = fs.readFileSync(path.join(ROOT, 'api', 'bridge.js'), 'utf8');
+  ok('the bridge exposes it as an op', /op === 'diagnose'/.test(bridge) && /await diagnose\(/.test(bridge));
+  ok('…and audits the outcome', /daytona\.diagnose/.test(bridge));
+  const desktop = fs.readFileSync(path.join(ROOT, 'desktop', 'main.mjs'), 'utf8');
+  ok('the desktop shell answers it', /case 'diagnose'/.test(desktop));
+  const sb = fs.readFileSync(path.join(ROOT, 'web', 'src', 'pages', 'Sandbox.jsx'), 'utf8');
+  ok('the Sandbox page has a Diagnose button', /runDiagnose/.test(sb) && />\{diagBusy \? 'Checking…' : 'Diagnose'\}</.test(sb));
+  ok('…that prints the layer table and the failing layer', /diag\.rows/.test(sb) && /Stopped at <b>\{diag\.failed_at\}/.test(sb));
+  ok('…and offers the public key when auth is what failed', /diag\.failed_at === 'auth'/.test(sb) && /diag\.public_key/.test(sb));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* tmp */ }
 process.exit(failed ? 1 : 0);

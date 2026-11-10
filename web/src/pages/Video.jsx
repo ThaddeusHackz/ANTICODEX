@@ -93,7 +93,7 @@ export default function VideoPage() {
                   <div className="media-frame"><video src={j.video} controls /></div>
                 )}
                 {j.status === 'ready' && (j.video === 'demo' || j.demo) && (
-                  <div className="media-frame" style={{ height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#12203a,#1d2b52)' }}>
+                  <div className="media-frame" style={{ height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-elev-2)' }}>
                     <span className="muted">Simulated render — configure MINIMAX_API_KEY for real output</span>
                   </div>
                 )}

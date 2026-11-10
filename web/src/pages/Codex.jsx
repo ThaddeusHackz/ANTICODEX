@@ -35,11 +35,11 @@ function DiffView({ hunks = [], truncated_hunks }) {
   return (
     <pre className="term" style={{ maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>
       {hunks.map((h, i) => (
-        <span key={i} style={{ color: h.t === '+' ? '#9fe8b8' : h.t === '-' ? '#fca5a5' : '#8b93ab', display: 'block' }}>
+        <span key={i} style={{ color: h.t === '+' ? 'var(--ok)' : h.t === '-' ? 'var(--danger)' : 'var(--muted)', display: 'block' }}>
           {h.t}{h.line}
         </span>
       ))}
-      {truncated_hunks && <span style={{ color: '#8b93ab', display: 'block' }}>… diff truncated</span>}
+      {truncated_hunks && <span style={{ color: 'var(--muted)', display: 'block' }}>… diff truncated</span>}
     </pre>
   );
 }
@@ -422,7 +422,7 @@ export default function CodexPage() {
                 onClick={() => setActive({ path: f, content: demoFs[f], base: demoFs[f] })}>▤ {f}</button>
             ))}
             <div className="tiny" style={{ padding: 10, opacity: 0.8 }}>
-              Virtual demo workspace — <Link to="/desktop" style={{ color: 'var(--accent, #7c5cff)' }}>ANTICODEX Desktop</Link> (or your own <code>npm start</code>) edits a real folder here.
+              Virtual demo workspace — <Link to="/desktop" style={{ color: 'var(--accent)' }}>ANTICODEX Desktop</Link> (or your own <code>npm start</code>) edits a real folder here.
             </div>
           </>
         )}
@@ -462,8 +462,8 @@ export default function CodexPage() {
               {!agentTools.connections.some((c) => c.status === 'connected') && <div style={{ opacity: 0.7 }}>No connectors yet.</div>}
               <div style={{ marginTop: 6 }}>
                 {agentTools.rea?.registered
-                  ? <span style={{ color: '#6ee7a8' }}>REA installed · {agentTools.rea.probe?.tools || 207} tools</span>
-                  : <Link to="/rea" style={{ color: 'var(--accent, #7c5cff)' }}>Install REA →</Link>}
+                  ? <span style={{ color: 'var(--ok)' }}>REA installed · {agentTools.rea.probe?.tools || 207} tools</span>
+                  : <Link to="/rea" style={{ color: 'var(--accent)' }}>Install REA →</Link>}
               </div>
             </>
           )}
@@ -510,7 +510,7 @@ export default function CodexPage() {
         <div className="term">
           {term.map((t, i) => (
             <div key={i} style={{
-              color: t.kind === 'err' ? '#fca5a5' : t.kind === 'cmd' ? '#e8ebf6' : t.kind === 'sys' ? '#8b93ab' : '#9fe8b8',
+              color: t.kind === 'err' ? 'var(--danger)' : t.kind === 'cmd' ? 'var(--text)' : t.kind === 'sys' ? 'var(--muted)' : 'var(--ok)',
               whiteSpace: 'pre-wrap'
             }}>
               {t.kind === 'cmd' && <span className="prompt">$ </span>}{t.text}
@@ -522,7 +522,7 @@ export default function CodexPage() {
               value={termInput}
               onChange={(e) => setTermInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && runTerm()}
-              style={{ background: 'transparent', border: 'none', color: '#9fe8b8', fontFamily: 'var(--mono)', fontSize: 12, padding: 0 }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--ok)', fontFamily: 'var(--mono)', fontSize: 12, padding: 0 }}
               placeholder={wsMode === 'real' ? 'real shell — ls, node file.js, anything' : 'demo: ls, cat, write…'}
             />
           </div>
@@ -574,8 +574,8 @@ export default function CodexPage() {
               <div className="msg-body" style={{ width: '100%' }}>
                 <div className="row between" style={{ gap: 8, marginBottom: 6 }}>
                   <b className="mono" style={{ fontSize: 12 }}>{p.path}</b>
-                  <span className="tiny" style={{ color: '#9fe8b8' }}>+{p.added}</span>
-                  <span className="tiny" style={{ color: '#fca5a5' }}>−{p.removed}</span>
+                  <span className="tiny" style={{ color: 'var(--ok)' }}>+{p.added}</span>
+                  <span className="tiny" style={{ color: 'var(--danger)' }}>−{p.removed}</span>
                   <div style={{ flex: 1 }} />
                   {p.applied
                     ? <Pill kind="ok">applied</Pill>
