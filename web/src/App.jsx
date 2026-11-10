@@ -32,6 +32,17 @@ import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage,
 // you do every day at the top, the workspace tools in the middle, the settings and
 // evidence at the bottom. Icons are monochrome glyphs so they line up at 64px.
 // ---------------------------------------------------------------------------
+// The rail, in the order it was specified:
+//
+//   ＋ New chat / ⌕ Search chats / ▤ Library
+//   ⌗ Chat / ⌘ Codex / ✳ Agent Studio
+//   Workspace: ⌥ Sandbox, ▦ Images, ▶ Video, ⇄ Connectors, ▣ Computer Use,
+//              ✦ Skills, ⟲ REA, ◈ Qoder, ⇪ Bring your setup
+//   Chats
+//
+// `tests/test-web-mount.mjs` asserts that order and that no destination appears
+// twice — Library used to be in both the top actions and the Workspace group, which
+// reads as two different pages.
 const NAV_TOP = [
   { to: '/', icon: '⌗', label: 'Chat', end: true, title: 'Multi-model chat' },
   { to: '/codex', icon: '⌘', label: 'Codex', title: 'Code workspace' },
@@ -42,18 +53,19 @@ const NAV_WORKSPACE = [
   { to: '/sandbox', icon: '⌥', label: 'Sandbox', title: 'Run code locally or on Daytona' },
   { to: '/images', icon: '▦', label: 'Images', title: 'Flux image generation' },
   { to: '/video', icon: '▶', label: 'Video', title: 'Hailuo text-to-video' },
-  { to: '/library', icon: '▤', label: 'Library', title: 'Everything this workspace produced' },
   { to: '/mcp', icon: '⇄', label: 'Connectors', title: 'MCP servers' },
-  { to: '/computer', icon: '▣', label: 'Computer Use', title: 'Screen + input control' }
-];
-
-const NAV_INTEL = [
+  { to: '/computer', icon: '▣', label: 'Computer Use', title: 'Screen + input control' },
   { to: '/skills', icon: '✦', label: 'Skills', title: '2,208 indexed skills' },
   { to: '/rea', icon: '⟲', label: 'REA', title: 'Reverse Engineer Anything' },
   { to: '/qoder', icon: '◈', label: 'Qoder', title: 'Qoder field guide' },
+  { to: '/setup', icon: '⇪', label: 'Bring your setup', title: 'Import Codex/Claude config' }
+];
+
+// Beyond the specified rail: the pages that back up what the app claims. Kept in
+// their own group so the named list above stays exactly the named list.
+const NAV_INTEL = [
   { to: '/parity', icon: '◎', label: 'Codex parity', title: 'Every crate, and where we implement it' },
   { to: '/evidence', icon: '⌸', label: 'Evidence', title: 'The reverse-engineering record' },
-  { to: '/setup', icon: '⇪', label: 'Bring your setup', title: 'Import Codex/Claude config' },
   { to: '/install', icon: '⤓', label: 'Install', title: 'macOS app, iPhone app, PWA' }
 ];
 

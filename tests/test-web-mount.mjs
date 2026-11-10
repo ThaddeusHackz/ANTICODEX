@@ -733,6 +733,33 @@ globalThis.__mount = (route) => {
     ok('binary assets are never re-compressed', !png.headers['content-encoding'], String(png.headers['content-type']));
   }
 
+
+  console.log('\n— the rail is the specified rail —');
+  {
+    await mountAt('/', { token: reg.token, user: reg.user });
+    // The visible label, not the tooltip: the tooltip is the description ("Flux
+    // image generation"), which would make a rail that is right look wrong.
+    const labels = [...win.document.querySelectorAll('#root .sidebar .nav-item')]
+      .map((b) => (b.querySelector('.label')?.textContent || '').trim())
+      .filter(Boolean);
+    // The order the rail was specified in, verbatim from the request.
+    const SPEC = [
+      'New chat', 'Search chats', 'Library',
+      'Chat', 'Codex', 'Agent Studio',
+      'Sandbox', 'Images', 'Video', 'Connectors', 'Computer Use',
+      'Skills', 'REA', 'Qoder', 'Bring your setup'
+    ];
+    const positions = SPEC.map((l) => labels.findIndex((t) => t === l || t.startsWith(l)));
+    ok('every specified item is in the rail', positions.every((p) => p >= 0), SPEC.filter((_, i) => positions[i] < 0).join(', '));
+    ok('…in the specified order', positions.every((p, i) => i === 0 || p > positions[i - 1]), positions.join(','));
+    ok('…with Workspace as a group label', /Workspace/.test(win.document.querySelector('#root .sidebar').textContent));
+    ok('…and Chats once there are chats', /Chats|Type to search/.test(win.document.querySelector('#root .sidebar').textContent));
+    // No destination may appear twice: Library was in both the top actions and the
+    // Workspace group, which reads as two different pages.
+    const paths = [...win.document.querySelectorAll('#root .sidebar .nav-item')].map((b) => b.getAttribute('href') || b.dataset.to).filter(Boolean);
+    ok('no destination is listed twice', new Set(paths).size === paths.length, paths.join(' '));
+  }
+
   ok('server stayed alive throughout', server.exitCode === null, `exit ${server.exitCode}`);
 } catch (e) {
   failed++;
