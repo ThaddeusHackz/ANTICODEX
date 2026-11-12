@@ -2,11 +2,10 @@
 
 const hasDesktop = () => typeof window !== 'undefined' && window.anticodexDesktop;
 
-// Actions the desktop main process runs itself (no CORS, keychain keys attached).
-const DESKTOP_PROXY = ['chat', 'search', 'image', 'video_start', 'video_status'];
-// Listing / testing / syncing models must also see the desktop keychain, or the
-// app shows "needs key" for a key that is actually installed on this machine.
-const DESKTOP_KEYS = ['models', 'sync_models', 'test_endpoint', 'config'];
+// Actions the desktop main process runs itself (no CORS, keychain keys attached
+// in-process). Listing/testing/syncing models belongs here too: the keychain
+// never leaves the main process, so the renderer must not fetch keys to send.
+const DESKTOP_PROXY = ['chat', 'search', 'image', 'video_start', 'video_status', 'models', 'sync_models', 'test_endpoint', 'config'];
 
 /** Gateways this device knows about (Ollama, LM Studio, a LAN box). The server has
  *  no copy of them, so a request that names one has to carry its definition —
@@ -38,12 +37,6 @@ export async function api(action, payload = {}) {
     try {
       return await window.anticodexDesktop.api(action, payload);
     } catch { /* fall through to network */ }
-  }
-  if (hasDesktop() && DESKTOP_KEYS.includes(action) && window.anticodexDesktop.getKeys) {
-    try {
-      const keys = await window.anticodexDesktop.getKeys();
-      if (keys && Object.keys(keys).length) body.provider_keys = { ...keys, ...(body.provider_keys || {}) };
-    } catch { /* keychain unavailable */ }
   }
 
   const opts = {

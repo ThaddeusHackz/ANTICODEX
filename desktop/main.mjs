@@ -242,8 +242,6 @@ ipcMain.handle('acx:saveKeys', (_e, keys) => {
   return { ...out, backend: kc.status().backend };
 });
 
-ipcMain.handle('acx:getKeys', () => getKeychain().load().keys);
-
 ipcMain.handle('acx:keychainStatus', () => getKeychain().status());
 
 // Custom gateways (Ollama, LM Studio, a LAN vLLM box) belong to this machine, so
@@ -476,8 +474,8 @@ ipcMain.handle('acx:computer', async (_e, cmd, args) => {
 
 ipcMain.handle('acx:state', (_e, patch) => {
   const next = (patch ? saveState(patch) : loadState()) || {};
-  // Key material never travels on the generic state channel: the renderer reads it
-  // through acx:getKeys, which is where encryption is actually applied.
+  // Key material never travels on the generic state channel — or any channel:
+  // the main process attaches keychain keys in-process when proxying API calls.
   const { providerKeys, providerKeysEnc, ...rest } = next;
   return { ...rest, keychain: getKeychain().status() };
 });

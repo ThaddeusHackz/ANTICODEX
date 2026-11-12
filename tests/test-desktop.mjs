@@ -394,6 +394,42 @@ try {
     ok('and it refuses that chat rather than answering from another model', chat.data.ok === false && chat.data.verdict === 'blocked' && !/Demo Core/.test(chat.data.text || ''), JSON.stringify(chat.data).slice(0, 160));
   }
 
+  console.log('— a website in the user’s browser is not "this machine" —');
+  {
+    // The loopback socket alone used to be the whole gate: any site the user
+    // visits could POST a simple request (no preflight) and run code here.
+    const port = new URL(local.base).port;
+    const evil = { ...LOCAL_HDR, Origin: 'https://evil.example' };
+    const evilRef = { ...LOCAL_HDR, Referer: 'https://evil.example/page' };
+    const same = { ...LOCAL_HDR, Origin: `http://127.0.0.1:${port}` };
+    const sb = await call(local.base, 'sandbox', { op: 'status' }, evil);
+    ok('a cross-origin loopback POST cannot reach the sandbox', sb.status === 403, JSON.stringify(sb.data).slice(0, 120));
+    const sbRef = await call(local.base, 'sandbox', { op: 'status' }, evilRef);
+    ok('…a foreign Referer is refused the same way', sbRef.status === 403);
+    const ws = await call(local.base, 'workspace_fs', { op: 'status' }, evil);
+    ok('…nor the workspace filesystem', ws.status === 403, JSON.stringify(ws.data).slice(0, 120));
+    const eg = await call(local.base, 'egress', { op: 'start', mode: 'allowlist', allow: ['api.openai.com'] }, evil);
+    ok('…nor start an egress proxy on this machine', eg.data.ok === false && eg.data.needs_local === true, JSON.stringify(eg.data).slice(0, 120));
+    const okSb = await call(local.base, 'sandbox', { op: 'status' }, same);
+    ok('the app’s own same-origin pages still work', okSb.status === 200 && okSb.data.ok === true, JSON.stringify(okSb.data).slice(0, 120));
+    const okPlain = await call(local.base, 'sandbox', { op: 'status' }, LOCAL_HDR);
+    ok('…and header-less local callers (IPC proxy, CLI)', okPlain.status === 200);
+    const localhostOrigin = await call(local.base, 'sandbox', { op: 'status' }, { ...LOCAL_HDR, Origin: `http://localhost:${port}` });
+    ok('…including localhost origins', localhostOrigin.status === 200);
+
+    const stream = await fetch(`${local.base}/api/bridge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...LOCAL_HDR },
+      body: JSON.stringify({ action: 'chat_stream', provider: 'anticodex', model: 'anticodex/demo-core', messages: [{ role: 'user', content: 'hi' }] })
+    });
+    ok('streamed chat carries no wildcard CORS for other sites to read', stream.headers.get('access-control-allow-origin') === null, String(stream.headers.get('access-control-allow-origin')));
+    await stream.body?.cancel().catch(() => {});
+
+    const apiSrc = read('web/src/lib/api.js');
+    ok('keychain-dependent actions ride the IPC proxy', /DESKTOP_PROXY = \[[^\]]*'config'\]/.test(apiSrc));
+    ok('the renderer never fetches raw keychain keys', !/getKeys\(\)/.test(apiSrc));
+    ok('…and no raw-key channel exists in preload or main', !/acx:getKeys/.test(read('desktop/preload.mjs')) && !/acx:getKeys/.test(read('desktop/main.mjs')));
+  }
+
   console.log('— the web UI still matches the packaged one —');
   {
     const settings = read('web/src/pages/Settings.jsx');

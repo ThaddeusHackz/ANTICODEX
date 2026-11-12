@@ -22,7 +22,6 @@ contextBridge.exposeInMainWorld('anticodexDesktop', {
   githubLogin: () => ipcRenderer.invoke('acx:githubLogin'),
   pairWait: (code) => ipcRenderer.invoke('acx:pairWait', code),
   saveKeys: (keys) => ipcRenderer.invoke('acx:saveKeys', keys),
-  getKeys: () => ipcRenderer.invoke('acx:getKeys'),
   keychainStatus: () => ipcRenderer.invoke('acx:keychainStatus'),
   saveCustoms: (list) => ipcRenderer.invoke('acx:saveCustoms', list),
   getCustoms: () => ipcRenderer.invoke('acx:getCustoms'),

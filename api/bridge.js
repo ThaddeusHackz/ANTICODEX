@@ -307,7 +307,17 @@ function isLoopback(req) {
   const fwd = req?.headers?.['x-forwarded-for'];
   if (fwd) return false;
   const ip = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-  return ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.');
+  if (!(ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.'))) return false;
+  // A loopback socket is not proof of "this machine": any site the user visits
+  // can POST here as a simple request (no preflight) and would otherwise reach
+  // local-only ops. Browsers stamp those with a foreign Origin/Referer; the
+  // app's own pages and the desktop IPC proxy carry a loopback one or none.
+  const label = req?.headers?.origin || req?.headers?.referer || '';
+  if (!label) return true;
+  try {
+    const host = new URL(label).hostname;
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  } catch { return false; }
 }
 
 /** Sign-in must survive any failure mode of the email provider: an exception
@@ -986,7 +996,6 @@ function sse(res) {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Access-Control-Allow-Origin', '*');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
   let closed = false;
   res.on('close', () => { closed = true; });
