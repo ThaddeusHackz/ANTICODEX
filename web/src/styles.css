@@ -86,7 +86,8 @@ button { font-family: inherit; }
   height: 52px; display: flex; align-items: center; gap: 8px;
   padding: 0 12px; flex: none;
 }
-.topbar .spacer, .between { flex: 1; }
+.topbar .spacer { flex: 1; }
+.row.between { justify-content: space-between; }
 .icon-btn {
   width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent;
   color: var(--text); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 16px;
@@ -352,7 +353,28 @@ h3 { font-size: 16px; }
    whole page hung 52px below the viewport and the terminal prompt, the Run
    button and the bottom of the editor were cut off by `.app { overflow:hidden }`.
    `flex: 1; min-height: 0` sizes it to what is actually left over. */
+.workspace-shell { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.workspace-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 20px; flex: none; border-bottom: 1px solid var(--border); }
+.workspace-toolbar strong { font-size: 13px; font-weight: 600; }
+.workspace-mark { color: var(--accent); font: 26px var(--mono); }
+.workspace-location { color: var(--muted); font-size: 11px; padding-left: 14px; border-left: 1px solid var(--border); margin-left: 6px; }
+.workspace-tabs { display: none; }
 .workspace { display: flex; flex: 1 1 auto; min-height: 0; height: auto; overflow: hidden; }
+.workspace-welcome { max-width: 420px; margin: auto; padding: 42px 12px 20px; }
+.workspace-welcome h2 { font-size: 25px; font-weight: 550; letter-spacing: -.8px; margin: 20px 0 12px; line-height: 1.2; }
+.workspace-welcome p { font-size: 13px; line-height: 1.75; color: var(--muted); }
+.workspace-starters { display: grid; gap: 8px; margin: 25px 0; }
+.workspace-starters button { display: flex; align-items: center; justify-content: space-between; text-align: left; gap: 16px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 12px; color: var(--text-2); cursor: pointer; font-size: 12px; }
+.workspace-starters button:hover { background: var(--hover); color: var(--text); border-color: var(--border-2); }
+.workspace-reasoning { color: var(--muted); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; }
+.workspace-reasoning summary { cursor: pointer; }
+.workspace-reasoning .msg-text { padding-top: 10px; max-height: 250px; overflow-y: auto; }
+.workspace-progress { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; padding-top: 10px; }
+.workspace-progress .dot { background: var(--accent); }
+.workspace-error { padding: 12px; background: var(--danger-bg); color: var(--danger); border-radius: 10px; font-size: 13px; }
+.workspace .file-tree > .row, .workspace .editor-pane > .row, .workspace .agent-pane > .row { flex: none; flex-wrap: wrap; }
+.workspace .file-tree > input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 8px; font: 11px var(--mono); }
+.between:empty { flex: 1; }
 .file-tree {
   width: 236px; flex: none; display: flex; flex-direction: column; overflow-y: auto;
   background: var(--bg-sidebar); border-right: 1px solid var(--border); padding: 10px 8px;
@@ -394,12 +416,18 @@ h3 { font-size: 16px; }
 .term input { flex: 1; min-width: 0; }
 /* narrow windows (and the desktop app at its minimum size) stack instead of
    squeezing three panes into nothing */
-@media (max-width: 1000px) {
-  .workspace { flex-direction: column; overflow: auto; }
-  .file-tree { width: auto; border-right: 0; border-bottom: 1px solid var(--border); max-height: 190px; }
-  .agent-pane { width: auto; border-left: 0; border-top: 1px solid var(--border); min-height: 320px; }
-  .editor-pane { min-height: 300px; }
-  .workspace .term { max-height: none; }
+@media (max-width: 1180px) {
+  .workspace-toolbar { padding: 12px 16px; }
+  .workspace-toolbar > .tiny, .workspace-location { display: none; }
+  .workspace-tabs { display: flex; flex: none; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+  .workspace-tabs button { background: transparent; color: var(--muted); border: 0; border-bottom: 2px solid transparent; padding: 12px 16px; min-height: 44px; cursor: pointer; font-size: 12px; }
+  .workspace-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+  .workspace > .file-tree, .workspace > .editor-pane, .workspace > .agent-pane { display: none; width: 100%; min-height: 0; border: 0; }
+  .workspace[data-panel="files"] > .file-tree, .workspace[data-panel="editor"] > .editor-pane, .workspace[data-panel="agent"] > .agent-pane { display: flex; }
+  .workspace .agent-pane { flex: 1; }
+  .workspace .agent-pane > .messages, .workspace .agent-pane > .composer-wrap { width: 100%; max-width: 780px; margin: 0 auto; }
+  .workspace .term { max-height: 35%; }
+  .workspace-welcome { padding-top: 30px; }
 }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .media-frame { border-radius: 14px; overflow: hidden; border: 1px solid var(--border); background: #111; }
@@ -419,7 +447,6 @@ h3 { font-size: 16px; }
 
 @media (max-width: 980px) {
   .grid-3 { grid-template-columns: 1fr 1fr; }
-  .agent-pane { display: none; }
   .settings-modal { grid-template-columns: 150px 1fr; }
 }
 @media (max-width: 720px) {
@@ -725,7 +752,7 @@ h3 { font-size: 16px; }
 .sidebar-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 6px; min-height: 48px; }
 .sidebar-scroll { flex: 1; overflow-y: auto; padding: 2px 8px 10px; scrollbar-gutter: stable; }
 .sidebar-foot { border-top: 1px solid var(--border); padding: 8px; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .2px; cursor: pointer; padding: 4px 6px; border-radius: 9px; font-size: 14.5px; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .2px; cursor: pointer; padding: 4px 6px; border-radius: 9px; font-size: 14.5px; border: 0; background: transparent; color: var(--text); }
 .brand:hover { background: var(--hover); }
 .brand b span { background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .brand .logo { border-radius: 8px; }
@@ -790,7 +817,8 @@ h3 { font-size: 16px; }
 }
 .topbar .crumb { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-right: 4px; }
 .topbar .crumb b { color: var(--text-2); font-weight: 600; }
-.topbar .spacer, .between { flex: 1; }
+.topbar .spacer { flex: 1; }
+.row.between { justify-content: space-between; }
 .icon-btn {
   height: 32px; min-width: 32px; padding: 0 7px; border-radius: 9px; border: 0;
   background: transparent; color: var(--text-2); cursor: pointer;

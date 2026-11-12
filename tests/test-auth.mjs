@@ -14,11 +14,23 @@
 
 import http from 'node:http';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import assert from 'node:assert';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+
+// Never inherit live identity-provider credentials or hosted flags in fixtures.
+const TEST_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+  !/^(SUPABASE_|ADMIN_|OWNER_|BOOTSTRAP_|GITHUB_|VERCEL|AWS_|NETLIFY|FUNCTION_|K_SERVICE$|ANTICODEX_LOCAL|NODE_ENV$|EXPOSE_RESET_CODES$|REQUIRE_EMAIL_VERIFICATION$)/.test(key)));
+const AUTH_FIXTURE = {
+  ADMIN_USERNAME: 'fixture-console', ADMIN_PASSWORD: 'fixture-auth-password-only',
+  ADMIN_SESSION_SECRET: 'fixture-admin-session-secret-not-for-deployment',
+  OWNER_EMAIL: 'owner@fixture.invalid', OWNER_PASSWORD: 'fixture-auth-password-only',
+  OWNER_NAME: 'Fixture Owner', OWNER_ROLE: 'admin',
+  BOOTSTRAP_ACCOUNTS: '', BOOTSTRAP_PASSWORD: '',
+  REQUIRE_EMAIL_VERIFICATION: 'false'
+};
 
 const ROOT = new URL('..', import.meta.url).pathname;
 const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'anticodex-auth-'));
@@ -224,7 +236,7 @@ async function api(base, action, payload = {}, headers = {}) {
 
 function spawnServer(env, args = []) {
   const server = spawn('node', ['server.mjs', ...args], {
-    cwd: ROOT, env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', ANTICODEX_DATA: DATA_TMP, ...env }, stdio: 'ignore'
+    cwd: ROOT, env: { ...TEST_ENV, ...AUTH_FIXTURE, PORT: String(PORT), HOST: '127.0.0.1', ANTICODEX_DATA: DATA_TMP, ...env }, stdio: 'ignore'
   });
   return server;
 }
@@ -240,7 +252,111 @@ async function waitFor(base, tries = 60) {
 
 const INTERNALS = /This endpoint requires|no_authorization|PostgREST|violates not-null|duplicate key value|relation "|schema cache|apikey|service_role|eyJ[A-Za-z0-9_-]{8,}|EROFS|read-only file system|at file:|\.js:\d+/i;
 
+// Cold processes prove defaults and production guards without module-cache or
+// inherited runtime configuration. All writes stay in a disposable test directory.
+function isolatedChecks(label, env, run) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anticodex-auth-isolated-'));
+  try {
+    const source = `
+      import { Readable } from 'node:stream';
+      globalThis.fetch = async () => { throw new Error('Network forbidden in isolated auth tests'); };
+      const { getKey, HARDCODED, saveRuntime } = await import('./lib/keys.js');
+      const auth = await import('./lib/authx.js');
+      const store = await import('./lib/store.js');
+      const bridge = (await import('./api/bridge.js')).default;
+      const checks = [];
+      const check = (name, value) => checks.push([name, Boolean(value)]);
+      const api = async (action, body = {}, headers = {}, ip = '127.0.0.1') => {
+        const req = Readable.from([Buffer.from(JSON.stringify({ action, ...body }))]);
+        Object.assign(req, { method: 'POST', url: '/api/bridge', headers, socket: { remoteAddress: ip } });
+        let data;
+        const res = { statusCode: 0, setHeader() {}, end(text) { data = JSON.parse(text); } };
+        await bridge(req, res);
+        return { status: res.statusCode, data };
+      };
+      await (${run.toString()})();
+      console.log(JSON.stringify(checks));
+    `;
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: ROOT, env: { ...TEST_ENV, ...AUTH_FIXTURE, ...env, ANTICODEX_DATA: dir }, encoding: 'utf8', timeout: 20000
+    });
+    for (const [name, value] of JSON.parse(output)) ok(`${label}: ${name}`, value);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function containmentChecks() {
+  const blankCredentials = Object.fromEntries(['ADMIN_USERNAME', 'ADMIN_PASSWORD', 'ADMIN_SESSION_SECRET',
+    'OWNER_EMAIL', 'OWNER_PASSWORD', 'BOOTSTRAP_ACCOUNTS', 'BOOTSTRAP_PASSWORD'].map((key) => [key, '']));
+  isolatedChecks('unconfigured cold process', blankCredentials, async () => {
+    check('credential slots have no source or runtime defaults',
+      ['ADMIN_USERNAME', 'ADMIN_PASSWORD', 'ADMIN_SESSION_SECRET', 'OWNER_EMAIL', 'OWNER_PASSWORD']
+        .every((key) => HARDCODED[key] === '' && getKey(key) === ''));
+    await auth.ensureBootstrapAccounts();
+    check('no bootstrap account is materialised', (await store.find('users')).length === 0);
+    check('empty admin credentials cannot sign in', (await api('admin', { op: 'login' })).status === 503);
+    process.env.OWNER_EMAIL = 'partial-owner@fixture.invalid';
+    await auth.ensureBootstrapAccounts();
+    check('owner email without password cannot bootstrap', (await store.find('users')).length === 0);
+    delete process.env.OWNER_EMAIL;
+    process.env.OWNER_PASSWORD = 'fixture-only-password';
+    await auth.ensureBootstrapAccounts();
+    check('owner password without email cannot bootstrap', (await store.find('users')).length === 0);
+    saveRuntime({ ADMIN_USERNAME: 'runtime-fixture', ADMIN_PASSWORD: 'runtime-fixture-password' });
+    check('configured credentials without signing secret fail closed',
+      (await api('admin', { op: 'login', username: 'runtime-fixture', password: 'runtime-fixture-password' })).status === 503);
+    saveRuntime({ ADMIN_SESSION_SECRET: 'runtime-fixture-signing-secret' });
+    const session = await api('admin', { op: 'login', username: 'runtime-fixture', password: 'runtime-fixture-password' });
+    check('explicit admin runtime configuration supports login', Boolean(session.data.token));
+    saveRuntime({ ADMIN_SESSION_SECRET: '' });
+    check('token validation fails when signing secret is removed',
+      (await api('admin', { op: 'stats', token: session.data.token })).status === 401);
+  });
+  for (const [label, env] of [
+    ['production', { NODE_ENV: 'production' }],
+    ['unset environment', {}],
+    ['non-development test environment', { NODE_ENV: 'test' }],
+    ['development without local opt-in', { NODE_ENV: 'development', ANTICODEX_LOCAL: '' }],
+    ['development without code opt-in', { NODE_ENV: 'development', EXPOSE_RESET_CODES: '' }],
+    ['serverless Vercel', { NODE_ENV: 'development', VERCEL: '1' }],
+    ['serverless Lambda', { NODE_ENV: 'development', AWS_LAMBDA_FUNCTION_NAME: 'fixture' }],
+    ['serverless Netlify', { NODE_ENV: 'development', NETLIFY: 'true' }]
+  ]) {
+    isolatedChecks(label, { ANTICODEX_LOCAL: '1', EXPOSE_RESET_CODES: 'true', ...env }, async () => {
+      const email = 'no-mailer@fixture.invalid';
+      const registered = await api('register', { email, password: 'fixture-password', name: 'No Mailer', localDevelopment: true });
+      const responses = [registered];
+      responses.push(await api('forgot', { email, localDevelopment: true }));
+      responses.push(await api('resend_code', { email, localDevelopment: true }));
+      responses.push(await api('resend_code', { email, purpose: 'recovery', localDevelopment: true }));
+      check('signup/forgot/resend never expose codes without an allowed development path', responses.every(({ data }) =>
+        !['dev_code', 'code', 'token_hash', 'email_otp'].some((key) => Object.hasOwn(data, key))));
+      check('missing mailer never claims delivery', responses.every(({ data }) => data.sent === false));
+      check('config advertises no dev codes', (await api('config')).data.features.mailer_dev_codes === false);
+      process.env.REQUIRE_EMAIL_VERIFICATION = 'true';
+      const required = await api('register', { email: 'must-verify@fixture.invalid', password: 'fixture-password', name: 'Required' });
+      check('required verification without delivery fails honestly', required.data.ok === false && required.data.sent === false && !required.data.token && !required.data.dev_code);
+    });
+  }
+  isolatedChecks('explicit local development', { NODE_ENV: 'development', ANTICODEX_LOCAL: '1', EXPOSE_RESET_CODES: 'true', REQUIRE_EMAIL_VERIFICATION: 'true' }, async () => {
+    const email = 'verify-local@fixture.invalid';
+    const signup = await api('register', { email, password: 'fixture-password', name: 'Local Dev' });
+    check('signup supplies a verification code but no premature session', signup.data.ok && /^\d{6}$/.test(signup.data.dev_code) && !signup.data.token);
+    check('password login cannot bypass required verification', (await api('login', { email, password: 'fixture-password' })).data.ok === false);
+    const verified = await api('verify_code', { email, code: signup.data.dev_code });
+    check('verification activates the account', verified.data.ok && verified.data.token);
+    check('verified password login succeeds', (await api('login', { email, password: 'fixture-password' })).data.ok === true);
+    const reset = await api('forgot', { email });
+    check('reset still works locally', (await api('reset', { email, code: reset.data.dev_code, new_password: 'changed-fixture-password' })).data.ok === true);
+    check('reset password signs in', (await api('login', { email, password: 'changed-fixture-password' })).data.ok === true);
+    for (const [name, headers, ip] of [['forwarded', { 'x-forwarded-for': '127.0.0.1' }, '127.0.0.1'], ['remote', {}, '203.0.113.10']]) {
+      const result = await api('forgot', { email, localDevelopment: true }, headers, ip);
+      check(name + ' request cannot spoof local development', !result.data.dev_code && result.data.sent === false);
+    }
+  });
+}
+
 async function main() {
+  containmentChecks();
   PORT = await freePort();
   BASE = `http://127.0.0.1:${PORT}`;
   const mock = await makeMockSupabase();
@@ -248,6 +364,7 @@ async function main() {
 
   console.log('\n— sign-in with a normal email, against a Supabase that mirrors production —');
   const server = spawnServer({
+    NODE_ENV: 'production',
     SUPABASE_URL: mockUrl,
     SUPABASE_ANON_KEY: ANON,
     SUPABASE_SERVICE_ROLE_KEY: SERVICE,
@@ -328,7 +445,7 @@ async function main() {
   ok('a recovery code is waiting in the ledger', pending.length >= 1);
   r = await api(BASE, 'admin', { op: 'reset_user', token: 'bad', email, password: 'nope123456' });
   ok('admin reset needs the admin token', r.status === 401);
-  const admin = await api(BASE, 'admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  const admin = await api(BASE, 'admin', { op: 'login', username: AUTH_FIXTURE.ADMIN_USERNAME, password: AUTH_FIXTURE.ADMIN_PASSWORD });
   const at = admin.data.token;
   r = await api(BASE, 'admin', { op: 'reset_user', token: at, email, password: 'brandnewpass' });
   ok('admin can reset an account without the emailed code', r.status === 200 && r.data.ok);
@@ -347,13 +464,13 @@ async function main() {
   ok('threads survive signing out and back in', r.data.threads?.some((t) => t.id === 'th_1'));
 
   console.log('\n— owner / second admin —');
-  r = await api(BASE, 'login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
-  ok('owner signs in with the baked credentials', r.status === 200 && r.data.ok && Boolean(r.data.token));
+  r = await api(BASE, 'login', { email: AUTH_FIXTURE.OWNER_EMAIL, password: AUTH_FIXTURE.ADMIN_PASSWORD });
+  ok('owner signs in with explicitly configured fixture credentials', r.status === 200 && r.data.ok && Boolean(r.data.token));
   ok('owner is role=admin for the app', r.data.role === 'admin' && r.data.user.role === 'admin');
-  ok('owner row exists in the ledger', mock.tables.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
+  ok('owner row exists in the ledger', mock.tables.users.some((u) => u.email === AUTH_FIXTURE.OWNER_EMAIL && u.role === 'admin'));
   r = await api(BASE, 'me', { token: r.data.token });
-  ok('owner session works on protected calls', r.status === 200 && r.data.user.name === 'Thaddeus');
-  r = await api(BASE, 'admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  ok('owner session works on protected calls', r.status === 200 && r.data.user.name === AUTH_FIXTURE.OWNER_NAME);
+  r = await api(BASE, 'admin', { op: 'login', username: AUTH_FIXTURE.ADMIN_USERNAME, password: AUTH_FIXTURE.ADMIN_PASSWORD });
   ok('admin CONSOLE credentials still work and are separate', r.status === 200 && r.data.token);
 
   console.log('\n— GitHub button behaviour when it is not wired up —');
@@ -382,14 +499,14 @@ async function main() {
   const BASE2 = `http://127.0.0.1:${PORT2}`;
   const ro = spawn('node', ['server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT2), HOST: '127.0.0.1', ANTICODEX_DATA: roDir, SUPABASE_URL: '', SUPABASE_ANON_KEY: '', SUPABASE_SERVICE_ROLE_KEY: '' },
+    env: { ...TEST_ENV, ...AUTH_FIXTURE, NODE_ENV: 'development', ANTICODEX_LOCAL: '1', EXPOSE_RESET_CODES: 'true', PORT: String(PORT2), HOST: '127.0.0.1', ANTICODEX_DATA: roDir, SUPABASE_URL: '', SUPABASE_ANON_KEY: '', SUPABASE_SERVICE_ROLE_KEY: '' },
     stdio: 'ignore'
   });
   assert(await waitFor(BASE2), 'read-only server did not start');
   const email2 = `diskless${Date.now()}@gmail.com`;
   r = await api(BASE2, 'register', { email: email2, password: 'hunter2pass', name: 'Diskless' });
   ok('sign-up still works with a read-only data dir', r.status === 200 && r.data.ok && r.data.token, JSON.stringify(r.data));
-  ok('codes are surfaced when there is no mailer at all', /^\d{6}$/.test(String(r.data.dev_code)));
+  ok('explicit local development surfaces codes without a mailer', /^\d{6}$/.test(String(r.data.dev_code)));
   ok('the sign-up session authenticates', (await api(BASE2, 'me', { token: r.data.token })).status === 200);
   r = await api(BASE2, 'forgot', { email: email2 });
   ok('forgot returns a usable code offline', r.data.ok && /^\d{6}$/.test(String(r.data.dev_code)));

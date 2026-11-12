@@ -169,6 +169,97 @@ ok('desktop main loads the same bridge the website runs', /api\/bridge\.js|'brid
 }
 
 // ===========================================================================
+console.log('— mac packaging never logs notarization credentials —');
+{
+  const source = read('desktop/package-mac.mjs');
+  const runSource = source.slice(source.indexOf('const run ='), source.indexOf('const capture ='));
+  const sentinel = 'NOTARY-PASSWORD-SENTINEL';
+  for (const passwordArgs of [['--password', sentinel], [`--password=${sentinel}`], ['-p', sentinel]]) {
+    for (const fail of [false, true]) {
+      const logs = [];
+      let received, thrown;
+      const run = new Function('log', 'execFileSync', 'HERE', `${runSource}\nreturn run;`)(
+        (line) => logs.push(line),
+        (cmd, args, opts) => {
+          received = { cmd, args, opts };
+          if (fail) {
+            const error = new Error(`notarytool failed: ${sentinel}`);
+            error.stderr = Buffer.from(sentinel);
+            error.spawnargs = args;
+            throw error;
+          }
+          return Buffer.from(`notarytool accepted ${sentinel}`);
+        }, path.join(ROOT, 'desktop')
+      );
+      try { run('xcrun', ['notarytool', 'submit', 'fixture.zip', ...passwordArgs], { stdio: 'inherit' }); }
+      catch (error) { thrown = error; }
+      ok(`notarization ${passwordArgs[0].split('=')[0]} ${fail ? 'failure' : 'success'} redacts logs`, !logs.join('\n').includes(sentinel) && logs.some((line) => line.includes('[REDACTED]')));
+      ok('sensitive subprocess output cannot bypass redaction', received.opts.stdio.join(',') === 'ignore,pipe,pipe');
+      ok('the real subprocess still receives the unchanged password argument', received.args.slice(-passwordArgs.length).join('|') === passwordArgs.join('|'));
+      if (fail) {
+        ok('error messages, stacks and attached fields do not expose the password', !!thrown && !`${thrown.stack}${JSON.stringify(thrown)}`.includes(sentinel) && /notarytool failed/.test(thrown.message));
+      } else ok('a successful notarization command still succeeds', !thrown);
+    }
+  }
+}
+
+// ===========================================================================
+console.log('— desktop static paths are refused before a file is read —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-static-'));
+  const dist = path.join(tmp, 'dist');
+  const sibling = path.join(tmp, 'dist-private');
+  fs.mkdirSync(dist);
+  fs.mkdirSync(sibling);
+  fs.writeFileSync(path.join(dist, 'index.html'), 'SPA');
+  fs.writeFileSync(path.join(dist, 'app.js'), 'bundled script');
+  fs.writeFileSync(path.join(sibling, 'secret.txt'), 'must not be read');
+  fs.symlinkSync(path.join(sibling, 'secret.txt'), path.join(dist, 'escape.txt'));
+  fs.symlinkSync(sibling, path.join(dist, 'escape-dir'), 'junction');
+  fs.symlinkSync(path.join(dist, 'app.js'), path.join(dist, 'inside.js'));
+  const source = read('desktop/main.mjs');
+  const handlerSource = source.slice(source.indexOf('  const MIME ='), source.indexOf('  await new Promise((resolve) => server.listen'));
+  let reads = [];
+  const handler = new Function('http', 'fs', 'path', 'WEB_DIST', 'bridge', `${handlerSource}\nreturn server;`)(
+    { createServer: (callback) => callback },
+    { ...fs, createReadStream: (file) => { reads.push(file); return { pipe: (res) => res.end(fs.readFileSync(file, 'utf8')) }; } },
+    path, dist, null
+  );
+  const request = (url) => {
+    reads = [];
+    const response = { status: 0, body: '', writeHead(code) { this.status = code; }, end(body) { this.body = body; } };
+    let thrown = null;
+    try { handler({ url }, response); } catch (error) { thrown = error; }
+    return { ...response, thrown, reads };
+  };
+  try {
+    for (const url of ['/%', '/%E0%A4%A', '/%00', 'http://[invalid']) {
+      const result = request(url);
+      ok(`malformed path ${url} returns 400 without reading`, result.status === 400 && !result.thrown && result.reads.length === 0);
+    }
+    for (const url of ['/..%2fdist-private/secret.txt', '/%2e%2e%2fdist-private/secret.txt', '/escape.txt', '/escape-dir/secret.txt', '/escape-dir/missing']) {
+      const result = request(url);
+      ok(`escaping path ${url} returns 403 before read`, result.status === 403 && !result.thrown && result.reads.length === 0);
+    }
+    for (const url of ['/app.js', '/inside.js']) {
+      const result = request(url);
+      ok(`contained asset ${url} is still served`, result.status === 200 && result.body === 'bundled script' && result.reads.length === 1);
+    }
+    for (const url of ['/', '/settings/models']) {
+      const result = request(url);
+      ok(`SPA route ${url} still falls back to index`, result.status === 200 && result.body === 'SPA');
+    }
+    fs.unlinkSync(path.join(dist, 'index.html'));
+    fs.symlinkSync(path.join(sibling, 'secret.txt'), path.join(dist, 'index.html'));
+    const fallback = request('/missing');
+    ok('an escaping SPA fallback is refused before read', fallback.status === 403 && fallback.reads.length === 0);
+    fs.unlinkSync(path.join(dist, 'index.html'));
+    const missing = request('/missing');
+    ok('a missing bundle still gives reinstall guidance', missing.status === 200 && /reinstall/.test(missing.body) && missing.reads.length === 0);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+
+// ===========================================================================
 console.log('— the updater can only help if the version moved —');
 {
   const realFetch = globalThis.fetch;
@@ -541,7 +632,7 @@ console.log('\n— the updater actually applies the release it downloads —');
   const calls2 = [];
   const up2 = createUpdater('1.0.0', {
     fs, spawn: (c, a, o) => { calls2.push({ c, a, o }); return extractorChild(staged2); },
-    fetch: async (u) => (String(u).includes('releases/latest') ? release('v9.9.9', 'ANTICODEX-9.9.9-win32-x64.zip') : assetFetch()),
+    fetch: async (u) => (String(u).includes('releases/latest') ? release('v9.9.9', 'ANTICODEX-9.9.9-linux-x64.zip') : assetFetch()),
     platform: 'linux', userData: () => tmp2
   });
   const dl2 = await up2.download();
@@ -601,7 +692,12 @@ console.log('\n— apply writes a detached helper and quits only after it is run
 
   const order = [];
   let spawnOpts = null;
-  const fakeSpawn = (cmd, args, o) => { order.push('spawn'); spawnOpts = { cmd, args, o }; return { on() {}, unref() {} }; };
+  const fakeSpawn = (cmd, args, o) => {
+    order.push('spawn'); spawnOpts = { cmd, args, o };
+    const h = {};
+    setTimeout(() => (h.spawn || []).forEach((cb) => cb()), 0);
+    return { on: (e, cb) => { (h[e] = h[e] || []).push(cb); }, unref() {} };
+  };
   const up = createUpdater('1.0.0', {
     fs, spawn: fakeSpawn, platform: 'win32', userData: () => tmp,
     execPath: '/opt/ANTICODEX-win32-x64/ANTICODEX.exe', appPid: () => 4242, env: () => ({ PATH: '/bin' })
@@ -626,6 +722,62 @@ console.log('\n— apply writes a detached helper and quits only after it is run
   const bad = await up2.apply(() => { quitRan = true; });
   ok('apply with nothing staged reports failure', bad.ok === false && /staged/.test(bad.error) && bad.fix, JSON.stringify(bad));
   ok('…and does NOT quit the app on that failure', quitRan === false, JSON.stringify({ quitRan }));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— the updater downloads the build for THIS machine, not the first zip —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-pick-'));
+  const assets = [
+    { name: 'ANTICODEX-9.9.9-win32-x64.zip', size: 1, browser_download_url: 'https://example.invalid/win.zip' },
+    { name: 'ANTICODEX-darwin-arm64.zip', size: 1, browser_download_url: 'https://example.invalid/mac-arm.zip' },
+    { name: 'ANTICODEX-darwin-x64.zip', size: 1, browser_download_url: 'https://example.invalid/mac-x64.zip' }
+  ];
+  const feed = (list) => async () => ({ ok: true, json: async () => ({ tag_name: 'v9.9.9', body: '', assets: list }) });
+  const pick = (platform, arch, list = assets) => createUpdater('1.0.0', { fs, fetch: feed(list), platform, arch, userData: () => tmp }).check();
+
+  const mac = await pick('darwin', 'arm64');
+  ok('a Mac is offered the darwin build, never the Windows zip', mac.asset === 'ANTICODEX-darwin-arm64.zip', JSON.stringify(mac.asset));
+  const macIntel = await pick('darwin', 'x64');
+  ok('…and the architecture matches too', macIntel.asset === 'ANTICODEX-darwin-x64.zip', JSON.stringify(macIntel.asset));
+  const win = await pick('win32', 'x64');
+  ok('Windows still gets the win32 build', win.asset === 'ANTICODEX-9.9.9-win32-x64.zip', JSON.stringify(win.asset));
+  const generic = await pick('win32', 'x64', [{ name: 'ANTICODEX.zip', size: 1, browser_download_url: 'https://example.invalid/g.zip' }]);
+  ok('a zip that names no OS is still usable', generic.asset === 'ANTICODEX.zip', JSON.stringify(generic.asset));
+
+  const lin = createUpdater('1.0.0', { fs, fetch: feed([assets[0]]), platform: 'linux', userData: () => tmp, spawn: () => ({ on() {}, unref() {} }) });
+  const dl = await lin.download();
+  ok('a release with only another OS’s build refuses instead of installing it', dl.ok === false && /asset/.test(dl.error) && Boolean(dl.fix), JSON.stringify(dl));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— a helper that fails to spawn never takes the app down with it —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-fail-'));
+  const stagedDir = path.join(tmp, 'pending-update', 'ANTICODEX-win32-x64');
+  fs.mkdirSync(stagedDir, { recursive: true });
+  fs.writeFileSync(path.join(stagedDir, 'ANTICODEX.exe'), 'x');
+  fs.writeFileSync(path.join(tmp, 'update-state.json'), JSON.stringify({ staged_version: '9.9.9', staged_dir: stagedDir }));
+  const opts = { fs, platform: 'win32', userData: () => tmp, execPath: '/opt/ANTICODEX/ANTICODEX.exe', appPid: () => 4242 };
+
+  const errSpawn = () => {
+    const h = {};
+    setTimeout(() => (h.error || []).forEach((cb) => cb(new Error('EACCES: permission denied'))), 0);
+    return { on: (e, cb) => { (h[e] = h[e] || []).push(cb); }, unref() {} };
+  };
+  let quitRan = false;
+  const up = createUpdater('1.0.0', { ...opts, spawn: errSpawn });
+  const res = await up.apply(() => { quitRan = true; });
+  ok('a spawn error is reported with its reason', res.ok === false && /helper/.test(res.error) && /EACCES/.test(res.error), JSON.stringify(res));
+  ok('…the app does NOT quit into a swap that will never happen', quitRan === false);
+  ok('…and the update stays staged, ready to retry', up.status().stage === 'ready', JSON.stringify(up.status()));
+  const raw = JSON.parse(fs.readFileSync(path.join(tmp, 'update-state.json'), 'utf8'));
+  ok('…with no applying_version written for a helper that never ran', !raw.applying_version, JSON.stringify(raw));
+
+  let quitRan2 = false;
+  const up2 = createUpdater('1.0.0', { ...opts, spawn: () => { throw new Error('ENOENT'); } });
+  const res2 = await up2.apply(() => { quitRan2 = true; });
+  ok('a synchronous spawn failure is just as honest', res2.ok === false && /ENOENT/.test(res2.error) && quitRan2 === false, JSON.stringify(res2));
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

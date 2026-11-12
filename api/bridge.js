@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,7 +102,8 @@ export default async function handler(req, res) {
         return json(res, 200, await publicConfig(keys, {
           accountEnvs: new Set(await accountKeyEnvs(req, body)),
           defsNote: defsNote(keys),
-          allowPrivate: isDesktopLocal(req)
+          allowPrivate: isDesktopLocal(req),
+          localDevelopment: isLoopback(req)
         }));
       }
       case 'models': {
@@ -217,13 +219,13 @@ export default async function handler(req, res) {
       }
       case 'video_status': return json(res, 200, await queryVideo(body.id));
       case 'user_keys': return await handleUserKeys(req, body, res);
-      case 'register': return json(res, 200, await safeAuth(() => authx.register(body)));
+      case 'register': return json(res, 200, await safeAuth(() => authx.register({ ...body, localDevelopment: isLoopback(req) })));
       case 'verify_code': return json(res, 200, await safeAuth(() => authx.verifyCode(body)));
-      case 'resend_code': return json(res, 200, await safeAuth(() => authx.resendCode(body)));
+      case 'resend_code': return json(res, 200, await safeAuth(() => authx.resendCode({ ...body, localDevelopment: isLoopback(req) })));
       case 'login': return json(res, 200, await safeAuth(() => authx.login(body)));
       case 'logout': return await handleLogout(req, body, res);
       case 'me': return await handleMe(req, body, res);
-      case 'forgot': return json(res, 200, await safeAuth(() => authx.forgot(body)));
+      case 'forgot': return json(res, 200, await safeAuth(() => authx.forgot({ ...body, localDevelopment: isLoopback(req) })));
       case 'reset': {
         // The admin console can reset any account without the emailed code.
         const privileged = await isAdmin(req, body);
@@ -252,7 +254,7 @@ export default async function handler(req, res) {
       case 'sandbox': return await handleSandbox(req, body, res);
       case 'workspace_fs': return await handleWorkspaceFs(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
-      case 'admin': return await handleAdmin(body, res);
+      case 'admin': return await handleAdmin(body, res, req);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
@@ -319,14 +321,57 @@ async function safeAuth(run) {
   }
 }
 
+const ADMIN_SESSION_TTL_MS = 30 * 60 * 1000;
+
+function adminSessionSecret() {
+  const secret = getKey('ADMIN_SESSION_SECRET');
+  return typeof secret === 'string' && secret.trim() ? secret : '';
+}
+
+function issueAdminToken(secret) {
+  const iat = Date.now();
+  const claims = { v: 1, kind: 'admin', jti: crypto.randomBytes(16).toString('hex'), iat, exp: iat + ADMIN_SESSION_TTL_MS };
+  const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  const mac = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `adm_${payload}.${mac}`;
+}
+
+function validAdminToken(token) {
+  const secret = adminSessionSecret();
+  if (!secret || typeof token !== 'string' || token.length > 1024) return false;
+  const parts = /^adm_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/.exec(token);
+  if (!parts) return false;
+  const [, payload, mac] = parts;
+  const want = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return false;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const now = Date.now();
+    return claims?.v === 1 && claims.kind === 'admin' && /^[a-f0-9]{32}$/.test(claims.jti)
+      && Number.isSafeInteger(claims.iat) && Number.isSafeInteger(claims.exp)
+      && claims.iat <= now && claims.exp > now && claims.exp - claims.iat === ADMIN_SESSION_TTL_MS;
+  } catch { return false; }
+}
+
 async function isAdmin(req, body) {
-  const expected = `adm_${await sha256(`${getKey('ADMIN_USERNAME') || 'Thaddeusadmin'}:${getKey('ADMIN_PASSWORD') || 'Thaddeusk12'}:anticodex`)}`;
-  const sent = body?.token || (req?.headers?.['x-admin-token'] || '');
-  return Boolean(sent) && sent === expected;
+  return validAdminToken(body?.token || req?.headers?.['x-admin-token'] || '');
+}
+
+function adminLogout(res) {
+  // store.js silently falls back to instance-local memory on failed writes.
+  // A denylist there would falsely claim revocation across hosted instances.
+  return json(res, 501, {
+    ok: false, revoked: false, error: 'Admin token revocation is not supported by this storage backend.',
+    fix: 'Discard the token on this device. It remains valid until its 30-minute expiry.'
+  });
 }
 
 async function handleLogout(req, body, res) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+  if (typeof token === 'string' && token.startsWith('adm_')) {
+    if (!validAdminToken(token)) return json(res, 401, { error: 'admin token required' });
+    return adminLogout(res);
+  }
   const out = await authx.logout({ token });
   return json(res, 200, out);
 }
@@ -339,7 +384,7 @@ async function publicConfig(keys = {}, opts = {}) {
   return {
     name: 'ANTICODEX',
     version: VERSION,
-    admin_username: getKey('ADMIN_USERNAME') || 'Thaddeusadmin',
+    admin_username: getKey('ADMIN_USERNAME'),
     features: {
       chat: true, codex: true, claude_agent: true, images: true, video: true,
       mcp: true, computer_use: true,
@@ -351,7 +396,7 @@ async function publicConfig(keys = {}, opts = {}) {
       email_auth: true,
       email_verification_required: /^(1|true|yes|on)$/i.test(String(getKey('REQUIRE_EMAIL_VERIFICATION') || process.env.REQUIRE_EMAIL_VERIFICATION || '')),
       supabase_auth: Boolean(supa.hasAuth),
-      mailer_dev_codes: /^(1|true|yes|on)$/i.test(String(getKey('EXPOSE_RESET_CODES') || process.env.EXPOSE_RESET_CODES || ''))
+      mailer_dev_codes: authx.canShowDevCode(opts.localDevelopment)
     },
     // `configured` must reflect the ACCOUNT's keys, and each entry carries the
     // model list + key slot, otherwise the topbar menu could only ever send
@@ -2192,22 +2237,25 @@ async function handleImportConfig(req, body, res) {
 
 // --- admin ------------------------------------------------------------------
 
-async function handleAdmin(body, res) {
+async function handleAdmin(body, res, req) {
   const op = body.op || 'login';
-  const expectedUser = getKey('ADMIN_USERNAME') || 'Thaddeusadmin';
-  const expectedPass = getKey('ADMIN_PASSWORD') || 'Thaddeusk12';
+  const expectedUser = getKey('ADMIN_USERNAME');
+  const expectedPass = getKey('ADMIN_PASSWORD');
 
   if (op === 'login') {
-    const ok = timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
+    const secret = adminSessionSecret();
+    if (!expectedUser || !expectedPass || !secret) {
+      return json(res, 503, { ok: false, error: 'Admin login is not configured.', fix: 'Configure ADMIN_USERNAME, ADMIN_PASSWORD and ADMIN_SESSION_SECRET.' });
+    }
+    const ok = Boolean(expectedUser && expectedPass) && timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
     if (!ok) return json(res, 401, { error: 'Invalid admin credentials' });
-    const token = `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
+    const token = issueAdminToken(secret);
     await audit({ type: 'admin_login', ip: 'admin' });
-    return json(res, 200, { ok: true, token });
+    return json(res, 200, { ok: true, token, expires_in: ADMIN_SESSION_TTL_MS / 1000 });
   }
 
-  const token = body.token || '';
-  const valid = token === `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
-  if (!valid) return json(res, 401, { error: 'admin token required' });
+  if (!await isAdmin(req, body)) return json(res, 401, { error: 'admin token required' });
+  if (op === 'logout') return adminLogout(res);
 
   if (op === 'stats') {
     const users = await find('users', () => true, 10000);

@@ -156,9 +156,13 @@ console.log('\n— design discipline —');
     !/--accent-grad:\s*linear-gradient\(135deg, #[0-9a-f]{6}, #[0-9a-f]{6} [0-9]+%/.test(css) || true);
 }
 
-// Admin credentials live only on the server, never in the web bundle.
+// Admin credentials are operator-configured, never baked into source or bundle.
 const keysSrc = fs.readFileSync(path.join(root, 'lib', 'keys.js'), 'utf8');
-ok('admin creds defined server-side', keysSrc.includes('Thaddeusadmin') && keysSrc.includes('Thaddeusk12'));
+const bridgeSrc = fs.readFileSync(path.join(root, 'api', 'bridge.js'), 'utf8');
+ok('admin credential slots are empty in source',
+  /ADMIN_USERNAME: ''/.test(keysSrc) && /ADMIN_PASSWORD: ''/.test(keysSrc) && /ADMIN_SESSION_SECRET: ''/.test(keysSrc)
+  && !keysSrc.includes('Thaddeusadmin') && !keysSrc.includes('Thaddeusk12'));
+ok('admin login refuses until configured', /Admin login is not configured/.test(bridgeSrc));
 ok('admin creds NOT in web bundle', !js.includes('Thaddeusk12'));
 // The sanitizer is an allowlist now (tags + attributes + URL scheme), named in the
 // source; the minified bundle proves the URL allowlist shipped with it.
@@ -200,9 +204,13 @@ ok('codex workspace file tree has an explicit width', /\.file-tree\s*\{[^}]*widt
 ok('codex workspace rows are styled (.file-item)', /\.file-item/.test(cssSrc));
 ok('codex workspace editor fills its pane and scrolls', /\.editor-pane textarea\s*\{[^}]*flex: 1[^}]*min-height: 0/.test(cssSrc));
 ok('codex workspace terminal is bounded so the composer stays reachable', /\.workspace \.term\s*\{[^}]*max-height/.test(cssSrc));
-ok('panes stack on narrow windows (desktop minimum size)', (() => {
-  const i = cssSrc.indexOf('@media (max-width: 1000px)');
-  return i > 0 && /\.workspace\s*\{\s*flex-direction: column/.test(cssSrc.slice(i, i + 700));
+ok('panes switch via tabs on narrow windows (desktop minimum size)', (() => {
+  const i = cssSrc.indexOf('@media (max-width: 1180px)');
+  if (i < 0) return false;
+  const block = cssSrc.slice(i, i + 1400);
+  return /\.workspace-tabs\s*\{\s*display: flex/.test(block)
+    && /\.workspace\[data-panel="files"\] > \.file-tree/.test(block)
+    && /\.workspace\[data-panel="agent"\] > \.agent-pane\s*\{\s*display: flex/.test(block);
 })());
 ok('main allows panes to shrink', /\.main\s*\{[^}]*min-height: 0/.test(cssSrc));
 

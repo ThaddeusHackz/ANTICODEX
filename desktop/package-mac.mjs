@@ -43,8 +43,25 @@ const NAME = `ANTICODEX-darwin-${ARCH}`;
 
 const log = (...a) => console.log(...a);
 const run = (cmd, args, opts = {}) => {
-  log(`$ ${cmd} ${args.join(' ')}`);
-  return execFileSync(cmd, args, { stdio: 'inherit', cwd: HERE, ...opts });
+  const secrets = [];
+  args.forEach((arg, i) => {
+    const flag = /^(?:--password|--token|--secret|-p)(?:=(.*))?$/i.exec(arg);
+    const value = flag && (flag[1] === undefined ? args[i + 1] : flag[1]);
+    if (value) secrets.push(String(value));
+  });
+  const redact = (value) => secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), String(value));
+  log(redact(`$ ${cmd} ${args.join(' ')}`));
+  try {
+    const output = execFileSync(cmd, args, {
+      stdio: 'inherit', cwd: HERE, ...opts,
+      ...(secrets.length ? { stdio: ['ignore', 'pipe', 'pipe'] } : {})
+    });
+    if (secrets.length && output?.length) log(redact(output));
+    return output;
+  } catch (error) {
+    if (!secrets.length) throw error;
+    throw new Error(redact(error.message || error));
+  }
 };
 const capture = (cmd, args, opts = {}) => {
   try { return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts }).trim(); }
@@ -85,12 +102,15 @@ run('npx', [
   '--app-version=' + JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8')).version,
   '--icon=icons/icon.png',
   '--prune=true',
-  '--ignore="^/release($|/)"',
+  '--extra-resource=' + path.join(ROOT, 'web', 'dist'),
+  '--extra-resource=' + path.join(ROOT, 'api'),
+  '--extra-resource=' + path.join(ROOT, 'lib'),
+  '--ignore=^/release($|/)',
   // web/dist is the renderer and ships whole (including skills-atlas, which the
   // Skills page browses offline); data/ is build input, never shipped.
-  '--ignore="^/data($|/)"',
-  '--ignore="^/vendor($|/)"',
-  '--ignore="^/\\.git($|/)"',
+  '--ignore=^/data($|/)',
+  '--ignore=^/vendor($|/)',
+  '--ignore=^/\\.git($|/)',
   `--app-category-type=public.app-category.developer-tools`
 ]);
 

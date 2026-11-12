@@ -102,15 +102,48 @@ async function startLocalServer() {
     '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.map': 'application/json'
   };
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
+    let url, pathname;
+    try {
+      url = new URL(req.url, 'http://127.0.0.1');
+      pathname = decodeURIComponent(url.pathname);
+      if (pathname.includes('\0')) throw new URIError('invalid path');
+    } catch {
+      res.writeHead(400);
+      return res.end('Bad request');
+    }
     if (url.pathname.startsWith('/api/')) {
       if (bridge) return bridge(req, res);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'bridge unavailable' }));
     }
-    let filePath = path.join(WEB_DIST, decodeURIComponent(url.pathname));
-    if (!filePath.startsWith(WEB_DIST) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-      filePath = path.join(WEB_DIST, 'index.html');
+    const contains = (root, file) => {
+      const relative = path.relative(root, file);
+      return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    const safePath = (file) => {
+      if (!contains(WEB_DIST, file)) return false;
+      if (!fs.existsSync(WEB_DIST)) return true;
+      let existing = file;
+      while (!fs.existsSync(existing)) existing = path.dirname(existing);
+      return contains(fs.realpathSync(WEB_DIST), fs.realpathSync(existing));
+    };
+    let filePath = path.join(WEB_DIST, pathname);
+    try {
+      if (!safePath(filePath)) {
+        res.writeHead(403);
+        return res.end('Forbidden');
+      }
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        filePath = path.join(WEB_DIST, 'index.html');
+      }
+      if (!safePath(filePath)) {
+        res.writeHead(403);
+        return res.end('Forbidden');
+      }
+      if (fs.existsSync(filePath)) filePath = fs.realpathSync(filePath);
+    } catch {
+      res.writeHead(500);
+      return res.end('Unable to read web bundle');
     }
     if (!fs.existsSync(filePath)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
