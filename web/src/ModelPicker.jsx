@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import * as api from './lib/api.js';
 import { useApp } from './lib/state.jsx';
@@ -215,7 +216,13 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
         {currentProvider && !currentProvider.configured && <span className="mp-warn" title="this provider has no key yet">needs key</span>}
         <span className="mp-caret">▾</span>
       </button>
-      {open && (
+      {/* Portaled to #root: the topbar carries backdrop-filter, which makes it the
+          containing block for fixed descendants — rendered inside it, the dialog
+          anchored to the 48px bar instead of the screen and clipped away. #root is
+          outside the topbar, so fixed positioning means the viewport again. (The
+          jsdom mount test scopes every query to #root, so the dialog must live
+          there; document.body breaks that contract.) */}
+      {open && createPortal(
         <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
           <div className={`modal mp-modal ${align === 'right' ? 'right' : ''}`} role="dialog" aria-label="Choose a model">
             <div className="mp-head">
@@ -351,7 +358,8 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
               <button className="btn small ghost" onClick={() => { setOpen(false); nav('/settings'); }}>Provider keys…</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.getElementById('root') || document.body
       )}
     </div>
   );
