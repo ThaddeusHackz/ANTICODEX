@@ -54,7 +54,9 @@ const SKIP_BUILD = has('--skip-build');
 const DRY_RUN = has('--dry-run');
 const STAGE_ONLY = has('--stage-only');
 const SIGN = has('--sign') || Boolean(process.env.CODESIGN_IDENTITY);
-const OUT = path.join(HERE, 'release');
+// Same output directory as package-win.mjs: the release workflow verifies
+// `release/ANTICODEX-<version>-darwin-<arch>.zip` from the repository root.
+const OUT = path.join(ROOT, 'release');
 const PKG = JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8'));
 const VERSION = String(PKG.version || '0.0.0');
 const ELECTRON = String(PKG.devDependencies?.electron || '31.3.1').replace(/^[^0-9]*/, '');
@@ -146,7 +148,7 @@ for (const arch of ARCHS) {
     '--platform=darwin',
     `--arch=${arch}`,
     `--electron-version=${ELECTRON}`,
-    '--out=release',
+    `--out=${OUT}`,
     '--overwrite',
     '--app-bundle-id=app.anticodex.desktop',
     `--app-version=${VERSION}`,
