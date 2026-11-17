@@ -1,6 +1,6 @@
 # ANTICODEX 2.0.0
 
-Release date: 2026-11-16
+Release date: 2026-11-17
 
 This is the first release that treats the website and the packaged desktop app as
 one product: the same renderer, the same `api/bridge.js`, the same version number.
@@ -18,9 +18,10 @@ one product: the same renderer, the same `api/bridge.js`, the same version numbe
 - The provider directory is now 28 endpoints. Models resolve through the same
   OpenAI-compatible path as every other gateway, including streaming, tools and
   the reasoning panel.
-- The model picker is portalled to `<body>`, so the topbar can no longer clip
-  the dialog. The close control is 38 px, labelled, and Escape works even when
-  focus is outside the picker. On phones it becomes a bottom sheet.
+- The model picker is portalled out of the topbar (to `#root`), so the bar's
+  `backdrop-filter` can no longer clip the dialog. The close control is 38 px,
+  labelled, and Escape works even when focus is outside the picker. On phones it
+  becomes a bottom sheet.
 
 ### Sandbox / Daytona
 
@@ -54,10 +55,12 @@ one product: the same renderer, the same `api/bridge.js`, the same version numbe
   backs off 4s → 30s, shows an elapsed clock and a queued → rendering → ready
   timeline, and prints MiniMax's own failure sentence. A finished render is
   resolved to a playable download URL; a simulated job is labelled as simulated.
-- **Library** reads the two record sets the product actually writes
-  (`acx_images`, `acx_videos`), with search, kind/time filters, sort, grid/list,
-  preview, bulk delete and JSON export. Every stat is derived from records; the
-  Create menu links only to surfaces that can make something.
+- **Library** reads the two record sets this browser writes (`acx_images`,
+  `acx_videos`) with search, kind/time filters, sort, grid/list, preview, bulk
+  delete and JSON export, and additionally lists the account's server artifacts
+  (sandbox output, documents, exported skills, the server copy of each render)
+  in a separate, labelled group. Every stat is derived from records; the Create
+  menu links only to surfaces that can make something.
 - **Computer Use** sends real coordinates/keys/commands instead of `{}`, gates
   launch/shell behind confirmation, and states that browser mode cannot drive a
   PC rather than printing a fake success.
@@ -67,29 +70,45 @@ one product: the same renderer, the same `api/bridge.js`, the same version numbe
 - 43 official brand marks are vendored under `web/public/logos/` (Simple Icons,
   CC0) and used in Connectors and Settings. Brands with no published mark get a
   labelled monogram, never an invented logo.
-- The fake `memory.mcp.anticodex.ai` / `fetch.mcp.anticodex.ai` hosts are gone.
-  Memory, Playwright, Chrome DevTools, shadcn and sequential-thinking are real
-  pinned stdio servers; `filesystem` states the folder it needs. Postgres was
-  removed because its only official server package is archived and unmaintained.
+- The catalogue is 27 servers. The fake `memory.mcp.anticodex.ai` /
+  `fetch.mcp.anticodex.ai` hosts are gone. Memory, Playwright, Chrome DevTools,
+  shadcn, context7 and sequential-thinking are real pinned stdio servers;
+  `filesystem` states the folder it needs. Postgres was removed because its only
+  official server package is archived and unmaintained.
+
+### Agent surfaces
+
+- **OpenCode-style Agent** (`/agent`): a real read/write/edit/bash loop over the
+  workspace or a Daytona box, with approvals and a per-step tool log.
+- **Public APIs** (`/apis`): 2,335 free endpoints the agent can search and call
+  from a loopback/desktop process, never from a hosted open proxy.
+- **Codex parity** (`/parity`) and **Evidence** (`/evidence`): the crate-by-crate
+  map and the reverse-engineering record behind the claims.
+- **Skill atlas**: 2,208 skills indexed for retrieval, grounded into chat turns
+  with a hard budget, installable into `~/.qoder/skills`, `~/.codex/skills` or
+  `~/.claude/skills`, with the 19-rule safety scanner.
 
 ### UI
 
-- Sidebar navigation is grouped (Work / Create / Connect / Intelligence) with
-  collapsible sections persisted per browser.
+- The rail is grouped (daily work / Workspace / Intelligence) with an icon-only
+  collapse mode, a command palette, and one destination per page.
 - Three new bundled skills: `numes-ai-routing`, `playwright-ui-verification`,
-  `youtube-research`; the skills picker already feeds Chat, Agent Studio and
-  Codex from the same per-account set.
-- `Install` page and PWA metadata are part of the same build.
+  `youtube-research`; Chat, Agent Studio and Codex read the same account set.
+- `Install` page (PWA, macOS, Windows), iOS asset bundle and Capacitor project,
+  and PWA metadata are part of the same build.
+- A11y pass: real controls for clickable elements, focus-visible rings, reduced
+  motion, safe-area insets and dialog semantics.
 
 ## Verification
 
 - `npm run build` — the bundle that ships in the .exe and on Vercel.
-- `npm test` — **21 suites, 1,492 assertions, 0 failures**, including new
-  `test-brands.mjs` (58) and `test-studios.mjs` (75) and 16 new jsdom checks
-  that mount Images, Video, Library, Connectors and Settings against seeded
-  records and assert real logos, restored jobs and printed provider errors.
-- `node tests/test-web-mount.mjs` — 108 passed: every page above renders with
-  the real bundle, and the model-picker dialog is observed through its portal.
+- `npm test` — **24 suites, 2,066 assertions, 0 failures**, including
+  `test-brands.mjs` (58), `test-studios.mjs` (75), `test-atlas.mjs` (139),
+  `test-agent.mjs` (128) and `test-a11y.mjs` (46). The mount suite adds 16 checks
+  that seed Images, Video, Library, Connectors and Settings and assert real
+  logos, restored jobs and printed provider errors.
+- `node tests/test-web-mount.mjs` — 173 passed: every page renders with the
+  real bundle, and the model-picker dialog is observed through its portal.
 - The Numes host was **not reachable from the build machine** on 2026-11-16:
   TLS to `api.numes.ai` was reset by its Cloudflare edge. The provider is
   implemented and unit-tested; a live call must be verified from a network that
