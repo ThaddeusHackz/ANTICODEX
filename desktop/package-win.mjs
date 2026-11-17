@@ -58,6 +58,10 @@ const args = [
   '--overwrite',
   '--asar',
   `--app-version=${appVersion}`,
+  // The skill atlas is 17 MB of prose that the bridge reads from web/public at
+  // runtime, and the page that browses it must work offline in the .exe. Keep it.
+  // The skill atlas (2,208 skills) lives in web/dist/skills-atlas and the Skills
+  // page browses it offline in the .exe — do not prune it with the rest of public/.
   '--ignore=node_modules/electron($|/)',
   '--ignore=node_modules/electron-packager($|/)',
   '--extra-resource=' + path.join(root, 'web', 'dist'),

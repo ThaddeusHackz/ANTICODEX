@@ -5,9 +5,10 @@
 //   check()          — ask GitHub what the latest release is. Also reads/writes
 //                      the persisted update state, so a version the user already
 //                      dismissed is not nagged about again.
-//   download()       — only reached after the user ACCEPTS. Downloads the win32
-//                      zip asset, EXTRACTS it into userData/pending-update with a
-//                      real extractor, and records that a staged update is ready.
+//   download()       — only reached after the user ACCEPTS. Downloads the release
+//                      asset for THIS platform (never another OS's zip), EXTRACTS
+//                      it into userData/pending-update with a real extractor, and
+//                      records that a staged update is ready.
 //                      (The old code stopped at the download and its comment lied
 //                      about applying on restart — nothing was ever extracted or
 //                      applied.)
@@ -91,12 +92,36 @@ function helperScript() {
   ].join('\n');
 }
 
+// Releases name assets after their target (ANTICODEX-<v>-win32-x64.zip,
+// ANTICODEX-darwin-<arch>.zip). Picking "the first zip" handed a Mac the Windows
+// build whenever both shipped, so rank: this platform+arch, then this platform,
+// then a generic zip that names no OS at all. Another platform's build is never
+// a fallback — applying it would overwrite the install with the wrong binaries.
+function pickAsset(assets, platform, arch) {
+  const token = { win32: 'win32', darwin: 'darwin', linux: 'linux' }[platform] || platform;
+  const forPlatform = (n) => new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`, 'i').test(n);
+  const namesAnOS = /(win32|darwin|linux|macos|windows)/i;
+  const zips = assets.filter((a) => /\.zip$/i.test(a.name));
+  const zip = zips.find((a) => forPlatform(a.name) && a.name.toLowerCase().includes(arch))
+    || zips.find((a) => forPlatform(a.name))
+    || zips.find((a) => !namesAnOS.test(a.name))
+    || null;
+  const exe = platform === 'win32'
+    ? (assets.find((a) => /\.exe$/i.test(a.name) && forPlatform(a.name))
+      || assets.find((a) => /\.exe$/i.test(a.name) && !namesAnOS.test(a.name))
+      || null)
+    : null;
+  const asset = zip || exe;
+  return { asset, format: zip ? 'zip' : (exe ? 'exe' : 'none') };
+}
+
 export function createUpdater(currentVersion, opts = {}) {
   const fsx = opts.fs || fs;
   const spawn = opts.spawn || nodeSpawn;
   // Late-bound so a test that swaps globalThis.fetch still drives check().
   const doFetch = opts.fetch || ((...a) => globalThis.fetch(...a));
   const platform = opts.platform || process.platform;
+  const arch = opts.arch || process.arch;
   const execPath = opts.execPath || process.execPath;
   const appPid = opts.appPid || (() => process.pid);
   const envFor = opts.env || (() => process.env);
@@ -127,9 +152,7 @@ export function createUpdater(currentVersion, opts = {}) {
     const rel = await res.json();
     const version = (rel.tag_name || '').replace(/^v/, '');
     const assets = (rel.assets || []).map((a) => ({ name: a.name, size: a.size, url: a.browser_download_url }));
-    const zip = assets.find((a) => /\.zip$/i.test(a.name)) || null;
-    const exe = assets.find((a) => /\.exe$/i.test(a.name)) || null;
-    const asset = zip || exe || null;
+    const { asset, format } = pickAsset(assets, platform, arch);
 
     const state = readState();
     writeState({ last_checked_at: new Date().toISOString() });
@@ -149,7 +172,8 @@ export function createUpdater(currentVersion, opts = {}) {
       publishedAt: rel.published_at,
       asset: asset ? asset.name : null,
       assetUrl: asset ? asset.url : null,
-      format: zip ? 'zip' : (exe ? 'exe' : 'none'),
+      format,
+      platform,
       assets
     };
     return lastInfo;
@@ -188,7 +212,7 @@ export function createUpdater(currentVersion, opts = {}) {
     if (!lastInfo || !lastInfo.ok) { const c = await check(); if (!c.ok) return c; }
     const info = lastInfo;
     if (!info.available) return { ok: false, error: 'no update available', fix: 'This build is already the latest.' };
-    if (!info.assetUrl) return { ok: false, error: 'no installable asset in release', fix: `Release v${info.version} has no win32 zip/exe to download.` };
+    if (!info.assetUrl) return { ok: false, error: `no installable asset for ${platform} in release`, fix: `Release v${info.version} ships no ${platform} build — see ${info.url || 'the releases page'} for what is available.` };
 
     const pending = PENDING_DIR();
     try { fsx.rmSync(pending, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -224,8 +248,9 @@ export function createUpdater(currentVersion, opts = {}) {
   }
 
   // Stage the update onto disk with a detached helper, then quit — the helper does
-  // the file swap once this process is gone. quit() is only called after the
-  // helper has actually been spawned.
+  // the file swap once this process is gone. quit() only runs after the helper
+  // child emits 'spawn'; a failed spawn keeps the staged update retryable instead
+  // of quitting into a swap that will never happen.
   function apply(quit) {
     const state = readState();
     const staged = state.staged_dir;
@@ -244,20 +269,35 @@ export function createUpdater(currentVersion, opts = {}) {
     } catch (e) {
       return Promise.resolve({ ok: false, error: `could not write updater helper: ${e && e.message || e}`, fix: 'Check write permission in the app data folder.' });
     }
-    try {
-      const child = spawn(execPath, [helper, JSON.stringify(cfg)], {
-        detached: true,
-        stdio: 'ignore',
-        env: Object.assign({}, envFor(), { ELECTRON_RUN_AS_NODE: '1' })
+    return new Promise((resolve) => {
+      const fail = (msg) => resolve({ ok: false, error: `could not launch updater helper: ${msg}`, fix: 'The staged update is kept — press Apply again, or restart ANTICODEX and retry.' });
+      let child;
+      try {
+        child = spawn(execPath, [helper, JSON.stringify(cfg)], {
+          detached: true,
+          stdio: 'ignore',
+          env: Object.assign({}, envFor(), { ELECTRON_RUN_AS_NODE: '1' })
+        });
+      } catch (e) {
+        return fail(String((e && e.message) || e));
+      }
+      if (!child || typeof child.on !== 'function') return fail('spawn returned no child process');
+      let settled = false;
+      child.on('error', (e) => {
+        if (settled) return;
+        settled = true;
+        fail(String((e && e.message) || e));
       });
-      if (child && typeof child.unref === 'function') child.unref();
-    } catch (e) {
-      return Promise.resolve({ ok: false, error: `could not launch updater helper: ${e && e.message || e}`, fix: 'Close other ANTICODEX windows and try again.' });
-    }
-    // The helper is running; only now is it safe to shut the app down.
-    writeState({ applying_version: state.staged_version, last_applied_at: new Date().toISOString() });
-    if (typeof quit === 'function') { try { quit(); } catch { /* the window may already be closing */ } }
-    return Promise.resolve({ ok: true, stage: 'applying', version: state.staged_version, helper, message: 'The updater is running — ANTICODEX reopens itself once the files are swapped.' });
+      child.on('spawn', () => {
+        if (settled) return;
+        settled = true;
+        if (typeof child.unref === 'function') child.unref();
+        // The helper is confirmed running; only now is it safe to shut down.
+        writeState({ applying_version: state.staged_version, last_applied_at: new Date().toISOString() });
+        if (typeof quit === 'function') { try { quit(); } catch { /* the window may already be closing */ } }
+        resolve({ ok: true, stage: 'applying', version: state.staged_version, helper, message: 'The updater is running — ANTICODEX reopens itself once the files are swapped.' });
+      });
+    });
   }
 
   function dismiss(version) {

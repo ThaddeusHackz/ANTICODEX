@@ -5,7 +5,7 @@ import BrandIcon from '../BrandIcon.jsx';
 
 function GatewayCard({ g, notify }) {
   return (
-    <div className="mcp-card" style={{ borderColor: '#8b5cf666' }}>
+    <div className="mcp-card" style={{ borderColor: 'var(--border-2)' }}>
       <div className="row">
         <BrandIcon brand={g.id} name={g.vendor || g.name} />
         <div>

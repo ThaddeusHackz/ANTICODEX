@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="app.anticodex.ios" version="0.1.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+  <name>ANTICODEX</name>
+  <description>The universal AI workspace — chat, Codex, skills, sandbox.</description>
+  <content src="https://anticodex.vercel.app" />
+  <access origin="https://anticodex.vercel.app" />
+  <access origin="wss://anticodex.vercel.app" />
+  <allow-navigation href="https://anticodex.vercel.app/*" />
+  <preference name="Scheme" value="https" />
+  <preference name="Hostname" value="anticodex" />
+  <preference name="AllowInlineMediaPlayback" value="true" />
+  <preference name="MediaPlaybackRequiresUserAction" value="false" />
+  <preference name="ScrollEnabled" value="true" />
+  <preference name="LimitsNavigationsToAppBoundDomains" value="false" />
+  <platform name="ios">
+    <preference name="deployment-target" value="15.0" />
+    
+  </platform>
+</widget>

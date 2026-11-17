@@ -208,7 +208,7 @@ Allowed actions: screenshot, windows, move, click, type, key. Never emit launch 
       </div>
 
       {!desktop && (
-        <div className="card" style={{ marginBottom: 14, borderColor: '#fbbf2455' }}>
+        <div className="card computer-desktop-note" style={{ marginBottom: 14 }}>
           <b>This page cannot control a PC from a browser.</b>
           <p className="tiny" style={{ margin: '6px 0 0', lineHeight: 1.6 }}>
             A web page has no access to your mouse, keyboard or screen, and a hosted server must not drive the
@@ -260,20 +260,20 @@ Allowed actions: screenshot, windows, move, click, type, key. Never emit launch 
           </div>
           <div style={{
             flex: 1, minHeight: 300, maxHeight: 420, overflowY: 'auto', marginTop: 12,
-            background: '#07090f', borderRadius: 12, padding: 14, fontFamily: 'var(--mono)', fontSize: 12
+            background: 'var(--bg-input)', borderRadius: 12, padding: 14, fontFamily: 'var(--mono)', fontSize: 12
           }}>
             {log.map((l, i) => (
               <div key={i} style={{
-                color: l.kind === 'err' ? '#fca5a5' : l.kind === 'cmd' ? '#e8ebf6' : l.kind === 'sys' ? '#8b93ab' : '#9fe8b8',
+                color: l.kind === 'err' ? 'var(--danger)' : l.kind === 'cmd' ? 'var(--text)' : l.kind === 'sys' ? 'var(--muted)' : 'var(--ok)',
                 whiteSpace: 'pre-wrap', marginBottom: 6
               }}>
-                {l.kind === 'cmd' && <span style={{ color: '#22d3ee' }}>› </span>}{l.text}
+                {l.kind === 'cmd' && <span style={{ color: 'var(--accent-2)' }}>› </span>}{l.text}
               </div>
             ))}
           </div>
 
           {plan && (
-            <div className="card" style={{ marginTop: 10, borderColor: '#22d3ee55' }}>
+            <div className="card computer-plan-card" style={{ marginTop: 10 }}>
               <div className="row between">
                 <b className="tiny">Proposed plan · {plan.steps.length} step(s)</b>
                 <button className="btn small ghost" onClick={() => setPlan(null)}>Discard</button>

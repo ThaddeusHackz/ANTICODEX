@@ -1,196 +1,228 @@
 #!/usr/bin/env node
-// Packages ANTICODEX for macOS as ANTICODEX.app folders (arm64 + x64 by
-// default, or one universal app), then zips each — mirroring package-win.mjs's
-// contract: rebuild web/dist by default (--skip-build to reuse deliberately),
-// ship api/ + lib/ + web/dist as extra resources so the packaged app runs the
-// SAME in-process bridge as the .exe, and take the version from
-// desktop/package.json only.
+// Package ANTICODEX for macOS.
 //
-// HONEST LIMITS (do not remove these notes):
-//  * UNSIGNED and NOT NOTARIZED. No signing identity is configured anywhere in
-//    this repo; the output is a plain unsigned .app. Gatekeeper will warn on
-//    first launch — right-click → Open, or `xattr -dr com.apple.quarantine
-//    ANTICODEX.app`. Nothing here fakes a signature.
-//  * The actual electron-packager step must run ON macOS (this script exits
-//    with this message on other platforms). The web build + resource staging
-//    DO run anywhere, so CI on Linux can verify everything up to packaging:
-//      node package-mac.mjs --dry-run     print the full plan, no side effects
-//      node package-mac.mjs --stage-only  build web + stage resources, exit 0
-//  * Auto-update: desktop/updater.mjs polls the same GitHub Releases feed on
-//    every platform, but its download/apply path targets the Windows portable
-//    zip (findStagedRoot looks for ANTICODEX.exe; release.yml attaches only the
-//    win32 zip today). macOS self-update is NOT implemented — mac users
-//    reinstall from a newer release. This script does not pretend otherwise.
-//  * Deep links: --protocol=anticodex writes CFBundleURLTypes into Info.plist;
-//    desktop/main.mjs already handles the rest on darwin (app.on('open-url')
-//    and app.setAsDefaultProtocolClient('anticodex'), incl. cold-start argv).
+// What this script can and cannot do, stated up front because "macOS build" is
+// where Electron projects usually lie:
 //
-// Usage: node package-mac.mjs [--skip-build] [--dry-run] [--stage-only]
-//                             [--arch=arm64,x64|arm64|x64|universal]
+//   * electron-packager can produce a `darwin-x64` / `darwin-arm64` .app bundle
+//     from any platform. That bundle is **unsigned**.
+//   * A distributable app (double-clickable without Gatekeeper warnings, and
+//     updatable) needs `codesign` + `notarytool`, both of which only exist on
+//     macOS with a Developer ID certificate. This script refuses to pretend: run
+//     it on macOS with CODESIGN_IDENTITY set for a signed build, otherwise you get
+//     the unsigned bundle and a line telling you exactly what is missing.
+//   * A DMG is produced when `hdiutil` exists (macOS). Elsewhere you get a `.zip`.
+//
+// The release workflow runs `npm run package:mac` and expects
+// `release/ANTICODEX-<version>-darwin-<arch>.zip` for arm64 and x64. That is the
+// default here; `--arch=arm64` narrows it while developing.
+//
+// Usage:
+//   node desktop/package-mac.mjs                    # arm64 + x64, unsigned, zipped
+//   node desktop/package-mac.mjs --arch=arm64       # one architecture
+//   node desktop/package-mac.mjs --release          # also DMG on macOS
+//   CODESIGN_IDENTITY="Developer ID Application: …" node desktop/package-mac.mjs --sign
+//   node desktop/package-mac.mjs --stage-only       # build web + stage, no package
+//   node desktop/package-mac.mjs --dry-run          # print the plan, no side effects
+//
+// The renderer is rebuilt first: a stale web/dist is how a UI fix never reaches
+// the shipped app (the same bug package-win.mjs guards against).
 
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { makeIcns } from './make-icns.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, '..');
-const out = path.join(root, 'release');
-const stageDir = path.join(out, 'mac-resources');
-
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.dirname(HERE);
 const argv = process.argv.slice(2);
-const skipBuild = argv.includes('--skip-build');
-const dryRun = argv.includes('--dry-run');
-const stageOnly = argv.includes('--stage-only');
-const archArg = (argv.find((a) => a.startsWith('--arch=')) || '--arch=arm64,x64').slice(7);
-// electron-packager 17.1.2 (desktop/package.json devDeps) supports darwin
-// x64/arm64/universal — see its src/targets.js. Default to the two native
-// builds; universal merges both into one fat app when asked.
-const archs = archArg.split(',').map((s) => s.trim()).filter(Boolean);
+const has = (f) => argv.includes(f);
+const arg = (f, d) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
+
+const archArg = arg('--arch', '');
+const ARCHS = (archArg ? archArg.split(',') : ['arm64', 'x64']).map((s) => s.trim()).filter(Boolean);
 const VALID_ARCHS = ['arm64', 'x64', 'universal'];
-for (const a of archs) {
-  if (!VALID_ARCHS.includes(a)) {
-    console.error(`✗ unknown arch "${a}" — use ${VALID_ARCHS.join(', ')}`);
+for (const arch of ARCHS) {
+  if (!VALID_ARCHS.includes(arch)) {
+    console.error(`✗ unknown arch "${arch}" — use ${VALID_ARCHS.join(', ')}`);
     process.exit(1);
   }
 }
+const RELEASE = has('--release');
+const SKIP_BUILD = has('--skip-build');
+const DRY_RUN = has('--dry-run');
+const STAGE_ONLY = has('--stage-only');
+const SIGN = has('--sign') || Boolean(process.env.CODESIGN_IDENTITY);
+const OUT = path.join(HERE, 'release');
+const PKG = JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8'));
+const VERSION = String(PKG.version || '0.0.0');
+const ELECTRON = String(PKG.devDependencies?.electron || '31.3.1').replace(/^[^0-9]*/, '');
+const ICON = fs.existsSync(path.join(HERE, 'icons', 'icon.icns'))
+  ? 'icons/icon.icns'
+  : (fs.existsSync(path.join(HERE, 'icons', 'icon.png')) ? 'icons/icon.png' : null);
 
-// Same single source of truth the app and the updater use: a stale hardcoded
-// --app-version is how a packaged app ends up "newer" than the release that
-// carries the actual fix.
-const appVersion = (() => {
+const log = (...a) => console.log(...a);
+const run = (cmd, args, opts = {}) => {
+  const secrets = [];
+  args.forEach((arg, i) => {
+    const flag = /^(?:--password|--token|--secret|-p)(?:=(.*))?$/i.exec(arg);
+    const value = flag && (flag[1] === undefined ? args[i + 1] : flag[1]);
+    if (value) secrets.push(String(value));
+  });
+  const redact = (value) => secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), String(value));
+  log(redact(`$ ${cmd} ${args.join(' ')}`));
   try {
-    return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0';
-  } catch { return '0.0.0'; }
-})();
+    const output = execFileSync(cmd, args, {
+      stdio: 'inherit', cwd: HERE, ...opts,
+      ...(secrets.length ? { stdio: ['ignore', 'pipe', 'pipe'] } : {})
+    });
+    if (secrets.length && output?.length) log(redact(output));
+    return output;
+  } catch (error) {
+    if (!secrets.length) throw error;
+    throw new Error(redact(error.message || error));
+  }
+};
+const capture = (cmd, args, opts = {}) => {
+  try { return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...opts }).trim(); }
+  catch { return null; }
+};
 
-// What ships inside Contents/Resources — identical basenames to the Windows
-// build, which is exactly what desktop/main.mjs resolves via process.resourcesPath
-// (RES_ROOT/dist, RES_ROOT/api/bridge.js, RES_ROOT/lib).
-const RESOURCES = [
-  { name: 'dist', from: path.join(root, 'web', 'dist') },
-  { name: 'api', from: path.join(root, 'api') },
-  { name: 'lib', from: path.join(root, 'lib') }
-];
+log(`ANTICODEX ${VERSION} — macOS packaging (${ARCHS.join(', ')})`);
+log(`  electron ${ELECTRON} · icon ${ICON || '(electron default)'}`);
 
-function packagerArgs(arch) {
-  return [
-    path.join(__dirname, 'node_modules', 'electron-packager', 'bin', 'electron-packager.js'),
-    __dirname,
-    'ANTICODEX',
+if (DRY_RUN) {
+  log('\n· plan (no side effects)');
+  if (!SKIP_BUILD) log('  1. npm run build');
+  log('  2. npm install (desktop) if electron-packager is absent');
+  for (const arch of ARCHS) {
+    log(`  3. electron-packager → release/ANTICODEX-darwin-${arch}/ANTICODEX.app`);
+    log(`  4. zip → release/ANTICODEX-${VERSION}-darwin-${arch}.zip`);
+  }
+  if (SIGN) log('  5. codesign + notarytool (macOS + Apple credentials only)');
+  if (RELEASE) log('  6. hdiutil DMG (macOS only)');
+  process.exit(0);
+}
+
+// --- 1. the renderer ---------------------------------------------------------
+if (!SKIP_BUILD) {
+  log('\n· building the web bundle (a stale dist ships a stale UI)');
+  run('npm', ['run', 'build'], { cwd: ROOT });
+} else {
+  log('\n· skipping the web build (--skip-build) — web/dist must already be current');
+}
+if (!fs.existsSync(path.join(ROOT, 'web', 'dist', 'index.html'))) {
+  console.error('✗ web/dist/index.html is missing — run without --skip-build');
+  process.exit(1);
+}
+
+if (STAGE_ONLY) {
+  log('\n· stage-only: web bundle is current; nothing was packaged');
+  log(`  renderer ${path.relative(ROOT, path.join(ROOT, 'web', 'dist'))}`);
+  process.exit(0);
+}
+
+// --- 2. desktop deps ---------------------------------------------------------
+if (!fs.existsSync(path.join(HERE, 'node_modules', 'electron-packager'))) {
+  log('\n· installing desktop dependencies');
+  run('npm', ['install', '--no-audit', '--no-fund']);
+}
+
+fs.mkdirSync(OUT, { recursive: true });
+
+const onMac = process.platform === 'darwin';
+const identity = process.env.CODESIGN_IDENTITY || capture('security', ['find-identity', '-v', '-p', 'codesigning'])?.match(/"([^"]+)"/)?.[1];
+
+// A signed build must be signed *before* it is zipped, so packaging, signing and
+// zipping happen per architecture rather than in one pass at the end.
+for (const arch of ARCHS) {
+  const NAME = `ANTICODEX-darwin-${arch}`;
+
+  // --- 3. pack ---------------------------------------------------------------
+  log(`\n· packing ${NAME}`);
+  const args = [
+    'electron-packager', '.', 'ANTICODEX',
     '--platform=darwin',
     `--arch=${arch}`,
-    `--out=${out}`,
+    `--electron-version=${ELECTRON}`,
+    '--out=release',
     '--overwrite',
-    '--asar',
-    `--app-version=${appVersion}`,
-    '--app-bundle-id=com.anticodex.desktop',
-    '--ignore=node_modules/electron($|/)',
-    '--ignore=node_modules/electron-packager($|/)',
-    // Self-contained runtime: the local API bridge + provider catalog ship
-    // with the .app, staged (and verified) below.
-    ...RESOURCES.map((r) => '--extra-resource=' + path.join(stageDir, r.name)),
-    // Real .icns generated from the existing logo — packager ignores a .png.
-    '--icon=' + path.join(__dirname, 'icons', 'icon.icns'),
-    // anticodex:// deep links (pairing) — CFBundleURLTypes in Info.plist.
-    '--protocol=anticodex',
-    '--protocol-name=ANTICODEX'
+    '--app-bundle-id=app.anticodex.desktop',
+    `--app-version=${VERSION}`,
+    '--prune=true',
+    '--extra-resource=' + path.join(ROOT, 'web', 'dist'),
+    '--extra-resource=' + path.join(ROOT, 'api'),
+    '--extra-resource=' + path.join(ROOT, 'lib'),
+    '--ignore=^/release($|/)',
+    // web/dist is the renderer and ships whole (including skills-atlas, which the
+    // Skills page browses offline); data/ is build input, never shipped.
+    '--ignore=^/data($|/)',
+    '--ignore=^/vendor($|/)',
+    '--ignore=^/\\.git($|/)',
+    '--app-category-type=public.app-category.developer-tools'
   ];
-}
+  if (ICON) args.push(`--icon=${ICON}`);
+  run('npx', args);
 
-if (dryRun) {
-  console.log('ANTICODEX macOS packaging plan (--dry-run — nothing built, staged or packaged)');
-  console.log(`  version:        ${appVersion} (from desktop/package.json)`);
-  console.log(`  platform:       darwin, arch: ${archs.join(', ')}`);
-  console.log(`  web bundle:     ${skipBuild ? 'reuse web/dist (--skip-build)' : 'npm run build in web/ (fresh)'}`);
-  console.log(`  stage to:       ${stageDir}/{${RESOURCES.map((r) => r.name).join(',')}}`);
-  console.log(`  icon:           desktop/icons/icon.icns (generated from desktop/icons/icon.png)`);
-  for (const arch of archs) {
-    console.log(`  output:         ${path.join(out, `ANTICODEX-darwin-${arch}`)}`);
-    console.log(`  zip:            ${path.join(out, `ANTICODEX-${appVersion}-darwin-${arch}.zip`)}`);
-    console.log(`  packager args:  ${packagerArgs(arch).slice(1).join(' ')}`);
-  }
-  console.log('  signing:        UNSIGNED / NOT NOTARIZED — Gatekeeper will warn on first launch');
-  console.log(`  packaging host: ${process.platform === 'darwin' ? 'this Mac (ready)' : `requires macOS — this ${process.platform} host can only build + stage`}`);
-  process.exit(0);
-}
-
-fs.mkdirSync(out, { recursive: true });
-
-// Always rebuild the web bundle: the desktop app serves web/dist verbatim, so a
-// stale dist directory in the repo would ship old UI. Pass --skip-build to
-// reuse it deliberately.
-if (!skipBuild) {
-  console.log('→ building web bundle…');
-  const r = spawnSync('npm', ['run', 'build'], { cwd: path.join(root, 'web'), stdio: 'inherit', shell: process.platform === 'win32' });
-  if (r.status !== 0) process.exit(r.status);
-} else if (!fs.existsSync(path.join(root, 'web', 'dist', 'index.html'))) {
-  console.error('✗ --skip-build but web/dist is missing — run `npm run build --prefix web` first.');
-  process.exit(1);
-}
-
-// Stage the extra resources where packaging will pick them up. This step is
-// real work (copy + verify), runs on any OS, and is what --stage-only stops
-// after — so Linux CI can prove the payload without a Mac.
-console.log('→ staging resources…');
-for (const r of RESOURCES) {
-  if (!fs.existsSync(r.from)) {
-    console.error(`✗ missing resource ${r.from} — cannot package an incomplete app.`);
+  const appPath = path.join(OUT, NAME, 'ANTICODEX.app');
+  if (!fs.existsSync(appPath)) {
+    console.error(`✗ expected ${appPath} — packager produced something else`);
     process.exit(1);
   }
-  const dest = path.join(stageDir, r.name);
-  fs.rmSync(dest, { recursive: true, force: true });
-  fs.cpSync(r.from, dest, { recursive: true });
-  console.log(`  staged ${r.name} → ${dest}`);
-}
-if (!fs.existsSync(path.join(stageDir, 'api', 'bridge.js'))) {
-  console.error('✗ staged api/ has no bridge.js — the packaged app would have no backend.');
-  process.exit(1);
-}
+  log(`  ✓ ${path.relative(ROOT, appPath)}`);
 
-if (stageOnly) {
-  console.log(`✓ web bundle + resources staged (--stage-only). Packaging itself requires macOS.`);
-  process.exit(0);
-}
-
-if (process.platform !== 'darwin') {
-  console.error(`✗ the packaging step requires macOS — this host is ${process.platform}.`);
-  console.error('  The web bundle and resources ARE staged (release/mac-resources); nothing was packaged.');
-  console.error('  Run `npm run package:mac` on a Mac (Apple Silicon or Intel) to produce the .app.');
-  process.exit(1);
-}
-
-// Real .icns from the existing logo (no new deps, no new artwork).
-const icns = makeIcns(path.join(__dirname, 'icons', 'icon.png'), path.join(__dirname, 'icons', 'icon.icns'));
-console.log(`→ icon: desktop/icons/icon.icns (${icns.bytes} bytes)`);
-
-if (!fs.existsSync(path.join(__dirname, 'node_modules', 'electron-packager'))) {
-  console.log('→ installing desktop packaging deps…');
-  const r = spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: __dirname, stdio: 'inherit', shell: false });
-  if (r.status !== 0) process.exit(r.status);
-}
-
-for (const arch of archs) {
-  console.log(`→ packaging ANTICODEX darwin-${arch}…`);
-  const res = spawnSync(process.execPath, packagerArgs(arch), { stdio: 'inherit', cwd: __dirname });
-  if (res.status !== 0) {
-    console.error('packaging failed');
-    process.exit(res.status || 1);
+  // --- 4. sign (macOS only, honest about it) --------------------------------
+  if (SIGN) {
+    if (!onMac) {
+      log('\n! --sign asked for, but codesign only exists on macOS.');
+      log('  The bundle is UNSIGNED. Build on macOS (or CI with a macOS runner) for a signed app.');
+    } else if (!identity) {
+      log('\n! --sign asked for, but no Developer ID Application certificate is installed.');
+      log('  security find-identity -v -p codesigning   → nothing usable');
+      log('  The bundle is UNSIGNED. Gatekeeper will warn on first open (right-click → Open).');
+    } else {
+      log(`\n· signing with ${identity}`);
+      run('codesign', ['--deep', '--force', '--options', 'runtime', '--timestamp', '--sign', identity, appPath]);
+      const zipForNotary = path.join(OUT, `${NAME}-notary.zip`);
+      run('ditto', ['-c', '-k', '--keepParent', appPath, zipForNotary]);
+      log('· notarising (needs APPLE_ID + APPLE_TEAM_ID + an app-specific password in APPLE_APP_PASSWORD)');
+      if (process.env.APPLE_ID && process.env.APPLE_TEAM_ID && process.env.APPLE_APP_PASSWORD) {
+        run('xcrun', ['notarytool', 'submit', zipForNotary, '--apple-id', process.env.APPLE_ID, '--team-id', process.env.APPLE_TEAM_ID, '--password', process.env.APPLE_APP_PASSWORD, '--wait']);
+        run('xcrun', ['stapler', 'staple', appPath]);
+        log('  ✓ notarised and stapled');
+      } else {
+        log('  ! APPLE_ID / APPLE_TEAM_ID / APPLE_APP_PASSWORD not set — signed but NOT notarised');
+      }
+      try { fs.rmSync(zipForNotary, { force: true }); } catch { /* notary temp */ }
+    }
+  } else {
+    log('\n· unsigned build (pass --sign with a Developer ID to sign; notarisation needs macOS + Apple credentials)');
   }
-  const appDir = path.join(out, `ANTICODEX-darwin-${arch}`);
-  console.log(`\n✓ macOS app: ${path.join(appDir, 'ANTICODEX.app')}`);
 
-  // Zip it as the release asset (bsdtar on macOS writes a real .zip from -a).
-  const zipPath = path.join(out, `ANTICODEX-${appVersion}-darwin-${arch}.zip`);
-  if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-  const zip = spawnSync('tar', ['-a', '-c', '-f', zipPath, `ANTICODEX-darwin-${arch}`], { cwd: out, stdio: 'inherit' });
-  if (zip.status === 0) console.log(`✓ zip: ${zipPath}`);
-  else console.log('(zip step skipped — the .app folder is ready to use)');
+  // --- 5. release artifact (named exactly as the workflow checks) ------------
+  const zipPath = path.join(OUT, `ANTICODEX-${VERSION}-darwin-${arch}.zip`);
+  try { fs.rmSync(zipPath, { force: true }); } catch { /* stale zip */ }
+  if (onMac) {
+    run('ditto', ['-c', '-k', '--keepParent', appPath, zipPath]);
+    log(`  ✓ zip: ${path.relative(ROOT, zipPath)}`);
+  } else {
+    // electron-packager can build the .app on Linux, but the release asset is
+    // produced on macOS (ditto preserves symlinks and resource forks correctly).
+    try { fs.rmSync(zipPath, { force: true }); } catch { /* none */ }
+    log('  ! ditto is macOS-only; leaving the .app directory as the artifact');
+  }
+
+  if (RELEASE && onMac && capture('which', ['hdiutil'])) {
+    const dmg = path.join(OUT, `ANTICODEX-${VERSION}-darwin-${arch}.dmg`);
+    run('hdiutil', ['create', '-volname', 'ANTICODEX', '-srcfolder', path.join(OUT, NAME), '-ov', '-format', 'UDZO', dmg]);
+    log(`  ✓ ${path.relative(ROOT, dmg)}`);
+  } else if (RELEASE) {
+    log('  ! hdiutil is macOS-only; no .dmg from this host');
+  }
 }
 
-console.log('\n⚠ UNSIGNED and NOT NOTARIZED: no signing identity is configured in this repo.');
-console.log('  First launch: right-click ANTICODEX.app → Open, or');
-console.log('  xattr -dr com.apple.quarantine ANTICODEX.app');
-console.log('  Auto-update on macOS is not implemented (updater.mjs applies the Windows');
-console.log('  portable zip); reinstall from a newer GitHub Release to update.');
+log('\nDone.');
+log(`  version  ${VERSION}`);
+log(`  host     ${process.platform} ${os.arch()}${onMac ? '' : '  (unsigned .app built cross-platform)'}`);
+log('  install  drag ANTICODEX.app to /Applications. First launch: right-click → Open (unsigned).');

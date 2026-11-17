@@ -127,6 +127,21 @@ ok('desktop main loads the same bridge the website runs', /api\/bridge\.js|'brid
 {
   const preload = read('desktop/preload.mjs');
   const main = read('desktop/main.mjs');
+  // Skill install: one handler, three roots, and the atlas path must not need a
+  // picker (a slug is enough because the body ships with the app).
+  ok('skill install defaults to the same root the web UI exports to', /SKILL_TARGETS\[opts\.target\] \? opts\.target : 'qoder'/.test(main));
+  ok('…and knows all three roots Qoder/Codex/Claude read', /qoder:.*'\.qoder'.*'skills'/.test(main.replace(/\n\s*/g, ' ')) && /codex:/.test(main) && /claude:/.test(main));
+  ok('…writing an atlas skill without a file picker', /exportSkill\(String\(opts\.slug\)/.test(main));
+  ok('…and the picker path receives the chosen root', /installSkillArchive\(\{ dest:/.test(main));
+  ok('so the Installed tab can see what Browse installed', /acx:skillRoots/.test(main) && /skillRoots: \(\) => ipcRenderer\.invoke/.test(preload));
+  // Daytona in main: the private key must never be reachable from a page.
+  ok('SSH to Daytona runs in the main process', /ipcMain\.handle\('acx:daytona'/.test(main));
+  ok('…exposing no key material, only the ops', (() => {
+    const at = main.indexOf("ipcMain.handle('acx:daytona'");
+    const block = main.slice(at, at + 1600);
+    return /case 'exec'/.test(block) && !/privateKey|readFileSync.*id_/.test(block);
+  })());
+  ok('…and the renderer routes through it when it is there', /anticodexDesktop\?\.daytona/.test(read('web/src/lib/api.js')));
   const wanted = [...preload.matchAll(/invoke\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]);
   const offered = new Set([...main.matchAll(/ipcMain\.handle\('(acx:[A-Za-z:_-]+)'/g)].map((m) => m[1]));
   const missing = wanted.filter((c) => !offered.has(c));
@@ -151,6 +166,97 @@ ok('desktop main loads the same bridge the website runs', /api\/bridge\.js|'brid
   const yml = read('.github/workflows/release.yml');
   ok('the release workflow does not pin a version in the asset name', !/ANTICODEX-0\.1\.\d/.test(yml));
   ok('this suite runs in CI', /test-desktop\.mjs/.test(yml) && /test-desktop\.mjs/.test(read('package.json')));
+}
+
+// ===========================================================================
+console.log('— mac packaging never logs notarization credentials —');
+{
+  const source = read('desktop/package-mac.mjs');
+  const runSource = source.slice(source.indexOf('const run ='), source.indexOf('const capture ='));
+  const sentinel = 'NOTARY-PASSWORD-SENTINEL';
+  for (const passwordArgs of [['--password', sentinel], [`--password=${sentinel}`], ['-p', sentinel]]) {
+    for (const fail of [false, true]) {
+      const logs = [];
+      let received, thrown;
+      const run = new Function('log', 'execFileSync', 'HERE', `${runSource}\nreturn run;`)(
+        (line) => logs.push(line),
+        (cmd, args, opts) => {
+          received = { cmd, args, opts };
+          if (fail) {
+            const error = new Error(`notarytool failed: ${sentinel}`);
+            error.stderr = Buffer.from(sentinel);
+            error.spawnargs = args;
+            throw error;
+          }
+          return Buffer.from(`notarytool accepted ${sentinel}`);
+        }, path.join(ROOT, 'desktop')
+      );
+      try { run('xcrun', ['notarytool', 'submit', 'fixture.zip', ...passwordArgs], { stdio: 'inherit' }); }
+      catch (error) { thrown = error; }
+      ok(`notarization ${passwordArgs[0].split('=')[0]} ${fail ? 'failure' : 'success'} redacts logs`, !logs.join('\n').includes(sentinel) && logs.some((line) => line.includes('[REDACTED]')));
+      ok('sensitive subprocess output cannot bypass redaction', received.opts.stdio.join(',') === 'ignore,pipe,pipe');
+      ok('the real subprocess still receives the unchanged password argument', received.args.slice(-passwordArgs.length).join('|') === passwordArgs.join('|'));
+      if (fail) {
+        ok('error messages, stacks and attached fields do not expose the password', !!thrown && !`${thrown.stack}${JSON.stringify(thrown)}`.includes(sentinel) && /notarytool failed/.test(thrown.message));
+      } else ok('a successful notarization command still succeeds', !thrown);
+    }
+  }
+}
+
+// ===========================================================================
+console.log('— desktop static paths are refused before a file is read —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-static-'));
+  const dist = path.join(tmp, 'dist');
+  const sibling = path.join(tmp, 'dist-private');
+  fs.mkdirSync(dist);
+  fs.mkdirSync(sibling);
+  fs.writeFileSync(path.join(dist, 'index.html'), 'SPA');
+  fs.writeFileSync(path.join(dist, 'app.js'), 'bundled script');
+  fs.writeFileSync(path.join(sibling, 'secret.txt'), 'must not be read');
+  fs.symlinkSync(path.join(sibling, 'secret.txt'), path.join(dist, 'escape.txt'));
+  fs.symlinkSync(sibling, path.join(dist, 'escape-dir'), 'junction');
+  fs.symlinkSync(path.join(dist, 'app.js'), path.join(dist, 'inside.js'));
+  const source = read('desktop/main.mjs');
+  const handlerSource = source.slice(source.indexOf('  const MIME ='), source.indexOf('  await new Promise((resolve) => server.listen'));
+  let reads = [];
+  const handler = new Function('http', 'fs', 'path', 'WEB_DIST', 'bridge', `${handlerSource}\nreturn server;`)(
+    { createServer: (callback) => callback },
+    { ...fs, createReadStream: (file) => { reads.push(file); return { pipe: (res) => res.end(fs.readFileSync(file, 'utf8')) }; } },
+    path, dist, null
+  );
+  const request = (url) => {
+    reads = [];
+    const response = { status: 0, body: '', writeHead(code) { this.status = code; }, end(body) { this.body = body; } };
+    let thrown = null;
+    try { handler({ url }, response); } catch (error) { thrown = error; }
+    return { ...response, thrown, reads };
+  };
+  try {
+    for (const url of ['/%', '/%E0%A4%A', '/%00', 'http://[invalid']) {
+      const result = request(url);
+      ok(`malformed path ${url} returns 400 without reading`, result.status === 400 && !result.thrown && result.reads.length === 0);
+    }
+    for (const url of ['/..%2fdist-private/secret.txt', '/%2e%2e%2fdist-private/secret.txt', '/escape.txt', '/escape-dir/secret.txt', '/escape-dir/missing']) {
+      const result = request(url);
+      ok(`escaping path ${url} returns 403 before read`, result.status === 403 && !result.thrown && result.reads.length === 0);
+    }
+    for (const url of ['/app.js', '/inside.js']) {
+      const result = request(url);
+      ok(`contained asset ${url} is still served`, result.status === 200 && result.body === 'bundled script' && result.reads.length === 1);
+    }
+    for (const url of ['/', '/settings/models']) {
+      const result = request(url);
+      ok(`SPA route ${url} still falls back to index`, result.status === 200 && result.body === 'SPA');
+    }
+    fs.unlinkSync(path.join(dist, 'index.html'));
+    fs.symlinkSync(path.join(sibling, 'secret.txt'), path.join(dist, 'index.html'));
+    const fallback = request('/missing');
+    ok('an escaping SPA fallback is refused before read', fallback.status === 403 && fallback.reads.length === 0);
+    fs.unlinkSync(path.join(dist, 'index.html'));
+    const missing = request('/missing');
+    ok('a missing bundle still gives reinstall guidance', missing.status === 200 && /reinstall/.test(missing.body) && missing.reads.length === 0);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 
 // ===========================================================================
@@ -286,6 +392,42 @@ try {
     ok('local_gateway_allowed is false for a browser', cfg.data.local_gateway_allowed === false);
     const chat = await call(pub.base, 'chat', { provider: 'custom_desktop', model: 'x', messages: [{ role: 'user', content: 'hi' }], provider_defs: [DESKTOP_DEF] });
     ok('and it refuses that chat rather than answering from another model', chat.data.ok === false && chat.data.verdict === 'blocked' && !/Demo Core/.test(chat.data.text || ''), JSON.stringify(chat.data).slice(0, 160));
+  }
+
+  console.log('— a website in the user’s browser is not "this machine" —');
+  {
+    // The loopback socket alone used to be the whole gate: any site the user
+    // visits could POST a simple request (no preflight) and run code here.
+    const port = new URL(local.base).port;
+    const evil = { ...LOCAL_HDR, Origin: 'https://evil.example' };
+    const evilRef = { ...LOCAL_HDR, Referer: 'https://evil.example/page' };
+    const same = { ...LOCAL_HDR, Origin: `http://127.0.0.1:${port}` };
+    const sb = await call(local.base, 'sandbox', { op: 'status' }, evil);
+    ok('a cross-origin loopback POST cannot reach the sandbox', sb.status === 403, JSON.stringify(sb.data).slice(0, 120));
+    const sbRef = await call(local.base, 'sandbox', { op: 'status' }, evilRef);
+    ok('…a foreign Referer is refused the same way', sbRef.status === 403);
+    const ws = await call(local.base, 'workspace_fs', { op: 'status' }, evil);
+    ok('…nor the workspace filesystem', ws.status === 403, JSON.stringify(ws.data).slice(0, 120));
+    const eg = await call(local.base, 'egress', { op: 'start', mode: 'allowlist', allow: ['api.openai.com'] }, evil);
+    ok('…nor start an egress proxy on this machine', eg.data.ok === false && eg.data.needs_local === true, JSON.stringify(eg.data).slice(0, 120));
+    const okSb = await call(local.base, 'sandbox', { op: 'status' }, same);
+    ok('the app’s own same-origin pages still work', okSb.status === 200 && okSb.data.ok === true, JSON.stringify(okSb.data).slice(0, 120));
+    const okPlain = await call(local.base, 'sandbox', { op: 'status' }, LOCAL_HDR);
+    ok('…and header-less local callers (IPC proxy, CLI)', okPlain.status === 200);
+    const localhostOrigin = await call(local.base, 'sandbox', { op: 'status' }, { ...LOCAL_HDR, Origin: `http://localhost:${port}` });
+    ok('…including localhost origins', localhostOrigin.status === 200);
+
+    const stream = await fetch(`${local.base}/api/bridge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...LOCAL_HDR },
+      body: JSON.stringify({ action: 'chat_stream', provider: 'anticodex', model: 'anticodex/demo-core', messages: [{ role: 'user', content: 'hi' }] })
+    });
+    ok('streamed chat carries no wildcard CORS for other sites to read', stream.headers.get('access-control-allow-origin') === null, String(stream.headers.get('access-control-allow-origin')));
+    await stream.body?.cancel().catch(() => {});
+
+    const apiSrc = read('web/src/lib/api.js');
+    ok('keychain-dependent actions ride the IPC proxy', /DESKTOP_PROXY = \[[^\]]*'config'\]/.test(apiSrc));
+    ok('the renderer never fetches raw keychain keys', !/getKeys\(\)/.test(apiSrc));
+    ok('…and no raw-key channel exists in preload or main', !/acx:getKeys/.test(read('desktop/preload.mjs')) && !/acx:getKeys/.test(read('desktop/main.mjs')));
   }
 
   console.log('— the web UI still matches the packaged one —');
@@ -439,10 +581,14 @@ try {
     // sources have to be the real endpoints.
     ok('the Skills route exists', /path="\/skills"/.test(read('web/src/App.jsx')) && /SkillsPage/.test(read('web/src/App.jsx')));
     const skillsPage = read('web/src/pages/Skills.jsx');
-    ok('…and reads the registry', /skillsApi\.list/.test(skillsPage));
-    ok('…and the template roots for the plugins tab', /artifactsApi\.list/.test(skillsPage));
+    // Rewritten 2026-11 for the 2,208-skill atlas: the registry read is now the
+    // skillkit engine (`skillkit.list` = the pinned atlas + hybrid retrieval), the
+    // template roots still come from the artifact picker, and the config view now
+    // reports refused roots with the reason the runtime would give.
+    ok('…and reads the registry', /skillkit\.(list|stats|get)/.test(skillsPage));
+    ok('…and the template roots for the plugins tab', /api\.artifacts\.list/.test(skillsPage));
     ok('…with per-account toggles rather than per-browser ones', /userKey\('acx_enabled_skills'/.test(skillsPage));
-    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /duplicates/.test(skillsPage));
+    ok('…and a config view that shows refused roots', /Refused/.test(skillsPage) && /refused/.test(skillsPage));
 
     // Installing a packaged skill is a write to this machine, so it goes through
     // the main process (file picker + the registry's own extractor), never the page.
@@ -453,7 +599,7 @@ try {
     ok('…into this machine\'s skill root', /\.codex.*'skills'|'skills'\)/.test(main));
     ok('…and refuses an archive with no SKILL.md before writing', /does not contain a SKILL\.md/.test(main));
     ok('…asks before replacing an installed skill', /already installed/.test(main) && /overwrite: true/.test(main));
-    ok('the renderer reaches it through the preload bridge only', /installSkill: \(\) => ipcRenderer\.invoke\('acx:skillInstall'\)/.test(preload));
+    ok('the renderer reaches it through the preload bridge only', /installSkill: \(opts = \{\}\) => ipcRenderer\.invoke\('acx:skillInstall', opts\)/.test(preload));
     ok('the install button only exists where the bridge does', /canInstall[\s\S]{0,160}installSkill/.test(read('web/src/pages/Claude.jsx')));
 
     const relative = await call(local.base, 'skills', { op: 'install', file: 'notes.skill' });
@@ -522,7 +668,7 @@ console.log('\n— the updater actually applies the release it downloads —');
   const calls2 = [];
   const up2 = createUpdater('1.0.0', {
     fs, spawn: (c, a, o) => { calls2.push({ c, a, o }); return extractorChild(staged2); },
-    fetch: async (u) => (String(u).includes('releases/latest') ? release('v9.9.9', 'ANTICODEX-9.9.9-win32-x64.zip') : assetFetch()),
+    fetch: async (u) => (String(u).includes('releases/latest') ? release('v9.9.9', 'ANTICODEX-9.9.9-linux-x64.zip') : assetFetch()),
     platform: 'linux', userData: () => tmp2
   });
   const dl2 = await up2.download();
@@ -582,7 +728,12 @@ console.log('\n— apply writes a detached helper and quits only after it is run
 
   const order = [];
   let spawnOpts = null;
-  const fakeSpawn = (cmd, args, o) => { order.push('spawn'); spawnOpts = { cmd, args, o }; return { on() {}, unref() {} }; };
+  const fakeSpawn = (cmd, args, o) => {
+    order.push('spawn'); spawnOpts = { cmd, args, o };
+    const h = {};
+    setTimeout(() => (h.spawn || []).forEach((cb) => cb()), 0);
+    return { on: (e, cb) => { (h[e] = h[e] || []).push(cb); }, unref() {} };
+  };
   const up = createUpdater('1.0.0', {
     fs, spawn: fakeSpawn, platform: 'win32', userData: () => tmp,
     execPath: '/opt/ANTICODEX-win32-x64/ANTICODEX.exe', appPid: () => 4242, env: () => ({ PATH: '/bin' })
@@ -607,6 +758,62 @@ console.log('\n— apply writes a detached helper and quits only after it is run
   const bad = await up2.apply(() => { quitRan = true; });
   ok('apply with nothing staged reports failure', bad.ok === false && /staged/.test(bad.error) && bad.fix, JSON.stringify(bad));
   ok('…and does NOT quit the app on that failure', quitRan === false, JSON.stringify({ quitRan }));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— the updater downloads the build for THIS machine, not the first zip —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-pick-'));
+  const assets = [
+    { name: 'ANTICODEX-9.9.9-win32-x64.zip', size: 1, browser_download_url: 'https://example.invalid/win.zip' },
+    { name: 'ANTICODEX-darwin-arm64.zip', size: 1, browser_download_url: 'https://example.invalid/mac-arm.zip' },
+    { name: 'ANTICODEX-darwin-x64.zip', size: 1, browser_download_url: 'https://example.invalid/mac-x64.zip' }
+  ];
+  const feed = (list) => async () => ({ ok: true, json: async () => ({ tag_name: 'v9.9.9', body: '', assets: list }) });
+  const pick = (platform, arch, list = assets) => createUpdater('1.0.0', { fs, fetch: feed(list), platform, arch, userData: () => tmp }).check();
+
+  const mac = await pick('darwin', 'arm64');
+  ok('a Mac is offered the darwin build, never the Windows zip', mac.asset === 'ANTICODEX-darwin-arm64.zip', JSON.stringify(mac.asset));
+  const macIntel = await pick('darwin', 'x64');
+  ok('…and the architecture matches too', macIntel.asset === 'ANTICODEX-darwin-x64.zip', JSON.stringify(macIntel.asset));
+  const win = await pick('win32', 'x64');
+  ok('Windows still gets the win32 build', win.asset === 'ANTICODEX-9.9.9-win32-x64.zip', JSON.stringify(win.asset));
+  const generic = await pick('win32', 'x64', [{ name: 'ANTICODEX.zip', size: 1, browser_download_url: 'https://example.invalid/g.zip' }]);
+  ok('a zip that names no OS is still usable', generic.asset === 'ANTICODEX.zip', JSON.stringify(generic.asset));
+
+  const lin = createUpdater('1.0.0', { fs, fetch: feed([assets[0]]), platform: 'linux', userData: () => tmp, spawn: () => ({ on() {}, unref() {} }) });
+  const dl = await lin.download();
+  ok('a release with only another OS’s build refuses instead of installing it', dl.ok === false && /asset/.test(dl.error) && Boolean(dl.fix), JSON.stringify(dl));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n— a helper that fails to spawn never takes the app down with it —');
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-upd-fail-'));
+  const stagedDir = path.join(tmp, 'pending-update', 'ANTICODEX-win32-x64');
+  fs.mkdirSync(stagedDir, { recursive: true });
+  fs.writeFileSync(path.join(stagedDir, 'ANTICODEX.exe'), 'x');
+  fs.writeFileSync(path.join(tmp, 'update-state.json'), JSON.stringify({ staged_version: '9.9.9', staged_dir: stagedDir }));
+  const opts = { fs, platform: 'win32', userData: () => tmp, execPath: '/opt/ANTICODEX/ANTICODEX.exe', appPid: () => 4242 };
+
+  const errSpawn = () => {
+    const h = {};
+    setTimeout(() => (h.error || []).forEach((cb) => cb(new Error('EACCES: permission denied'))), 0);
+    return { on: (e, cb) => { (h[e] = h[e] || []).push(cb); }, unref() {} };
+  };
+  let quitRan = false;
+  const up = createUpdater('1.0.0', { ...opts, spawn: errSpawn });
+  const res = await up.apply(() => { quitRan = true; });
+  ok('a spawn error is reported with its reason', res.ok === false && /helper/.test(res.error) && /EACCES/.test(res.error), JSON.stringify(res));
+  ok('…the app does NOT quit into a swap that will never happen', quitRan === false);
+  ok('…and the update stays staged, ready to retry', up.status().stage === 'ready', JSON.stringify(up.status()));
+  const raw = JSON.parse(fs.readFileSync(path.join(tmp, 'update-state.json'), 'utf8'));
+  ok('…with no applying_version written for a helper that never ran', !raw.applying_version, JSON.stringify(raw));
+
+  let quitRan2 = false;
+  const up2 = createUpdater('1.0.0', { ...opts, spawn: () => { throw new Error('ENOENT'); } });
+  const res2 = await up2.apply(() => { quitRan2 = true; });
+  ok('a synchronous spawn failure is just as honest', res2.ok === false && /ENOENT/.test(res2.error) && quitRan2 === false, JSON.stringify(res2));
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

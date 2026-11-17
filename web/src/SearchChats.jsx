@@ -62,7 +62,7 @@ export default function SearchChats({ open, onClose }) {
   const go = (r) => { if (!r) return; onClose(); nav(`/?thread=${encodeURIComponent(r.t.id)}`); };
 
   return (
-    <div className="modal-back search-back" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="modal-back search-back" role="presentation" aria-hidden="true" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="search-modal" role="dialog" aria-label="Search chats">
         <div className="search-input-row">
           <span className="ico">⌕</span>

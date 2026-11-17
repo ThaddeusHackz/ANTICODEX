@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +42,7 @@ import {
   streamAcpAnswer
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally as qoderAtlasTally } from '../lib/qoder-repos.js';
-import { webSearch } from '../lib/search.js';
+import { webSearch, searchEverything } from '../lib/search.js';
 import { generateImage, FLUX_FIX, FLUX_MODELS } from '../lib/flux.js';
 import { startVideo, queryVideo, MINIMAX_FIX } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
@@ -49,6 +50,8 @@ import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
+import { runAgent, agentList, resolveAgent, resolveTarget, decide } from '../lib/agent.js';
+import { catalogueStats, search as publicApiSearch, callApi as publicApiCall, publicApiPrompt, publicApiTools, PUBLIC_API_LIMITS } from '../lib/publicapis.js';
 import { buildImportPlan, planToRows, exportCodexConfig } from '../lib/configimport.js';
 import { loadSkills, skillInstructions, resolveSkillMentions, extractSkillArchive, readSkillArchive, parseSkillsManifest } from '../lib/skills.js';
 import { startEgressProxy, checkEgress, normalizeEgressPolicy, EGRESS_MODES, DEFAULT_ALLOW, egressEnv } from '../lib/egress.js';
@@ -77,6 +80,12 @@ import {
   testRemoteProfile
 } from '../lib/remote.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
+import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
+import { loadCatalogue } from '../lib/publicapis.js';
+import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState, diagnose } from '../lib/daytona.js';
+import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
+import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
+import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
 
 // ---------------------------------------------------------------------------
 // Everything routes through /api/bridge with {action:...} so the same handlers
@@ -101,7 +110,8 @@ export default async function handler(req, res) {
         return json(res, 200, await publicConfig(keys, {
           accountEnvs: new Set(await accountKeyEnvs(req, body)),
           defsNote: defsNote(keys),
-          allowPrivate: isDesktopLocal(req)
+          allowPrivate: isDesktopLocal(req),
+          localDevelopment: isLoopback(req)
         }));
       }
       case 'models': {
@@ -169,13 +179,61 @@ export default async function handler(req, res) {
       // the old throw became a generic 500 and the page's toast disappeared with
       // the real reason. A labelled demo result (provider:'demo', demo:true) is
       // not a failure — it is a preview, and the page says exactly that.
+      //
+      // ⌕Search has to find more than chats: the sidebar box searches the API
+      // catalogue, the skill atlas and this machine's connectors too, or people
+      // learn not to use it.
+      case 'search_all': {
+        const q = body.q || body.query || '';
+        const chats = await find('threads', () => true, 500).catch(() => []);
+        // The atlas is a build artifact: 2,208 skills, loaded lazily and cached by
+        // the module. `loadAtlas()` throws if the artifact is missing, which is a
+        // normal state on a fresh checkout — so a missing atlas must not break chat
+        // search, it just contributes no group.
+        let skills = null;
+        try { skills = loadAtlas(); } catch { skills = null; }
+        let apis = null;
+        try { apis = loadCatalogue(); } catch { apis = null; }
+        return json(res, 200, searchEverything(q, {
+          limit: Math.min(Number(body.limit) || 6, 20),
+          chats,
+          skills,
+          apis,
+          connectors: MCP_CATALOG
+        }));
+      }
       case 'image': {
-        try { return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) })); }
-        catch (e) { return json(res, 200, mediaFailure(e, FLUX_FIX)); }
+        try {
+          const out = await generateImage({ ...body, keys: await mergedKeys(req, body) });
+          // Keep the artifact. An image that exists only until the tab closes is
+          // the exact thing the Library page was built to fix.
+          try { recordArtifact(await accountKeyFor(req, body), {
+            kind: 'image',
+            title: String(body.prompt || 'Generated image').slice(0, 120),
+            source: out.provider === 'demo' ? 'demo (no Cloudflare key)' : `flux ${out.model || ''}`.trim(),
+            url: typeof out.image === 'string' && out.image.startsWith('data:') ? null : out.image,
+            thumb: typeof out.image === 'string' && out.image.startsWith('data:') ? out.image : null,
+            mime: out.mime || 'image/png',
+            bytes: out.bytes || null,
+            meta: { width: out.width || body.width || 1024, height: out.height || body.height || 1024, demo: Boolean(out.demo), ext: out.ext || null },
+            thread_id: body.thread_id || null
+          }); } catch { /* the library must never break a generation */ }
+          return json(res, 200, out);
+        } catch (e) { return json(res, 200, mediaFailure(e, FLUX_FIX)); }
       }
       case 'video_start': {
-        try { return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) })); }
-        catch (e) { return json(res, 200, mediaFailure(e, MINIMAX_FIX)); }
+        try {
+          const out = await startVideo({ ...body, keys: await mergedKeys(req, body) });
+          try { recordArtifact(await accountKeyFor(req, body), {
+            kind: 'video',
+            title: String(body.prompt || 'Generated video').slice(0, 120),
+            source: out.demo ? 'demo (no MiniMax key)' : `hailuo ${out.model || ''}`.trim(),
+            url: `/api/bridge?action=video_status&id=${encodeURIComponent(out.id)}`,
+            meta: { job: out.id, status: out.status, duration: out.duration, resolution: out.resolution, demo: Boolean(out.demo) },
+            thread_id: body.thread_id || null
+          }); } catch { /* the library must never break a generation */ }
+          return json(res, 200, out);
+        } catch (e) { return json(res, 200, mediaFailure(e, MINIMAX_FIX)); }
       }
       case 'video_status': {
         try {
@@ -188,13 +246,13 @@ export default async function handler(req, res) {
         }
       }
       case 'user_keys': return await handleUserKeys(req, body, res);
-      case 'register': return json(res, 200, await safeAuth(() => authx.register(body)));
+      case 'register': return json(res, 200, await safeAuth(() => authx.register({ ...body, localDevelopment: isLoopback(req) })));
       case 'verify_code': return json(res, 200, await safeAuth(() => authx.verifyCode(body)));
-      case 'resend_code': return json(res, 200, await safeAuth(() => authx.resendCode(body)));
+      case 'resend_code': return json(res, 200, await safeAuth(() => authx.resendCode({ ...body, localDevelopment: isLoopback(req) })));
       case 'login': return json(res, 200, await safeAuth(() => authx.login(body)));
       case 'logout': return await handleLogout(req, body, res);
       case 'me': return await handleMe(req, body, res);
-      case 'forgot': return json(res, 200, await safeAuth(() => authx.forgot(body)));
+      case 'forgot': return json(res, 200, await safeAuth(() => authx.forgot({ ...body, localDevelopment: isLoopback(req) })));
       case 'reset': {
         // The admin console can reset any account without the emailed code.
         const privileged = await isAdmin(req, body);
@@ -223,10 +281,17 @@ export default async function handler(req, res) {
       case 'sandbox': return await handleSandbox(req, body, res);
       case 'workspace_fs': return await handleWorkspaceFs(req, body, res);
       case 'export_config': return handleExportConfig(body, res);
-      case 'admin': return await handleAdmin(body, res);
+      case 'admin': return await handleAdmin(body, res, req);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
+      case 'skillkit': return await handleSkillKit(req, body, res);
+      case 'daytona': return await handleDaytona(req, body, res);
+      case 'agent': return await handleAgent(req, body, res);
+      case 'publicapi': return await handlePublicApi(req, body, res);
+      case 'codex_map': return handleCodexMap(body, res);
+      case 'qoder_fieldkit': return json(res, 200, qoderFieldKit());
+      case 'library': return await handleLibrary(req, body, res);
       default: return json(res, 404, { error: `unknown action: ${action}` });
     }
   } catch (e) {
@@ -269,7 +334,17 @@ function isLoopback(req) {
   const fwd = req?.headers?.['x-forwarded-for'];
   if (fwd) return false;
   const ip = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-  return ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.');
+  if (!(ip === '127.0.0.1' || ip === '::1' || ip.startsWith('127.'))) return false;
+  // A loopback socket is not proof of "this machine": any site the user visits
+  // can POST here as a simple request (no preflight) and would otherwise reach
+  // local-only ops. Browsers stamp those with a foreign Origin/Referer; the
+  // app's own pages and the desktop IPC proxy carry a loopback one or none.
+  const label = req?.headers?.origin || req?.headers?.referer || '';
+  if (!label) return true;
+  try {
+    const host = new URL(label).hostname;
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  } catch { return false; }
 }
 
 /** Sign-in must survive any failure mode of the email provider: an exception
@@ -283,14 +358,57 @@ async function safeAuth(run) {
   }
 }
 
+const ADMIN_SESSION_TTL_MS = 30 * 60 * 1000;
+
+function adminSessionSecret() {
+  const secret = getKey('ADMIN_SESSION_SECRET');
+  return typeof secret === 'string' && secret.trim() ? secret : '';
+}
+
+function issueAdminToken(secret) {
+  const iat = Date.now();
+  const claims = { v: 1, kind: 'admin', jti: crypto.randomBytes(16).toString('hex'), iat, exp: iat + ADMIN_SESSION_TTL_MS };
+  const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  const mac = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `adm_${payload}.${mac}`;
+}
+
+function validAdminToken(token) {
+  const secret = adminSessionSecret();
+  if (!secret || typeof token !== 'string' || token.length > 1024) return false;
+  const parts = /^adm_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/.exec(token);
+  if (!parts) return false;
+  const [, payload, mac] = parts;
+  const want = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return false;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const now = Date.now();
+    return claims?.v === 1 && claims.kind === 'admin' && /^[a-f0-9]{32}$/.test(claims.jti)
+      && Number.isSafeInteger(claims.iat) && Number.isSafeInteger(claims.exp)
+      && claims.iat <= now && claims.exp > now && claims.exp - claims.iat === ADMIN_SESSION_TTL_MS;
+  } catch { return false; }
+}
+
 async function isAdmin(req, body) {
-  const expected = `adm_${await sha256(`${getKey('ADMIN_USERNAME') || 'Thaddeusadmin'}:${getKey('ADMIN_PASSWORD') || 'Thaddeusk12'}:anticodex`)}`;
-  const sent = body?.token || (req?.headers?.['x-admin-token'] || '');
-  return Boolean(sent) && sent === expected;
+  return validAdminToken(body?.token || req?.headers?.['x-admin-token'] || '');
+}
+
+function adminLogout(res) {
+  // store.js silently falls back to instance-local memory on failed writes.
+  // A denylist there would falsely claim revocation across hosted instances.
+  return json(res, 501, {
+    ok: false, revoked: false, error: 'Admin token revocation is not supported by this storage backend.',
+    fix: 'Discard the token on this device. It remains valid until its 30-minute expiry.'
+  });
 }
 
 async function handleLogout(req, body, res) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+  if (typeof token === 'string' && token.startsWith('adm_')) {
+    if (!validAdminToken(token)) return json(res, 401, { error: 'admin token required' });
+    return adminLogout(res);
+  }
   const out = await authx.logout({ token });
   return json(res, 200, out);
 }
@@ -348,7 +466,7 @@ async function publicConfig(keys = {}, opts = {}) {
   return {
     name: 'ANTICODEX',
     version: VERSION,
-    admin_username: getKey('ADMIN_USERNAME') || 'Thaddeusadmin',
+    admin_username: getKey('ADMIN_USERNAME'),
     features: {
       chat: true, codex: true, claude_agent: true, images: true, video: true,
       mcp: true, computer_use: true,
@@ -360,7 +478,7 @@ async function publicConfig(keys = {}, opts = {}) {
       email_auth: true,
       email_verification_required: /^(1|true|yes|on)$/i.test(String(getKey('REQUIRE_EMAIL_VERIFICATION') || process.env.REQUIRE_EMAIL_VERIFICATION || '')),
       supabase_auth: Boolean(supa.hasAuth),
-      mailer_dev_codes: /^(1|true|yes|on)$/i.test(String(getKey('EXPOSE_RESET_CODES') || process.env.EXPOSE_RESET_CODES || ''))
+      mailer_dev_codes: authx.canShowDevCode(opts.localDevelopment)
     },
     // `configured` must reflect the ACCOUNT's keys, and each entry carries the
     // model list + key slot, otherwise the topbar menu could only ever send
@@ -504,9 +622,58 @@ function withTemplate(system, template) {
   return [system, line].filter(Boolean).join('\n');
 }
 
+
+// --- skills in the turn -------------------------------------------------------
+//
+// "Whatever model is connected can access the skills and actually use them."
+// That sentence is only true if the skill text reaches the prompt, so this runs on
+// every chat path (streamed and one-shot) before the model is called.
+//
+// Four rules, because a 2,208-skill corpus is a context-window hazard:
+//   * opt-in per turn (`use_skills:false` disables), and an explicit `skills:[...]`
+//     list always wins over retrieval;
+//   * retrieval looks at the user's last message, not the whole thread;
+//   * budgets are hard (`max_skills`, per-skill chars, total chars) and cut text is
+//     replaced with a `skill_get` pointer rather than silently dropped;
+//   * `skills_mode: "auto" | "manual" | "off"` — a caller that wants the old
+//     behaviour (no injection) just says so.
+//
+// A failing skill subsystem must never take a chat down: any error degrades to
+// "no skills this turn" and says why in the frame metadata.
+
+function lastUserText(messages) {
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && typeof m.content === 'string') return m.content;
+  }
+  return '';
+}
+
+function skillsForTurn(body, messages) {
+  const mode = body.skills_mode || (body.use_skills === false ? 'off' : 'auto');
+  if (mode === 'off') return { text: '', injected: [], mode };
+  try {
+    const explicit = Array.isArray(body.skills) ? body.skills.filter((s) => typeof s === 'string') : null;
+    if (!explicit && mode !== 'auto' && mode !== 'manual') return { text: '', injected: [], mode };
+    const query = explicit && explicit.length ? '' : lastUserText(messages);
+    if (!explicit && !String(query).trim()) return { text: '', injected: [], mode };
+    const grounded = groundSkills(query, {
+      max_skills: body.skills_max || (explicit ? explicit.length : undefined),
+      per_skill_chars: body.skills_chars,
+      total_chars: body.skills_budget,
+      slugs: explicit || undefined,
+      tiers: Array.isArray(body.skills_tiers) ? body.skills_tiers : undefined
+    });
+    return { text: grounded.text || '', injected: grounded.injected || [], omitted: grounded.omitted || [], mode };
+  } catch (e) {
+    return { text: '', injected: [], mode, error: `Skills could not be resolved this turn: ${String(e.message || e).slice(0, 160)}` };
+  }
+}
+
 async function handleChat(body, res, req) {
   const { messages, model, system, temperature, max_tokens, images, provider, use_mcp, effort } = body;
-  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
+  const skills = skillsForTurn(body, messages);
+  const systemPrompt = withTemplate([system, skills.text].filter(Boolean).join('\n\n') || undefined, normalizeChatTemplate(body.template));
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
   const keys = await mergedKeys(req, body);
   if (provider && (keys.__provider_defs_dropped_ids__ || []).includes(provider)) {
@@ -915,7 +1082,6 @@ function sse(res) {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Access-Control-Allow-Origin', '*');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
   let closed = false;
   res.on('close', () => { closed = true; });
@@ -937,7 +1103,15 @@ async function handleChatStream(req, res, body) {
   req.on('close', () => controller.abort());
 
   let msgs = (messages || []).map((m) => ({ ...m, images: m.images || (m.role === 'user' ? images : undefined) }));
-  const systemPrompt = withTemplate(system, normalizeChatTemplate(body.template));
+  // Skills for this turn are resolved before anything is called, and announced on
+  // the stream, so the UI can show which skill shaped the answer.
+  const skills = skillsForTurn(body, msgs);
+  const systemPrompt = withTemplate([system, skills.text].filter(Boolean).join('\n\n') || undefined, normalizeChatTemplate(body.template));
+  if (skills.injected.length) {
+    stream.send({ type: 'skills', injected: skills.injected.map((s2) => ({ slug: s2.slug, tier: s2.tier, why: s2.why, flags: s2.flags })), omitted: skills.omitted || [], mode: skills.mode });
+  } else if (skills.error) {
+    stream.send({ type: 'skills', injected: [], error: skills.error, mode: skills.mode });
+  }
 
   // A local agent instead of an HTTP model. Same SSE frames, so Chat renders it
   // exactly like any other answer — including the reasoning panel.
@@ -1484,7 +1658,10 @@ async function handleRea(req, body, res) {
       };
       const existing = await findOne('mcp_connections', (x) => x.id === row.id);
       if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
-      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: false } });
+      // REA edits the app it is analysing, so its own registration needs write. The
+      // gate that matters is `permissions` on the row — and it is enforced now
+      // (`toolAllowedByPermissions`), not decorative.
+      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: true } });
       forgetTools();
       await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
       return json(res, 200, { ok: true, connection: row, tools: (probe.tools || []).length });
@@ -2194,22 +2371,25 @@ async function handleImportConfig(req, body, res) {
 
 // --- admin ------------------------------------------------------------------
 
-async function handleAdmin(body, res) {
+async function handleAdmin(body, res, req) {
   const op = body.op || 'login';
-  const expectedUser = getKey('ADMIN_USERNAME') || 'Thaddeusadmin';
-  const expectedPass = getKey('ADMIN_PASSWORD') || 'Thaddeusk12';
+  const expectedUser = getKey('ADMIN_USERNAME');
+  const expectedPass = getKey('ADMIN_PASSWORD');
 
   if (op === 'login') {
-    const ok = timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
+    const secret = adminSessionSecret();
+    if (!expectedUser || !expectedPass || !secret) {
+      return json(res, 503, { ok: false, error: 'Admin login is not configured.', fix: 'Configure ADMIN_USERNAME, ADMIN_PASSWORD and ADMIN_SESSION_SECRET.' });
+    }
+    const ok = Boolean(expectedUser && expectedPass) && timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
     if (!ok) return json(res, 401, { error: 'Invalid admin credentials' });
-    const token = `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
+    const token = issueAdminToken(secret);
     await audit({ type: 'admin_login', ip: 'admin' });
-    return json(res, 200, { ok: true, token });
+    return json(res, 200, { ok: true, token, expires_in: ADMIN_SESSION_TTL_MS / 1000 });
   }
 
-  const token = body.token || '';
-  const valid = token === `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
-  if (!valid) return json(res, 401, { error: 'admin token required' });
+  if (!await isAdmin(req, body)) return json(res, 401, { error: 'admin token required' });
+  if (op === 'logout') return adminLogout(res);
 
   if (op === 'stats') {
     const users = await find('users', () => true, 10000);
@@ -2338,4 +2518,398 @@ async function handleUpdateCheck(body, res) {
   } catch (e) {
     return json(res, 200, { ok: false, error: String(e.message || e) });
   }
+}
+
+// --- skills engine (skillkit) -------------------------------------------------
+//
+// The atlas is a build artifact (2,208 pinned skills), so listing and resolving it
+// is pure CPU and safe anywhere. Anything that *writes* — exporting a skill into
+// this machine's ~/.qoder/skills, reading a local skill root — is loopback-only,
+// exactly like the existing skills ops.
+//
+// The two ops that matter for an agent:
+//   resolve  — "which skills are being asked for?" (hybrid retrieval, scores, why)
+//   ground   — the prompt block itself, with budgets and a pointer to fetch more
+// Both are deterministic given the atlas, so a test can pin the behaviour.
+
+async function handleSkillKit(req, body, res) {
+  const op = body.op || 'stats';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+
+  if (op === 'stats') return json(res, 200, { ok: true, ...skillStats(), local });
+  if (op === 'list') return json(res, 200, listSkills({
+    q: body.q, tag: body.tag, tier: body.tier, source: body.source,
+    sort: body.sort, page: body.page, per: body.per
+  }));
+  if (op === 'get') {
+    const one = skillBody(body.slug);
+    if (!one) return json(res, 404, { ok: false, error: `No skill named "${body.slug}".` });
+    return json(res, 200, { ok: true, skill: one });
+  }
+  // `include_local` merges the skills installed on this machine (Qoder's own,
+  // Codex's, Claude's) into the retrieval corpus. Only a local caller can read
+  // that directory, so it is not offered to a hosted request.
+  const withLocal = Boolean(body.include_local) && local;
+  if (op === 'resolve') return json(res, 200, resolveSkills(body.text || body.q || '', {
+    limit: body.limit, slugs: body.slugs, tiers: body.tiers, include_local: withLocal
+  }));
+  if (op === 'ground') return json(res, 200, groundSkills(body.text || body.q || '', {
+    max_skills: body.max_skills, per_skill_chars: body.per_skill_chars, total_chars: body.total_chars,
+    slugs: body.slugs, tiers: body.tiers, include_local: withLocal
+  }));
+  if (op === 'scan') {
+    if (String(body.code || '').length > 400_000) return json(res, 413, { ok: false, error: 'Source is larger than 400 KB.' });
+    return json(res, 200, scanCode(body.code, { language: body.language, filename: body.filename }));
+  }
+  if (op === 'sources') {
+    const atlas = loadAtlas();
+    return json(res, 200, {
+      ok: true,
+      available: atlas.available,
+      generated_at: atlas.generated_at,
+      count: atlas.count,
+      sources: atlas.sources,
+      note: 'Pinned at these commits by scripts/build-skill-atlas.mjs. Re-running it is the only way this list changes.'
+    });
+  }
+  if (op === 'export') {
+    if (!local) return needsLocal(res, 'Exporting a skill writes to this machine — open the desktop app or run `npm start` locally.');
+    const slug = String(body.slug || '');
+    const destByTarget = {
+      qoder: path.join(os.homedir(), '.qoder', 'skills'),
+      codex: path.join(os.homedir(), '.codex', 'skills'),
+      claude: path.join(os.homedir(), '.claude', 'skills'),
+      workspace: null   // resolved per account below
+    };
+    const target = Object.keys(destByTarget).includes(body.target) ? body.target : 'qoder';
+    let dest = destByTarget[target];
+    if (!dest) {
+      const account = await accountKeyFor(req, body);
+      dest = path.join(wsRootFor(account), '.skills');
+    }
+    const out = exportSkill(slug, dest, { overwrite: body.overwrite === true });
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  if (op === 'installed') {
+    if (!local) {
+      return json(res, 200, {
+        ok: true, local: false, roots: [], installed: [], refused: [],
+        note: 'Reading ~/.qoder/skills is a filesystem read on your machine, so it needs the desktop app or a local server.'
+      });
+    }
+    return json(res, 200, { ok: true, local: true, ...installedSkills() });
+  }
+  if (op === 'local_corpus') {
+    if (!local) return json(res, 200, { ok: true, local: false, skills: [] });
+    return json(res, 200, { ok: true, local: true, skills: localCorpus() });
+  }
+  return json(res, 400, { ok: false, error: `Unknown skillkit op "${op}".` });
+}
+
+// --- the agent ------------------------------------------------------------------
+//
+// An OpenCode-shaped agent loop (permission set → tools → steps) whose tools run on
+// a chosen machine. Two shapes:
+//
+//   op=run      POST, answers once (a script, a test, a caller without SSE)
+//   op=stream   SSE, one frame per step — the shape the UI renders
+//
+// The model is whatever this session already uses: the same keys, the same
+// provider resolution, the same `chat()` the rest of the app calls. That is the
+// point — the agent is not a second product with a second key.
+
+async function handleAgent(req, body, res) {
+  const op = body.op || 'status';
+  if (op === 'status') {
+    const target = resolveTarget(body.target);
+    return json(res, 200, {
+      ok: true,
+      agents: agentList(),
+      target,
+      daytona: daytonaStatus(),
+      // Reading and writing files on the machine that serves this request is a
+      // local power; a hosted caller gets the catalogue, not the filesystem.
+      local: canSpawnLocalMcp() && isLoopback(req),
+      limits: { max_steps: 40, max_tool_output: 24000 }
+    });
+  }
+  if (op === 'tools') {
+    const { toolDefs, allowedTools } = await import('../lib/agent.js');
+    const agent = resolveAgent(body.agent);
+    const pub = publicApiTools();
+    const defs = allowedTools(agent, toolDefs(agent, { includePublicApi: true, publicApiTool: pub[0] || null }));
+    return json(res, 200, { ok: true, agent: agent.id, tools: defs.map((d) => ({ name: d.function?.name, description: d.function?.description, parameters: d.function?.parameters })) });
+  }
+
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const target = resolveTarget(body.target);
+  if (target.mode === 'local' && !local) {
+    return needsLocal(res, 'An agent that reads and runs things on this machine needs the desktop app, or `npm start` here.');
+  }
+
+  // A workspace the agent works in: the account's, so two accounts cannot collide.
+  const account = await accountKeyFor(req, body);
+  const msgs = Array.isArray(body.messages) ? body.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant')) : [];
+  if (!msgs.length) return json(res, 400, { ok: false, error: 'messages is required (at least one user message).' });
+
+  const skills = skillsForTurn(body, msgs);
+  const skillsBlock = [skills.text, publicApiPrompt()].filter(Boolean).join('\n\n');
+  const mcpTools = body.use_mcp === false ? [] : (await (async () => {
+    const conns = (await find('mcp_connections', (c) => c.status === 'connected' && c.enabled !== false, 20)).slice(0, 8);
+    if (!conns.length) return [];
+    try { return (await toolsFor(conns)).tools || []; } catch { return []; }
+  })());
+
+  // Permission answers arrive as a queue of already-decided ids, and anything not
+  // pre-decided is asked over the stream when the loop pauses on it.
+  const grants = body.grants && typeof body.grants === 'object' ? body.grants : {};
+  const decided = new Map(Array.isArray(body.permissions) ? body.permissions.map((p) => [String(p.id), String(p.decision || 'deny')]) : []);
+  const session = { id: body.session_id, grants: { ...grants }, todos: body.todos || [] };
+
+  const callModel = async ({ messages, tools, agent }) => {
+    const out = await chat({
+      messages, model: body.model, system: body.system, temperature: body.temperature,
+      max_tokens: body.max_tokens, provider: body.provider, keys: await mergedKeys(req, body),
+      tools: tools && tools.length ? tools : undefined, effort: body.effort
+    });
+    if (String(body.agent_mode || '') === 'plan') void agent;
+    return out;
+  };
+
+  // SSE is one-way, so an `ask` cannot be answered mid-stream. Two honest answers:
+  //   * `auto_approve` is a switch the user flipped on the page, which is consent
+  //     for this turn — and the grant is recorded so the transcript shows it;
+  //   * otherwise the call is denied and the model is told, rather than the turn
+  //     hanging forever on a question nobody can hear.
+  const makeAsker = () => async (request) => {
+    if (decided.has(request.id)) return decided.get(request.id);
+    if (body.auto_approve === true && target.mode === 'daytona') return 'allow_always';
+    return 'deny';
+  };
+
+  const run = () => runAgent({
+    messages: msgs,
+    agent: body.agent || 'build',
+    target: body.target || 'auto',
+    account,
+    session,
+    callModel,
+    askPermission: makeAsker(op === 'stream'),
+    onStep: () => {},
+    skillsBlock,
+    mcpTools,
+    publicApiEnabled: body.use_publicapi !== false,
+    maxSteps: body.max_steps
+  });
+
+  if (op === 'stream') {
+    const stream = sse(res);
+    let aborted = false;
+    req.on('close', () => { aborted = true; });
+    try {
+      for await (const evt of run()) {
+        if (aborted || stream.closed) break;
+        stream.send(evt);
+      }
+    } catch (e) {
+      stream.send({ type: 'error', error: String(e?.message || e) });
+    }
+    await audit({ type: 'agent.stream', ok: true, target: target.mode, ip: clientIp(req) }).catch(() => {});
+    return stream.end();
+  }
+
+  // Non-streamed: collect the frames into the answer plus the steps.
+  const events = [];
+  const toolSteps = [];
+  let text = '';
+  try {
+    for await (const evt of run()) {
+      events.push(evt.type);
+      if (evt.type === 'assistant_delta') text += (text ? '\n\n' : '') + evt.text;
+      if (evt.type === 'tool_end') toolSteps.push({ tool: evt.tool, ok: evt.ok, error: evt.error, target: evt.target, duration_ms: evt.duration_ms, diff: evt.diff });
+      if (evt.type === 'session') session.id = evt.sessionId;
+    }
+  } catch (e) {
+    return json(res, 200, { ok: false, error: String(e?.message || e), steps: toolSteps });
+  }
+  await audit({ type: 'agent.run', ok: true, target: target.mode, tools: toolSteps.length, ip: clientIp(req) }).catch(() => {});
+  return json(res, 200, { ok: true, text, steps: toolSteps, session_id: session.id, grants: session.grants, events });
+}
+
+// --- public-apis ---------------------------------------------------------------
+// Glasser's replacement: a catalogue the agent can search, and one GET it can make.
+// Reads are pure CPU; a `call` reaches the internet, so it is loopback-only — a
+// hosted deployment must not become an open proxy for arbitrary hosts.
+
+async function handlePublicApi(req, body, res) {
+  const op = body.op || 'stats';
+  if (op === 'stats') return json(res, 200, { ok: true, ...catalogueStats(), limits: PUBLIC_API_LIMITS, local: canSpawnLocalMcp() && isLoopback(req) });
+  if (op === 'search') return json(res, 200, { ok: true, ...publicApiSearch(body.q || '', { limit: body.limit, category: body.category, auth: body.auth, https: body.https, cors: body.cors, page: body.page, per: body.per }) });
+  if (op === 'categories') {
+    const st = catalogueStats();
+    return json(res, 200, { ok: true, categories: Object.entries(st.by_category || {}).map(([name, n]) => ({ name, count: n })).sort((a, b) => b.count - a.count) });
+  }
+  if (op === 'call') {
+    if (!(canSpawnLocalMcp() && isLoopback(req))) return needsLocal(res, 'Calling a third-party API from this server is a local operation.');
+    const out = await publicApiCall(String(body.id || ''), { path: body.path, headers: body.headers, timeoutMs: body.timeout_ms, method: body.method });
+    await audit({ type: 'publicapi.call', ok: Boolean(out.ok), id: body.id, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  return json(res, 400, { ok: false, error: `Unknown publicapi op "${op}" (stats | search | categories | call)` });
+}
+
+// --- Daytona ------------------------------------------------------------------
+//
+// SSH is the path that works everywhere, so it is the default. Nothing here runs
+// for a remote caller unless the caller is this machine: an HTTP request from the
+// internet must not be able to make the server SSH into a user's sandbox.
+
+async function handleDaytona(req, body, res) {
+  const op = body.op || 'status';
+  const local = canSpawnLocalMcp() && isLoopback(req);
+  const status = daytonaStatus();
+
+  if (op === 'status') {
+    // `session_token` (not `token`) is the name the UI renders: it is a *session*
+    // credential with a countdown, and calling it a token invited it to be pasted
+    // into a config as if it were permanent.
+    return json(res, 200, { ...status, local, recipe: setupRecipe(), config: daytonaConfig(), session_token: status.token });
+  }
+  if (op === 'config') {
+    // Saving a connection writes ~/.qoder/daytona.json, which is a local file — a
+    // hosted caller must not be able to aim this machine's SSH somewhere else.
+    if (!local) return needsLocal(res, 'Saving a Daytona connection writes a file on this machine.');
+    if (body.set) {
+      const set = { ...body.set };
+      // Accept the pasted shapes (`ssh user`, `user@host:22`, `Daytona host`) and
+      // store exactly one canonical form, so the status and the SSH argv agree.
+      if (set.target) {
+        const t = normaliseTarget(set.target, set.user);
+        const [user, hostPort] = t.split('@');
+        set.user = user || undefined;
+        set.host = (hostPort || '').split(':')[0] || undefined;
+        const port = (hostPort || '').split(':')[1];
+        if (port) set.port = port;
+        delete set.target;
+      }
+      if (set.user) set.user = normaliseUser(set.user);
+      const out = saveDaytonaConfig(set);
+      return json(res, 200, { ...out, status: daytonaStatus() });
+    }
+    return json(res, 200, { ok: true, config: daytonaConfig(), status });
+  }
+  if (op === 'key') {
+    if (!local) return needsLocal(res, 'Creating and reading SSH keys is a local operation.');
+    const k = publicKey();
+    return json(res, 200, { ...k, note: 'Add this public key to the Daytona workspace once; then SSH works with no password.' });
+  }
+  if (!local) {
+    return needsLocal(res, 'Running commands over SSH is a local operation — the desktop app, or `npm start` on this machine.');
+  }
+  if (op === 'probe') {
+    const out = await sshProbe();
+    // A probe is also the only truthful check of an expiry countdown: the countdown
+    // is a hint from the paste time, while the box either answers or it does not.
+    return json(res, 200, { ...out, fields: setupRecipe().fields, session_token: status.token });
+  }
+  if (op === 'diagnose') {
+    const out = await diagnose({ timeoutMs: Number(body.timeout_ms) || 8000 });
+    await audit({ type: 'daytona.diagnose', ok: Boolean(out.ok), failed_at: out.failed_at, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'provision') {
+    const out = await provisionWorkspace({ only: body.only || null, timeoutMs: body.timeout_ms });
+    await audit({ type: 'daytona.provision', ok: Boolean(out.ok), steps: (out.steps || []).length, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'steps') {
+    return json(res, 200, { ok: true, steps: PROVISION_STEPS.map((x) => ({ id: x.id, label: x.label, why: x.why, optional: Boolean(x.optional) })), session_token: status.token });
+  }
+  if (op === 'revoke') {
+    // Forgetting a token locally is the only revocation this app can honestly do:
+    // the credential itself is retired in Daytona's console.
+    const out = saveDaytonaConfig({ clear_token: true, user: null });
+    return json(res, 200, { ok: true, cleared: true, file: out.file, note: 'The saved token is gone from this machine. To invalidate it for real, rotate or delete the workspace user in Daytona.' });
+  }
+  if (op === 'list') {
+    if (body.path !== undefined && body.path !== null && body.path !== '') {
+      return json(res, 200, await sshList(String(body.path)));
+    }
+    const out = await sshSandboxes();
+    return json(res, 200, out);
+  }
+  if (op === 'read') return json(res, 200, await sshRead(String(body.path || '')));
+  if (op === 'write') return json(res, 200, await sshWrite(String(body.path || ''), body.content));
+  if (op === 'exec') {
+    const out = await sshExec(String(body.command || ''), {
+      timeoutMs: body.timeout_ms, cwd: body.cwd || undefined
+    });
+    await audit({ type: 'daytona.exec', ok: Boolean(out.ok), exit_code: out.exit_code ?? null, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'api') {
+    const sub = String(body.method || 'list');
+    if (sub === 'list') return json(res, 200, await listSandboxes());
+    if (sub === 'create') return json(res, 200, await createSandbox(body.spec || {}));
+    if (sub === 'delete') return json(res, 200, await deleteSandbox(String(body.id || '')));
+    return json(res, 400, { ok: false, error: `Unknown daytona api method "${sub}".` });
+  }
+  return json(res, 400, { ok: false, error: `Unknown daytona op "${op}".` });
+}
+
+/** REST listing, with an honest answer when only SSH is configured. */
+async function sshSandboxes() {
+  const r = await listSandboxes();
+  if (r.ok) {
+    const list = Array.isArray(r.data) ? r.data : (r.data?.items || []);
+    return { ok: true, source: 'rest', sandboxes: list.slice(0, 100) };
+  }
+  return {
+    ok: true,
+    source: 'ssh',
+    sandboxes: [],
+    note: `${r.error} SSH still works for exec/files — only listing and creating need an API key.`
+  };
+}
+
+// --- Codex parity map ---------------------------------------------------------
+
+function handleCodexMap(body, res) {
+  const op = body.op || 'map';
+  if (op === 'crate') {
+    const detail = crateDetail(String(body.name || ''));
+    if (!detail) return json(res, 404, { ok: false, error: `No crate named "${body.name}" in the sweep.` });
+    return json(res, 200, { ok: true, ...detail });
+  }
+  const map = codexParity();
+  if (op === 'biggest') return json(res, 200, { ok: true, source: map.source, crates: biggestCrates(Number(body.n) || 12) });
+  return json(res, 200, { ...map, biggest: biggestCrates(10) });
+}
+
+// --- Library ------------------------------------------------------------------
+
+async function handleLibrary(req, body, res) {
+  const op = body.op || 'list';
+  const account = await accountKeyFor(req, body);
+  if (op === 'summary') return json(res, 200, librarySummary(account));
+  if (op === 'record') {
+    const out = recordArtifact(account, body.item || body);
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  if (op === 'kinds') {
+    return json(res, 200, {
+      ok: true,
+      kinds: Object.entries(ARTIFACT_CATALOG).map(([id, v]) => ({ id, label: v.label, icon: v.icon, extensions: v.extensions }))
+    });
+  }
+  return json(res, 200, listLibrary(account, { kind: body.kind, q: body.q, limit: body.limit, since: body.since }));
+}
+
+/** Who this request is acting for: the signed-in user's id, else the local
+ *  desktop, else `default`. Same rule the workspace uses. */
+async function accountKeyFor(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  const user = auth ? await authx.findByToken(auth).catch(() => null) : null;
+  if (user?.id) return String(user.id);
+  return 'default';
 }

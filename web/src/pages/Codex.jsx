@@ -1,12 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { chat as chatApi, workspace as workspaceApi, workspaceFs, egress as egressApi, mcp as mcpApi, rea as reaApi, skills as skillsApi } from '../lib/api.js';
+import { chatStream, workspace as workspaceApi, workspaceFs, egress as egressApi, mcp as mcpApi, rea as reaApi } from '../lib/api.js';
 import { Link } from 'react-router-dom';
 import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { CopyBtn, Pill } from '../ui.jsx';
-import SkillPicker from '../SkillPicker.jsx';
-import Icon from '../Icon.jsx';
 
 // The seeded files are the DEMO workspace: hosted visitors get a virtual tree
 // and the page says so. On the desktop app or a local server the same page
@@ -37,20 +35,19 @@ function DiffView({ hunks = [], truncated_hunks }) {
   return (
     <pre className="term" style={{ maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 12 }}>
       {hunks.map((h, i) => (
-        <span key={i} style={{ color: h.t === '+' ? '#9fe8b8' : h.t === '-' ? '#fca5a5' : '#8b93ab', display: 'block' }}>
+        <span key={i} style={{ color: h.t === '+' ? 'var(--ok)' : h.t === '-' ? 'var(--danger)' : 'var(--muted)', display: 'block' }}>
           {h.t}{h.line}
         </span>
       ))}
-      {truncated_hunks && <span style={{ color: '#8b93ab', display: 'block' }}>… diff truncated</span>}
+      {truncated_hunks && <span style={{ color: 'var(--muted)', display: 'block' }}>… diff truncated</span>}
     </pre>
   );
 }
 
 export default function CodexPage() {
-  const { model, notify, user } = useApp();
+  const { model, notify, user, effort } = useApp();
   const account = String(user?.id ?? 'anon');
   const fsKey = userKey('acx_fs', user?.id);
-  const enabledSkillsKey = userKey('acx_enabled_skills', user?.id);
   const readFs = (k) => {
     try { return JSON.parse(localStorage.getItem(k) || 'null') || SEED_FS; } catch { return SEED_FS; }
   };
@@ -85,13 +82,15 @@ export default function CodexPage() {
   const [proposals, setProposals] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState('');
+  const [panel, setPanel] = useState('agent');
+  const streamRef = useRef(null);
+  useEffect(() => () => streamRef.current?.abort(), [account]);
   const [agents, setAgents] = useState(null);
   const [showAgents, setShowAgents] = useState(false);
   const [cwd, setCwd] = useState(() => localStorage.getItem('acx_workspace_cwd') || '');
   const [egress, setEgress] = useState({ running: false, local: true, allowed: 0, denied: 0 });
   const [agentTools, setAgentTools] = useState({ loading: true, connections: [], rea: null });
-  const [skillsOpen, setSkillsOpen] = useState(false);
-  const [skillCount, setSkillCount] = useState(0);
 
   // demo persistence (only when there is no real folder)
   useEffect(() => { setDemoFs(readFs(fsKey)); }, [fsKey]);
@@ -100,18 +99,6 @@ export default function CodexPage() {
   }, [demoFs, fsKey, wsMode]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, term, proposals]);
   useEffect(() => { const m = MODES.find((x) => x.id === mode); if (m) setSandbox(m.sandbox); }, [mode]);
-
-  // The Codex agent uses the same account-scoped skill set as Chat and Agent
-  // Studio. The chip is a real count: those bodies are added to the prompt.
-  useEffect(() => {
-    const read = () => {
-      try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { setSkillCount(0); }
-    };
-    read();
-    window.addEventListener('storage', read);
-    window.addEventListener('acx:skills', read);
-    return () => { window.removeEventListener('storage', read); window.removeEventListener('acx:skills', read); };
-  }, [enabledSkillsKey, skillsOpen]);
 
   const loadDir = useCallback(async (dir = '') => {
     const r = await workspaceFs.list(dir, policy());
@@ -300,69 +287,71 @@ export default function CodexPage() {
     return parts.join('\n\n') || '(workspace is empty)';
   }
 
-  async function skillBlockFor(text) {
-    let names = [];
-    try { names = JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]'); } catch { /* private mode */ }
-    try {
-      const mentioned = await skillsApi.resolve(text);
-      names = [...new Set([...names, ...(mentioned.matched || []).map((m) => m.name)])];
-    } catch { /* the registry is optional */ }
-    const blocks = [];
-    let bytes = 0;
-    for (const name of names.slice(0, 8)) {
-      try {
-        const r = await skillsApi.get(name);
-        if (!r?.ok || !r.instructions) continue;
-        if (bytes + r.instructions.length > 60000) break;
-        bytes += r.instructions.length;
-        blocks.push(r.instructions);
-      } catch { /* one broken skill must not kill the answer */ }
-    }
-    return blocks.length
-      ? `\n\nThe user enabled these skills for this task. Follow their instructions when relevant:\n\n${blocks.join('\n\n')}`
-      : '';
-  }
-
   async function askAgent() {
     const content = input.trim();
-    if (!content || busy) return;
-    setBusy(true); setInput('');
-    setMessages((ms) => [...ms, { role: 'user', content }, { role: 'assistant', content: '', streaming: true }]);
+    if (!content || busy || streamRef.current) return;
+    const controller = new AbortController();
+    streamRef.current = controller;
+    const id = crypto.randomUUID();
+    const update = (patch) => setMessages((ms) => ms.map((m) => m.id === id ? { ...m, ...patch } : m));
+    let text = '', reasoning = '';
+    setBusy(true); setInput(''); setPhase('Reading workspace'); setPanel('agent');
+    setMessages((ms) => [...ms, { role: 'user', content }, { id, role: 'assistant', content: '', streaming: true, tools: [] }]);
     try {
       const fileContext = await fileContextForPrompt();
+      if (controller.signal.aborted) return;
       const projectBlock = agents?.ok && agents.instructions ? agents.instructions : '';
-      const skillBlock = await skillBlockFor(content);
-      const r = await chatApi({
+      const history = messages.filter((m) => !m.error && !m.aborted && m.content).map(({ role, content }) => ({ role, content }));
+      const r = await chatStream({
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
-        system: `You are the ANTICODEX Codex agent (mode: ${mode}). Working files:\n${fileContext}\nWhen you change a file, output:\n\n\`\`\`proposed-file <path>\n<full new contents>\n\`\`\`\nOne block per file. The UI previews a real diff and applies it only with approval (or automatically when the policy allows writes).${skillBlock}`,
+        effort,
+        use_skills: true,
+        use_mcp: false,
+        system: `You are the ANTICODEX coding assistant (mode: ${mode}). Working files:\n${fileContext}\nWhen you change a file, output:\n\n\`\`\`proposed-file <path>\n<full new contents>\n\`\`\`\nOne block per file. The UI previews a real diff and applies it only through the workspace approval policy. Do not claim files were changed or commands ran without a tool result.`,
         messages: projectBlock
-          ? [{ role: 'user', content: projectBlock }, ...messages, { role: 'user', content }]
-          : [...messages, { role: 'user', content }]
+          ? [{ role: 'user', content: projectBlock }, ...history, { role: 'user', content }]
+          : [...history, { role: 'user', content }]
+      }, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (controller.signal.aborted) return;
+          if (event.type === 'phase') setPhase(({ contacting: 'Connecting to model', connected: 'Connected', thinking: 'Thinking', streaming: 'Writing response', tools: 'Using tools' })[event.phase] || event.phase);
+          if (event.type === 'delta') { text += event.text || ''; update({ content: text }); setPhase('Writing response'); }
+          if (event.type === 'thinking') { reasoning += event.text || ''; update({ reasoning }); setPhase('Thinking'); }
+          if (event.type === 'tool') setMessages((ms) => ms.map((m) => m.id === id ? { ...m, tools: [...m.tools, { name: event.name, status: event.status }] } : m));
+          if (event.type === 'skills') update({ skills: event.injected || [] });
+        }
       });
-      const full = r.error ? `⚠ ${r.error}${r.settings_link ? ' — fix it in Settings → Providers' : ''}` : (r.text || '(no response)');
-      setMessages((ms) => ms.map((m, i) => i === ms.length - 1 ? { ...m, content: full, streaming: false } : m));
+      if (controller.signal.aborted || r.aborted) { update({ aborted: true }); return; }
+      if (r.error || r.ok === false) { update({ error: r.error || 'The model could not complete this task.', fix: r.fix }); return; }
+      const full = r.text || text;
+      if (!full.trim()) { update({ error: 'The model returned an empty response. Try another model.' }); return; }
+      update({ content: full, reasoning: r.reasoning || reasoning, elapsed_ms: r.elapsed_ms });
 
       const blocks = [...full.matchAll(/```\s*proposed-file\s+([^\n`]+)\n([\s\S]*?)```/g)];
       for (const b of blocks) {
+        if (controller.signal.aborted) break;
         const p = b[1].trim(); const body = b[2].replace(/\n$/, '');
         const pv = wsMode === 'real'
           ? await workspaceFs.preview(p, body, policy())
           : { ok: true, path: p, exists: Boolean(demoFs[p]), ...diffDemo(demoFs[p] || '', body) };
+        if (controller.signal.aborted) break;
         if (!pv.ok) { notify(pv.error || 'Preview failed'); continue; }
-        const proposal = { path: p, content: body, added: pv.added, removed: pv.removed, hunks: pv.hunks, truncated_hunks: pv.truncated_hunks, id: `${p}-${Date.now()}` };
+        const proposal = { path: p, content: body, added: pv.added, removed: pv.removed, hunks: pv.hunks, truncated_hunks: pv.truncated_hunks, id: crypto.randomUUID() };
         setProposals((ps) => [...ps, proposal]);
-        // Auto-apply only when the ENGINE says auto (suggest mode never does).
         if (wsMode === 'real' && mode !== 'suggest') {
           const w = await workspaceFs.write(p, body, policy());
           if (w.ok) applyProposalLocally(proposal, true);
-          else if (w.needs_approval) { /* stay as a one-click proposal */ }
-          else notify(w.error);
+          else if (!w.needs_approval) notify(w.error);
         }
       }
     } catch (e) {
-      setMessages((ms) => ms.map((m, i) => i === ms.length - 1 ? { ...m, content: `⚠ ${e.message}`, streaming: false } : m));
-    } finally { setBusy(false); }
+      if (!controller.signal.aborted && e.name !== 'AbortError') update({ error: e.message });
+    } finally {
+      update({ streaming: false, ...(controller.signal.aborted ? { aborted: true } : {}) });
+      if (streamRef.current === controller) { streamRef.current = null; setBusy(false); setPhase(''); }
+    }
   }
 
   function diffDemo(oldText, newText) {
@@ -425,7 +414,7 @@ export default function CodexPage() {
               if (openDirs[d.path]) setOpenDirs((o) => ({ ...o, [d.path]: false }));
               else { setOpenDirs((o) => ({ ...o, [d.path]: true })); if (!nodes[d.path]) loadDir(d.path); }
             }}>
-              <Icon name="folder" size={14} /> {d.name}/
+              {openDirs[d.path] ? '▾' : '▸'} {d.name}/
             </button>
             {openDirs[d.path] && <TreeNode dir={d.path} depth={depth + 1} />}
           </div>
@@ -433,7 +422,7 @@ export default function CodexPage() {
         {n.files.map((f) => (
           <button key={f.path} className={`file-item ${active?.path === f.path ? 'active' : ''}`}
             style={{ paddingLeft: 10 + depth * 12 }} onClick={() => openFile(f.path)}>
-            <Icon name="file" size={14} /> {f.name} <span className="tiny" style={{ opacity: 0.5 }}>{f.bytes}B</span>
+            ▤ {f.name} <span className="tiny" style={{ opacity: 0.5 }}>{f.bytes}B</span>
           </button>
         ))}
       </>
@@ -441,12 +430,24 @@ export default function CodexPage() {
   }
 
   const dirty = active && active.content !== active.base;
-  const rootListing = nodes[''] || null;
-  const rootEmpty = wsMode === 'real' && rootListing && rootListing.files.length === 0 && rootListing.dirs.length === 0;
 
   return (
-    <div className="workspace">
-      <div className="file-tree">
+    <div className="workspace-shell">
+      <div className="workspace-toolbar">
+        <div className="row"><span className="workspace-mark" aria-hidden="true">⌘</span><strong>Build with Anticodex</strong><span className="workspace-location">{wsMode === 'real' ? 'Local workspace' : wsMode === 'demo' ? 'Demo workspace' : 'Connecting workspace…'}</span></div>
+        <span className="tiny">Review. Approve. Ship.</span>
+      </div>
+      <div className="workspace-tabs" role="tablist" aria-label="Workspace panels">
+        {[['agent', 'Task'], ['editor', 'Editor'], ['files', 'Files & controls']].map(([value, label], index, tabs) => (
+          <button key={value} id={`workspace-tab-${value}`} role="tab" aria-selected={panel === value} aria-controls={`workspace-${value}`} tabIndex={panel === value ? 0 : -1}
+            onClick={() => setPanel(value)} onKeyDown={(e) => {
+              const next = e.key === 'ArrowRight' ? (index + 1) % tabs.length : e.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
+              if (next !== null) { e.preventDefault(); setPanel(tabs[next][0]); document.getElementById(`workspace-tab-${tabs[next][0]}`)?.focus(); }
+            }}>{label}</button>
+        ))}
+      </div>
+    <div className="workspace" data-panel={panel}>
+      <div className="file-tree" id="workspace-files" role="tabpanel" aria-labelledby="workspace-tab-files">
         <div className="row between" style={{ padding: '4px 8px 10px' }}>
           <b style={{ fontSize: 12, letterSpacing: 1 }}>{wsMode === 'real' ? 'WORKSPACE' : 'DEMO FILES'}</b>
           <div className="row" style={{ gap: 4 }}>
@@ -462,21 +463,14 @@ export default function CodexPage() {
           <>
             {Object.keys(demoFs).map((f) => (
               <button key={f} className={`file-item ${active?.path === f ? 'active' : ''}`}
-                onClick={() => setActive({ path: f, content: demoFs[f], base: demoFs[f] })}><Icon name="file" size={14} /> {f}</button>
+                onClick={() => setActive({ path: f, content: demoFs[f], base: demoFs[f] })}>▤ {f}</button>
             ))}
             <div className="tiny" style={{ padding: 10, opacity: 0.8 }}>
-              Virtual demo workspace — <Link to="/install" style={{ color: 'var(--accent, #7c5cff)' }}>ANTICODEX Desktop</Link> (or your own <code>npm start</code>) edits a real folder here.
+              Virtual demo workspace — <Link to="/desktop" style={{ color: 'var(--accent)' }}>ANTICODEX Desktop</Link> (or your own <code>npm start</code>) edits a real folder here.
             </div>
           </>
         )}
         {wsMode === 'real' && <TreeNode dir="" depth={0} />}
-        {rootEmpty && (
-          <div className="tree-empty">
-            <Icon name="folder" size={22} />
-            <span>This workspace is empty.</span>
-            <button className="btn small ghost" onClick={newFile}>+ New file</button>
-          </div>
-        )}
 
         <div className="nav-section" style={{ marginTop: 14 }}>Approval mode</div>
         {MODES.map((m) => (
@@ -492,7 +486,7 @@ export default function CodexPage() {
           </button>
         ))}
         <label className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px' }}>
-          <input type="checkbox" checked={net} onChange={(e) => toggleNet(e.target.checked)} /> allow network
+          <input type="checkbox" checked={net} onChange={(e) => toggleNet(e.target.checked)} aria-label="Allow network in the sandbox" /> allow network
         </label>
         <div className="tiny mono" style={{ padding: '0 10px 8px', opacity: 0.8 }}>
           {egress.running
@@ -512,8 +506,8 @@ export default function CodexPage() {
               {!agentTools.connections.some((c) => c.status === 'connected') && <div style={{ opacity: 0.7 }}>No connectors yet.</div>}
               <div style={{ marginTop: 6 }}>
                 {agentTools.rea?.registered
-                  ? <span style={{ color: '#6ee7a8' }}>REA installed · {agentTools.rea.probe?.tools || 207} tools</span>
-                  : <Link to="/rea" style={{ color: 'var(--accent, #7c5cff)' }}>Install REA →</Link>}
+                  ? <span style={{ color: 'var(--ok)' }}>REA installed · {agentTools.rea.probe?.tools || 207} tools</span>
+                  : <Link to="/rea" style={{ color: 'var(--accent)' }}>Install REA →</Link>}
               </div>
             </>
           )}
@@ -526,7 +520,7 @@ export default function CodexPage() {
         </button>
       </div>
 
-      <div className="editor-pane">
+      <div className="editor-pane" id="workspace-editor" role="tabpanel" aria-labelledby="workspace-tab-editor">
         <div className="row between" style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-soft)' }}>
           <b style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>{active ? active.path : 'no file open'}</b>
           <div className="row" style={{ gap: 6 }}>
@@ -555,23 +549,12 @@ export default function CodexPage() {
             placeholder="empty file"
           />
         ) : (
-          <div className="editor-empty">
-            <span className="editor-empty-icon"><Icon name={wsMode === 'checking' ? 'refresh' : 'codex'} size={26} /></span>
-            <b>{wsMode === 'checking' ? 'Opening workspace…' : rootEmpty ? 'Start with a file' : 'No file open'}</b>
-            <p className="muted">
-              {wsMode === 'checking'
-                ? 'Checking whether this machine can read a workspace folder.'
-                : rootEmpty
-                  ? 'This account’s workspace folder exists but has no files yet. Create one, then edit it here or ask the agent to write it.'
-                  : 'Choose a file from the tree to edit it, or ask the Codex agent to create one.'}
-            </p>
-            {wsMode === 'real' && <button className="btn small primary" onClick={newFile}><Icon name="plus" size={14} /> New file</button>}
-          </div>
+          <div className="muted" style={{ padding: 16, flex: 1 }}>Select a file from the tree.</div>
         )}
         <div className="term">
           {term.map((t, i) => (
             <div key={i} style={{
-              color: t.kind === 'err' ? '#fca5a5' : t.kind === 'cmd' ? '#e8ebf6' : t.kind === 'sys' ? '#8b93ab' : '#9fe8b8',
+              color: t.kind === 'err' ? 'var(--danger)' : t.kind === 'cmd' ? 'var(--text)' : t.kind === 'sys' ? 'var(--muted)' : 'var(--ok)',
               whiteSpace: 'pre-wrap'
             }}>
               {t.kind === 'cmd' && <span className="prompt">$ </span>}{t.text}
@@ -583,14 +566,14 @@ export default function CodexPage() {
               value={termInput}
               onChange={(e) => setTermInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && runTerm()}
-              style={{ background: 'transparent', border: 'none', color: '#9fe8b8', fontFamily: 'var(--mono)', fontSize: 12, padding: 0 }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--ok)', fontFamily: 'var(--mono)', fontSize: 12, padding: 0 }}
               placeholder={wsMode === 'real' ? 'real shell — ls, node file.js, anything' : 'demo: ls, cat, write…'}
             />
           </div>
         </div>
       </div>
 
-      <div className="agent-pane">
+      <div className="agent-pane" id="workspace-agent" role="tabpanel" aria-labelledby="workspace-tab-agent">
         <div className="row between" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-soft)' }}>
           <b style={{ fontSize: 13 }}>Codex agent</b>
           <Pill>{mode}</Pill>
@@ -615,17 +598,27 @@ export default function CodexPage() {
         )}
         <div className="messages" style={{ flex: 1, overflowY: 'auto' }}>
           {messages.length === 0 && proposals.length === 0 && (
-            <div className="muted" style={{ padding: 12, fontSize: 13 }}>
-              Ask the agent to explain the project, propose a refactor, or run a task.
-              Proposals show a real diff and apply only through the same policy the sidebar shows.
+            <div className="workspace-welcome">
+              <span className="workspace-mark" aria-hidden="true">⌘</span>
+              <h2>What are we building?</h2>
+              <p>Start with a question or a change. Get a proposal, review the diff, and make it yours.</p>
+              <div className="workspace-starters">
+                {['Explain this codebase', 'Find a bug and propose a fix', 'Add tests for this project'].map((task) => <button key={task} onClick={() => { setInput(task); document.getElementById('codex-task')?.focus(); }}><span>{task}</span><span aria-hidden="true">↗</span></button>)}
+              </div>
+              <p className="tiny">File changes follow your approval policy. Run commands in the terminal; manage external tools in Connectors.</p>
             </div>
           )}
           {messages.map((m, i) => (
             <div key={i} className="msg-row" style={{ marginBottom: 14 }}>
               <div className={`avatar ${m.role === 'user' ? 'user' : 'ai'}`} style={{ width: 26, height: 26, fontSize: 11 }}>{m.role === 'user' ? 'You' : 'CX'}</div>
               <div className="msg-body">
+                {m.reasoning && <details className="workspace-reasoning"><summary>Model reasoning</summary><div className="msg-text">{m.reasoning}</div></details>}
+                {m.tools?.length > 0 && <div className="skill-trail">{m.tools.map((tool, index) => <Pill key={index}>{tool.name} · {tool.status || 'requested'}</Pill>)}</div>}
                 <div className="msg-text" style={{ fontSize: 13.5 }} dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
-                {m.streaming && <span className="typing" />}
+                {m.skills?.length > 0 && <div className="skill-trail">{m.skills.map((skill, index) => <Pill key={skill.id || index}>{skill.name || skill.slug || skill.id}</Pill>)}</div>}
+                {m.error && <div className="workspace-error" role="alert">{m.error}{m.fix && <p>{m.fix}</p>}<Link to="/settings">Check provider settings</Link></div>}
+                {m.aborted && <span className="tiny">Stopped · partial response kept; no incomplete changes applied.</span>}
+                {m.streaming && <span className="workspace-progress" role="status"><span className="dot" />{phase || 'Working'}</span>}
               </div>
             </div>
           ))}
@@ -635,8 +628,8 @@ export default function CodexPage() {
               <div className="msg-body" style={{ width: '100%' }}>
                 <div className="row between" style={{ gap: 8, marginBottom: 6 }}>
                   <b className="mono" style={{ fontSize: 12 }}>{p.path}</b>
-                  <span className="tiny" style={{ color: '#9fe8b8' }}>+{p.added}</span>
-                  <span className="tiny" style={{ color: '#fca5a5' }}>−{p.removed}</span>
+                  <span className="tiny" style={{ color: 'var(--ok)' }}>+{p.added}</span>
+                  <span className="tiny" style={{ color: 'var(--danger)' }}>−{p.removed}</span>
                   <div style={{ flex: 1 }} />
                   {p.applied
                     ? <Pill kind="ok">applied</Pill>
@@ -651,34 +644,25 @@ export default function CodexPage() {
         <div className="composer-wrap">
           <div className="composer" style={{ borderRadius: 12 }}>
             <textarea
+              id="codex-task"
+              aria-label="Coding task"
               value={input}
-              placeholder="Give the Codex agent a task…"
+              placeholder="Describe a task, ask a question…"
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askAgent(); } }}
-              style={{ minHeight: 40 }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); askAgent(); } }}
+              style={{ minHeight: 60 }}
             />
             <div className="composer-bar">
               <ModelPicker compact />
-              <button
-                type="button"
-                className={`chip-toggle skill-chip ${skillCount ? 'on' : ''}`}
-                onClick={() => setSkillsOpen(true)}
-                title="Skills this agent will receive"
-              >
-                <Icon name="skills" size={13} /> Skills{skillCount ? ` ${skillCount}` : ''}
-              </button>
               <div style={{ flex: 1 }} />
-              <Link className="btn small ghost" to="/sandbox" title="Run on a remote machine">SSH sandbox ↗</Link>
-              <button className="btn primary small" disabled={busy || !input.trim()} onClick={askAgent}>{busy ? '…' : 'Run ⏎'}</button>
+              {busy
+                ? <button className="btn small" onClick={() => { setPhase('Stopping'); streamRef.current?.abort(); }}>Stop</button>
+                : <button className="btn primary small" disabled={!input.trim()} onClick={askAgent}>Run task <span aria-hidden="true">↵</span></button>}
             </div>
           </div>
         </div>
       </div>
-      <SkillPicker
-        open={skillsOpen}
-        onClose={() => setSkillsOpen(false)}
-        onChanged={() => { try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { /* ignored */ } }}
-      />
+    </div>
     </div>
   );
 }

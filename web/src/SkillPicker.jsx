@@ -107,7 +107,7 @@ export default function SkillPicker({ open, onClose, onChanged }) {
   const rootText = [...new Set(state.skills.map((s) => s.root_label).filter(Boolean))].join(' · ');
 
   return (
-    <div className="modal-back" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="modal-back" role="presentation" aria-hidden="true" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="skill-picker" role="dialog" aria-modal="true" aria-label="Skills" ref={dialogRef}>
         <div className="skill-picker-head">
           <div>

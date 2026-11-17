@@ -8,6 +8,19 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import httpModule from 'node:http';
+import crypto from 'node:crypto';
+// Never inherit live identity-provider credentials or hosted flags in fixtures.
+const TEST_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+  !/^(SUPABASE_|ADMIN_|OWNER_|BOOTSTRAP_|GITHUB_|VERCEL|AWS_|NETLIFY|FUNCTION_|K_SERVICE$|ANTICODEX_LOCAL|NODE_ENV$|EXPOSE_RESET_CODES$|REQUIRE_EMAIL_VERIFICATION$)/.test(key)));
+const AUTH_FIXTURE = {
+  ADMIN_USERNAME: 'fixture-console', ADMIN_PASSWORD: 'fixture-auth-password-only',
+  ADMIN_SESSION_SECRET: 'fixture-admin-session-secret-not-for-deployment',
+  OWNER_EMAIL: 'owner@fixture.invalid', OWNER_PASSWORD: 'fixture-auth-password-only',
+  OWNER_NAME: 'Fixture Owner', OWNER_ROLE: 'admin',
+  BOOTSTRAP_ACCOUNTS: '', BOOTSTRAP_PASSWORD: '',
+  REQUIRE_EMAIL_VERIFICATION: 'false'
+};
+
 const ROOT = new URL('..', import.meta.url).pathname;
 const DATA_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'anticodex-test-'));
 
@@ -91,7 +104,7 @@ async function main() {
   const server = spawn('node', ['server.mjs'], {
     cwd: new URL('..', import.meta.url).pathname,
     env: {
-      ...process.env, PORT: String(PORT), HOST: '127.0.0.1', EXPOSE_RESET_CODES: 'true',
+      ...TEST_ENV, ...AUTH_FIXTURE, PORT: String(PORT), HOST: '127.0.0.1', NODE_ENV: 'development', ANTICODEX_LOCAL: '1', EXPOSE_RESET_CODES: 'true',
       // A gateway we control, registered the same way a user's custom provider
       // would be: proves per-account keys, model sync and id substitution.
       CUSTOM_PROVIDERS: JSON.stringify([{
@@ -210,11 +223,19 @@ async function main() {
   const token2 = r.data.token;
 
   r = await api('forgot', { email });
-  ok('forgot emails code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
+  ok('forgot surfaces an explicit local development code', r.status === 200 && r.data.ok && r.data.dev_code?.length === 6);
   const resetCode = r.data.dev_code;
 
   r = await api('reset', { email, code: '000000', new_password: 'newpass123' });
   ok('wrong code rejected', r.status === 200 && r.data.ok === false);
+
+  const otherEmail = 'recovery-other@fixture.invalid';
+  const other = await api('register', { email: otherEmail, password: 'other-original-pass', name: 'Other User' });
+  assert(other.data.token, 'recovery isolation fixture must register');
+  r = await api('reset', { email: otherEmail, code: resetCode, new_password: 'cross-account-pass' });
+  ok('local recovery code cannot reset a different account', r.data.ok === false);
+  r = await api('login', { email: otherEmail, password: 'other-original-pass' });
+  ok('failed cross-account reset preserves the victim password', r.data.ok && r.data.token);
 
   r = await api('reset', { email, code: resetCode, new_password: 'newpass123' });
   ok('reset with code', r.status === 200 && r.data.ok);
@@ -246,11 +267,44 @@ async function main() {
   ok('mcp delete', r.status === 200);
 
   console.log('— admin —');
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'wrong' });
+  r = await api('admin', { op: 'login', username: AUTH_FIXTURE.ADMIN_USERNAME, password: 'wrong' });
   ok('admin wrong creds rejected', r.status === 401);
-  r = await api('admin', { op: 'login', username: 'Thaddeusadmin', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: AUTH_FIXTURE.ADMIN_USERNAME, password: AUTH_FIXTURE.ADMIN_PASSWORD });
   ok('admin login', r.status === 200 && r.data.token);
   const at = r.data.token;
+  const claims = JSON.parse(Buffer.from(at.slice(4).split('.')[0], 'base64url').toString());
+  ok('admin token lifetime is exactly 30 minutes', r.data.expires_in === 1800 && claims.exp - claims.iat === 1800000);
+  ok('admin token carries a random 128-bit jti', /^[a-f0-9]{32}$/.test(claims.jti));
+  const nextAdmin = await api('admin', { op: 'login', username: AUTH_FIXTURE.ADMIN_USERNAME, password: AUTH_FIXTURE.ADMIN_PASSWORD });
+  const nextClaims = JSON.parse(Buffer.from(nextAdmin.data.token.slice(4).split('.')[0], 'base64url').toString());
+  ok('successive admin logins mint different capabilities', nextAdmin.data.token !== at && nextClaims.jti !== claims.jti);
+  const signed = (payload, secret = AUTH_FIXTURE.ADMIN_SESSION_SECRET) => {
+    const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    return `adm_${encoded}.${crypto.createHmac('sha256', secret).update(encoded).digest('base64url')}`;
+  };
+  const expiredAt = Date.now() - 1000;
+  const futureAt = Date.now() + 60000;
+  for (const [name, bad] of [
+    ['expired', signed({ ...claims, iat: expiredAt - 1800000, exp: expiredAt })],
+    ['future-issued', signed({ ...claims, iat: futureAt, exp: futureAt + 1800000 })],
+    ['overlong lifetime', signed({ ...claims, exp: claims.exp + 1 })],
+    ['wrong secret', signed(claims, 'different-fixture-secret')],
+    ['tampered payload', `adm_${Buffer.from(JSON.stringify({ ...claims, exp: claims.exp + 1 })).toString('base64url')}.${at.split('.')[1]}`],
+    ['tampered signature', at.slice(0, -1) + (at.endsWith('a') ? 'b' : 'a')],
+    ['extra token segment', at + '.extra'],
+    ['legacy deterministic', 'adm_' + crypto.createHash('sha256').update(`${AUTH_FIXTURE.ADMIN_USERNAME}:${AUTH_FIXTURE.ADMIN_PASSWORD}:anticodex`).digest('hex')]
+  ]) {
+    ok(`admin rejects ${name} token`, (await api('admin', { op: 'stats', token: bad })).status === 401);
+    ok(`global admin gate rejects ${name} token`, (await api('save_provider_key', { token: bad, key_env: 'NVIDIA_API_KEY', value: '' })).status === 401);
+  }
+  r = await api('admin', { op: 'stats' }, { 'x-admin-token': at });
+  ok('signed admin token works through the admin header', r.status === 200);
+  r = await api('admin', { op: 'logout', token: at });
+  ok('admin logout honestly reports unsupported revocation', r.status === 501 && r.data.ok === false && r.data.revoked === false);
+  r = await api('logout', { token: at });
+  ok('generic logout does not falsely revoke an admin capability', r.status === 501 && r.data.revoked === false);
+  r = await api('admin', { op: 'stats', token: at });
+  ok('unsupported logout leaves capability valid until expiry', r.status === 200);
   r = await api('admin', { op: 'stats', token: at });
   ok('admin stats', r.status === 200 && typeof r.data.users === 'number');
   r = await api('admin', { op: 'users', token: at });
@@ -261,18 +315,18 @@ async function main() {
   ok('admin bad token rejected', r.status === 401);
 
   console.log('— owner account (second admin: app sign-in, not the console) —');
-  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('login', { email: AUTH_FIXTURE.OWNER_EMAIL, password: AUTH_FIXTURE.ADMIN_PASSWORD });
   ok('owner signs in to the app', r.status === 200 && r.data.ok && r.data.token);
   ok('owner is flagged admin', r.data.user?.role === 'admin' && r.data.role === 'admin');
-  ok('owner display name', r.data.user?.name === 'Thaddeus');
-  r = await api('register', { email: 'tthaddeus75@gmail.com', password: 'another123', name: 'Hijack' });
+  ok('owner display name', r.data.user?.name === AUTH_FIXTURE.OWNER_NAME);
+  r = await api('register', { email: AUTH_FIXTURE.OWNER_EMAIL, password: 'another123', name: 'Hijack' });
   ok('owner account cannot be re-registered over', r.data.ok === false && /already exists/i.test(r.data.error || ''));
-  r = await api('login', { email: 'tthaddeus75@gmail.com', password: 'nope-nope-nope' });
+  r = await api('login', { email: AUTH_FIXTURE.OWNER_EMAIL, password: 'nope-nope-nope' });
   ok('owner password is still required', r.data.ok === false && /wrong email or password/i.test(r.data.error || ''));
-  r = await api('admin', { op: 'login', username: 'tthaddeus75@gmail.com', password: 'Thaddeusk12' });
+  r = await api('admin', { op: 'login', username: AUTH_FIXTURE.OWNER_EMAIL, password: AUTH_FIXTURE.ADMIN_PASSWORD });
   ok('owner email is NOT an admin-console login', r.status === 401);
   r = await api('admin', { op: 'ensure_owner', token: at });
-  ok('admin can re-materialise the owner row', r.status === 200 && r.data.ok && r.data.users.some((u) => u.email === 'tthaddeus75@gmail.com' && u.role === 'admin'));
+  ok('admin can re-materialise the owner row', r.status === 200 && r.data.ok && r.data.users.some((u) => u.email === AUTH_FIXTURE.OWNER_EMAIL && u.role === 'admin'));
 
   r = await api('login', { email, password: 'newpass123' });
   const tokenLive = r.data.token;

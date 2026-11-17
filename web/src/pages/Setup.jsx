@@ -126,7 +126,7 @@ export default function SetupPage() {
           <p className="sub">`~/.codex/config.toml` — model providers, MCP servers, marketplaces, plugins, desktop flags.</p>
           <div className="row" style={{ gap: 8, marginBottom: 8 }}>
             <button className="btn ghost" onClick={() => codexFile.current?.click()}>Choose config.toml</button>
-            <input ref={codexFile} type="file" accept=".toml,text/plain" style={{ display: 'none' }}
+            <input ref={codexFile} type="file" aria-label="Codex config file" accept=".toml,text/plain" style={{ display: 'none' }}
               onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -145,7 +145,7 @@ export default function SetupPage() {
           <p className="sub">`.claude/settings.json` and `.claude/policy-limits.json` — base URL, model aliases, feature gates.</p>
           <div className="row" style={{ gap: 8, marginBottom: 8 }}>
             <button className="btn ghost" onClick={() => claudeFile.current?.click()}>Choose settings.json</button>
-            <input ref={claudeFile} type="file" accept=".json,application/json" style={{ display: 'none' }}
+            <input ref={claudeFile} type="file" aria-label="Claude config file" accept=".json,application/json" style={{ display: 'none' }}
               onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -153,7 +153,7 @@ export default function SetupPage() {
                 catch (err) { notify(String(err.message || err)); }
               }} />
             <button className="btn ghost" onClick={() => policyFile.current?.click()}>+ policy-limits.json</button>
-            <input ref={policyFile} type="file" accept=".json,application/json" style={{ display: 'none' }}
+            <input ref={policyFile} type="file" aria-label="Policy file" accept=".json,application/json" style={{ display: 'none' }}
               onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -234,7 +234,7 @@ export default function SetupPage() {
             </div>
           )}
           {plan.warnings?.length > 0 && (
-            <div className="tiny" style={{ marginTop: 8, color: 'var(--warn, #fbbf24)' }}>
+            <div className="tiny" style={{ marginTop: 8, color: 'var(--warn)' }}>
               {plan.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
             </div>
           )}

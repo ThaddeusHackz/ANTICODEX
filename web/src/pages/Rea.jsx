@@ -239,7 +239,7 @@ export default function ReaPage() {
             third-party engine. REA never downloads one — each is a large binary and a licence of its own —
             so this is the list of what is missing on this machine and the exact line that fixes it.
           </div>
-          {engines?.error && <div className="tiny" style={{ color: '#fca5a5', marginTop: 8 }}>{engines.error}</div>}
+          {engines?.error && <div className="tiny" style={{ color: 'var(--danger)', marginTop: 8 }}>{engines.error}</div>}
           {engines && !engines.error && (
             <>
               <div className="tiny" style={{ marginTop: 8 }}>
@@ -299,7 +299,7 @@ export default function ReaPage() {
             <b>{plan.nothing_to_do ? 'Nothing to change' : `The plan — ${plan.actions.length} action(s)`}</b>
             <span className="tiny">{plan.command}</span>
           </div>
-          {plan.parse_error && <div className="tiny" style={{ color: '#fca5a5', marginTop: 6 }}>{plan.parse_error}</div>}
+          {plan.parse_error && <div className="tiny" style={{ color: 'var(--danger)', marginTop: 6 }}>{plan.parse_error}</div>}
           {plan.nothing_to_do ? (
             <div className="tiny" style={{ marginTop: 8 }}>
               REA is already registered for {client} and its skill is current. Nothing will be written.
@@ -341,7 +341,7 @@ export default function ReaPage() {
             <b>{applied.ok ? 'Applied' : 'Not applied'}</b>
             <span className="tiny">{fmtMs(applied.ms)}</span>
           </div>
-          {!applied.ok && <div className="tiny" style={{ color: '#fca5a5', marginTop: 6 }}>{applied.error}</div>}
+          {!applied.ok && <div className="tiny" style={{ color: 'var(--danger)', marginTop: 6 }}>{applied.error}</div>}
           {(applied.applied || []).map((a, i) => (
             <div key={i} className="tiny" style={{ marginTop: 6 }}>✓ {a.summary || a.id}</div>
           ))}
@@ -455,7 +455,7 @@ export default function ReaPage() {
                 <button className="btn primary small" onClick={runTool} disabled={Boolean(busy)}>{busy === 'run' ? 'Running…' : 'Run tool'}</button>
                 {run.ms != null && <span className="tiny">{fmtMs(run.ms)}</span>}
               </div>
-              {run.error && <div className="tiny" style={{ color: '#fca5a5', marginTop: 8 }}>{run.error}</div>}
+              {run.error && <div className="tiny" style={{ color: 'var(--danger)', marginTop: 8 }}>{run.error}</div>}
               {run.result && <pre className="rea-log">{JSON.stringify(run.result, null, 2).slice(0, 8000)}</pre>}
             </div>
           )}

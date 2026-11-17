@@ -1,638 +1,489 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { sandbox as sbx } from '../lib/api.js';
+import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import * as api from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
-import Icon from '../Icon.jsx';
+import { Facts, CopyField, StatusPill } from '../ui.jsx';
 
-// Sandbox — where generated code is actually run.
-//
-// The point of this page is the thing that makes a code agent trustworthy: the
-// program it wrote either produced that output on this machine, or it did not.
-// No "here is some code, try it" — press Run and the stdout below came from a
-// real process in a temporary directory that is thrown away.
-//
-// Two halves:
-//   * write (or paste) code and run it, with the language, the timeout, and the
-//     files it left behind;
-//   * describe what you want, let the model write it (the same Fast/Balanced/Max
-//     deliberation setting as chat), then run that.
-//
-// It is local-only on purpose: executing arbitrary code is not something a shared
-// server may do for whoever asks. The desktop app runs the same page against the
-// same bridge on your own machine.
 const LANGS = [
-  { id: 'node', label: 'JavaScript', sample: 'const t = Date.now();\nconsole.log("hello from the sandbox");\nconsole.log("node", process.version);\nconsole.log("took", Date.now() - t, "ms (plus startup)");' },
-  { id: 'python', label: 'Python', sample: 'import sys, platform\nprint("hello from the sandbox")\nprint("python", platform.python_version())\nprint("isolated:", not hasattr(sys, "real_prefix"))' },
-  { id: 'bash', label: 'Shell', sample: 'echo "hello from the sandbox"\nuname -srm\nls -la | head -5' }
+  { id: 'node', label: 'JavaScript', ext: 'mjs' },
+  { id: 'python', label: 'Python', ext: 'py' },
+  { id: 'bash', label: 'Shell', ext: 'sh' }
 ];
 
-const EMPTY_REMOTE = {
-  loading: true,
-  available: false,
-  profiles: [],
-  defaults: null,
-  note: '',
-  error: null
+const SAMPLE = {
+  node: `// node 22 — top-level await works
+const rows = [3, 1, 4, 1, 5, 9, 2, 6];
+const median = (a) => {
+  const s = [...a].sort((x, y) => x - y);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+console.log('sorted', [...rows].sort((a, b) => a - b).join(' '));
+console.log('median', median(rows));
+await new Promise((r) => setTimeout(r, 50));
+console.log('async also works');`,
+  python: `# python 3 — isolated mode, no site-packages surprises
+import statistics, sys
+rows = [3, 1, 4, 1, 5, 9, 2, 6]
+print("python", sys.version.split()[0])
+print("median", statistics.median(rows))
+print("stdev", round(statistics.pstdev(rows), 3))`,
+  bash: `# sh — runs in a disposable directory with a scrubbed environment
+echo "whoami: $(whoami 2>/dev/null || echo sandbox)"
+echo "files here:"; ls -la
+printf 'made by the sandbox\\n' > out.txt
+echo "wrote out.txt ($(wc -c < out.txt) bytes)"`
 };
 
-/** Mirror of lib/remote.js parseSshTarget for instant form feedback. The server
- *  parses again before saving, so a client bug cannot persist a different host. */
-function parseSshCommand(raw) {
-  const text = String(raw || '').trim().replace(/^[$>]\s*/, '');
-  if (!text) return null;
-  const tokens = [];
-  const rx = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = rx.exec(text))) tokens.push(m[1] ?? m[2] ?? m[3]);
-  if (!tokens.length) return null;
-  let username = '', host = '', port = 22;
-  let i = /^ssh(\.exe)?$/i.test(tokens[0]) ? 1 : 0;
-  for (; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (t === '-p' || t === '--port') { port = Number(tokens[++i]); continue; }
-    if (/^-p\d+$/.test(t)) { port = Number(t.slice(2)); continue; }
-    if (t === '-l') { username = String(tokens[++i] || ''); continue; }
-    if (t.startsWith('-')) return { ok: false, error: `Flag ${t} is not supported here — use a plain ssh user@host.` };
-    const at = t.lastIndexOf('@');
-    if (at > 0) { username = t.slice(0, at); host = t.slice(at + 1); }
-    else host = t;
-    const colon = host.lastIndexOf(':');
-    if (colon > 0 && /^\d+$/.test(host.slice(colon + 1))) { port = Number(host.slice(colon + 1)); host = host.slice(0, colon); }
-  }
-  if (!username || !host || !Number.isInteger(port)) return { ok: false, error: 'Expected a command like ssh user@ssh.app.daytona.io.' };
-  return { ok: true, username, host, port };
-}
-
-const looksLikeAccessString = (host, username) => /^[A-Za-z0-9_-]{24,}$/.test(String(username || '')) && /(^|\.)daytona\.io$/i.test(String(host || ''));
-
-const blankProfile = (defaults = {}) => ({
-  id: '',
-  label: '',
-  host: defaults.host || 'ssh.app.daytona.io',
-  port: defaults.port || 22,
-  username: defaults.username || '',
-  key_path: defaults.key_path || ''
-});
-
 export default function SandboxPage() {
-  const { model, effort, notify, user } = useApp();
-  const account = String(user?.id ?? 'anon');
+  const { notify } = useApp();
+  const loc = useLocation();
   const [lang, setLang] = useState('node');
-  const [code, setCode] = useState(LANGS[0].sample);
-  const [busy, setBusy] = useState('');
+  const [code, setCode] = useState(SAMPLE.node);
   const [status, setStatus] = useState(null);
-  const [result, setResult] = useState(null);
-  const [prompt, setPrompt] = useState('');
-  const [timeoutMs, setTimeoutMs] = useState(8000);
-  const [viewing, setViewing] = useState(null);
-  const [target, setTarget] = useState('local');
-  const [remote, setRemote] = useState(EMPTY_REMOTE);
-  const [profileId, setProfileId] = useState('');
-  const [form, setForm] = useState(() => blankProfile());
-  const [remoteBusy, setRemoteBusy] = useState('');
-  const [remoteCheck, setRemoteCheck] = useState(null);
-  const [sshPaste, setSshPaste] = useState('');
-  const [pasteNote, setPasteNote] = useState(null);
-  const [storedCredential, setStoredCredential] = useState(false);
-  const taRef = useRef(null);
+  const [run, setRun] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [daytona, setDaytona] = useState(null);
+  const [target, setTarget] = useState(new URLSearchParams(loc.search).get('target') === 'daytona' ? 'daytona' : 'local');
+  const [command, setCommand] = useState('uname -a && node -v && python3 -V && pwd');
+  const [keyInfo, setKeyInfo] = useState(null);
+  const [conn, setConn] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [steps, setSteps] = useState(null);
+  const [provision, setProvision] = useState(null);
+  const [diag, setDiag] = useState(null);
+  const [diagBusy, setDiagBusy] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
-  function applyRemote(next) {
-    if (!next) return;
-    setRemote((cur) => ({ ...cur, ...next, loading: false, profiles: next.profiles || [] }));
-    const defaults = next.defaults || {};
-    setForm((f) => ({
-      ...f,
-      host: f.host || defaults.host || 'ssh.app.daytona.io',
-      port: f.port || defaults.port || 22,
-      username: f.username || defaults.username || '',
-      key_path: f.key_path || defaults.key_path || ''
-    }));
-    if (Array.isArray(next.profiles)) {
-      setProfileId((cur) => (cur && next.profiles.some((p) => p.id === cur) ? cur : (next.profiles[0]?.id || '')));
+  useEffect(() => {
+    api.sandbox.status().then(setStatus).catch(() => {});
+    api.daytona.status().then((d) => {
+      setDaytona(d);
+      if (d?.configured) setTarget(d.mode === 'local' ? 'local' : 'daytona');
+      // Pre-fill with what is in force, so "Save" edits rather than replaces.
+      const ssh = d?.ssh || {};
+      if (ssh.target) setConn(ssh.target);
+    }).catch(() => {});
+  }, []);
+
+  // The countdown has to move without a refetch, or "23h 59m left" is a screenshot
+  // of a number rather than a clock.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+
+
+  async function revoke() {
+    if (!window.confirm('Forget the saved workspace token on this machine? You will need to paste a new one to reconnect.')) return;
+    try {
+      const r = await api.daytona.revoke();
+      if (r?.ok) {
+        notify('Token forgotten on this machine — rotate it in Daytona too if it may have leaked.');
+        api.daytona.status().then((dd) => { setDaytona(dd); setConn(''); }).catch(() => {});
+      } else notify(r?.error || 'Could not clear the token');
+    } catch (e) { notify(e.message); }
+  }
+
+  // The doctor runs when the connection misbehaves, not instead of using it. It
+  // reports each layer (dns → tcp → banner → auth → tools) and stops at the first
+  // failure, because "SSH failed" has four different fixes.
+  async function runDiagnose() {
+    setDiagBusy(true);
+    setDiag(null);
+    try {
+      const r = await api.daytona.diagnose();
+      setDiag(r);
+      notify(r?.ok ? 'The workspace answers — auth and tools work.'
+        : `Stopped at ${r?.failed_at || 'an unknown layer'} — the row says what to do.`);
+    } catch (e) {
+      setDiag({ ok: false, error: e.message });
+      notify(e.message);
+    } finally { setDiagBusy(false); }
+  }
+
+  async function runProvision(only) {
+    setProvision({ running: true, steps: [] });
+    try {
+      const r = await api.daytona.provision(only ? { only } : {});
+      setProvision({ running: false, ...r });
+      notify(r?.ok ? (r.summary?.line || 'Sandbox ready') : (r?.error || r?.summary?.line || 'Provisioning failed'));
+    } catch (e) {
+      setProvision({ running: false, error: e.message });
+      notify(e.message);
     }
   }
 
-  // The first saved profile is the default target. Fill the form with it so
-  // "Test connection" tests the thing that is actually selected, not a blank.
-  useEffect(() => {
-    if (form.id || form.username) return;
-    const p = remote.profiles.find((x) => x.id === profileId);
-    if (p) {
-      setForm({ id: p.id, label: p.label, host: p.host, port: p.port, username: p.username || '', key_path: p.key_path || '' });
-      setStoredCredential(Boolean(p.has_credential));
-    }
-  }, [profileId, remote.profiles, form.id, form.username]);
-
-  useEffect(() => {
-    let gone = false;
-    sbx.status().then((s) => { if (!gone) setStatus(s); })
-      .catch((e) => { if (!gone) setStatus({ ok: false, error: e.message }); });
-    // Profiles are per account; the status action also returns a copy for the
-    // default account, which must not overwrite the signed-in account's list.
-    sbx.remoteStatus(account)
-      .then((r) => { if (!gone) applyRemote(r); })
-      .catch((e) => { if (!gone) setRemote((cur) => ({ ...cur, loading: false, error: e.message || String(e) })); });
-    return () => { gone = true; };
-  }, [account]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const switchLang = (id) => {
-    const next = LANGS.find((l) => l.id === id);
+  function pickLang(id) {
     setLang(id);
-    if (next && (!code.trim() || LANGS.some((l) => l.sample === code))) setCode(next.sample);
-  };
+    setCode(SAMPLE[id]);
+    setRun(null);
+  }
 
-  async function run() {
-    if (busy) return;
-    if (target === 'remote') return runRemote();
-    setBusy('run');
-    setViewing(null);
+  async function execute() {
+    setBusy(true);
+    setRun(null);
     try {
-      const out = await sbx.run({ language: lang, code, timeout_ms: Number(timeoutMs) || 8000 });
-      setResult(out);
-      if (out.timed_out) notify(`Stopped after ${Math.round((out.duration_ms || 0) / 1000)}s — the run hit its limit`, 'warn');
-      else if (out.ok) notify(`Ran in ${out.duration_ms} ms`);
-      else notify(out.error || `Exited ${out.exit_code}`, 'warn');
-    } catch (e) {
-      setResult({ ok: false, error: e.message || String(e) });
-      notify(e.message || 'Could not run that', 'warn');
-    } finally { setBusy(''); }
-  }
-
-  async function runRemote() {
-    if (!profileId) {
-      notify('Save or select an SSH profile first — the sandbox will not guess a host.', 'warn');
-      return;
-    }
-    if (!remote.available) {
-      notify('OpenSSH is not installed on this machine, so there is nothing to connect with.', 'warn');
-      return;
-    }
-    setBusy('run');
-    setViewing(null);
-    try {
-      const out = await sbx.remoteRun(account, {
-        id: profileId, language: lang, code, timeout_ms: Number(timeoutMs) || 8000
-      });
-      setResult(out);
-      if (out.timed_out) notify(out.error || 'The remote run hit its time limit', 'warn');
-      else if (out.ok) notify(`Ran on ${out.username}@${out.host} in ${out.duration_ms} ms`);
-      else notify(out.error || `Remote exit ${out.exit_code}`, 'warn');
-    } catch (e) {
-      setResult({ ok: false, remote: true, error: e.message || String(e) });
-      notify(e.message || 'Could not run that remotely', 'warn');
-    } finally { setBusy(''); }
-  }
-
-  // --- saved SSH profiles ---------------------------------------------------
-  function selectProfile(p) {
-    setProfileId(p.id);
-    setForm({ id: p.id, label: p.label, host: p.host, port: p.port, username: p.username || '', key_path: p.key_path || '' });
-    setStoredCredential(Boolean(p.has_credential));
-    setPasteNote(null);
-    setRemoteCheck(null);
-    setSshPaste('');
-  }
-
-  function newProfile() {
-    setProfileId('');
-    setForm(blankProfile(remote.defaults || {}));
-    setStoredCredential(false);
-    setPasteNote(null);
-    setRemoteCheck(null);
-    setSshPaste('');
-  }
-
-  /** One field for the thing Daytona actually shows you. Fills host, port and
-   *  username at once; the access string itself is never rendered back. */
-  function applySshPaste(raw) {
-    setSshPaste(raw);
-    if (!raw.trim()) { setPasteNote(null); return; }
-    const parsed = parseSshCommand(raw);
-    if (!parsed) { setPasteNote(null); return; }
-    if (!parsed.ok) { setPasteNote({ error: parsed.error }); return; }
-    const secret = looksLikeAccessString(parsed.host, parsed.username);
-    setForm((f) => ({
-      ...f,
-      host: parsed.host,
-      port: parsed.port,
-      username: parsed.username,
-      label: f.label || (secret ? `Daytona ${parsed.host}` : '')
-    }));
-    setStoredCredential(false);
-    setPasteNote({
-      ok: true,
-      host: parsed.host,
-      port: parsed.port,
-      username: secret ? `${parsed.username.slice(0, 4)}…${parsed.username.slice(-4)}` : parsed.username,
-      access: secret
-    });
-    setSshPaste('');
-    setRemoteCheck(null);
-  }
-
-  function field(name, value) {
-    setForm((f) => ({ ...f, [name]: value }));
-  }
-
-  async function saveProfile() {
-    if (remoteBusy) return;
-    setRemoteBusy('save');
-    try {
-      const payload = {
-        ...form,
-        port: Number(form.port) || 22,
-        label: form.label.trim() || (form.username.trim() ? `${form.username.trim()}@${form.host.trim()}` : '')
-      };
-      const out = await sbx.remoteSave(account, payload);
-      if (!out.ok) throw new Error(out.error || 'Could not save that profile.');
-      setRemote((cur) => ({ ...cur, profiles: out.profiles || [], count: (out.profiles || []).length, error: null }));
-      setProfileId(out.profile.id);
-      setStoredCredential(Boolean(out.profile.has_credential));
-      setForm({ id: out.profile.id, label: out.profile.label, host: out.profile.host, port: out.profile.port, username: out.profile.username || '', key_path: out.profile.key_path || '' });
-      setRemoteCheck(null);
-      notify(`Saved SSH profile ${out.profile.label}`);
-    } catch (e) {
-      notify(e.message || 'Could not save that profile.', 'warn');
-    } finally { setRemoteBusy(''); }
-  }
-
-  async function deleteProfile(p) {
-    if (remoteBusy) return;
-    if (!window.confirm(`Remove the SSH profile "${p.label}"? The key file itself is not touched.`)) return;
-    setRemoteBusy('delete');
-    try {
-      const out = await sbx.remoteDelete(account, p.id);
-      if (!out.ok) throw new Error(out.error || 'Could not remove that profile.');
-      setRemote((cur) => ({ ...cur, profiles: out.profiles || [], count: (out.profiles || []).length }));
-      if (profileId === p.id) {
-        const next = (out.profiles || [])[0];
-        if (next) selectProfile(next); else { setProfileId(''); newProfile(); }
+      if (target === 'daytona') {
+        const r = await api.daytona.exec(lang === 'bash' ? code : code, { timeout_ms: 20000 });
+        setRun({ ...r, launched: 'daytona', language: lang });
+      } else {
+        const r = await api.sandbox.run({ language: lang, code, timeout_ms: 12000 });
+        setRun({ ...r, launched: 'local' });
       }
-      notify('SSH profile removed');
     } catch (e) {
-      notify(e.message || 'Could not remove that profile.', 'warn');
-    } finally { setRemoteBusy(''); }
+      setRun({ ok: false, error: e.message, launched: target });
+    } finally { setBusy(false); }
   }
 
-  async function testProfile() {
-    if (remoteBusy) return;
-    setRemoteBusy('test');
-    setRemoteCheck(null);
+  async function runCommand() {
+    setBusy(true);
+    setRun(null);
     try {
-      // Test what is in the form, not a stale saved copy: an edited host or key
-      // path must fail (or pass) on its own values before someone saves it.
-      const { id, ...draft } = form;
-      const out = await sbx.remoteTest(account, { ...draft, id: id || undefined, port: Number(draft.port) || 22 });
-      setRemoteCheck(out);
-      if (out.ok) notify('SSH reached the remote machine — probe output is below');
-      else notify(out.error || 'The SSH test did not succeed', 'warn');
+      const r = target === 'daytona'
+        ? await api.daytona.exec(command, { timeout_ms: 20000 })
+        : await api.workspaceFs.exec(command, { sandbox: 'read-only', approval: 'auto-run' });
+      setRun({ ...r, launched: target, mode: 'command' });
     } catch (e) {
-      setRemoteCheck({ ok: false, error: e.message || String(e) });
-      notify(e.message || 'The SSH test did not run', 'warn');
-    } finally { setRemoteBusy(''); }
+      setRun({ ok: false, error: e.message, launched: target });
+    } finally { setBusy(false); }
   }
 
-  async function generate() {
-    const ask = prompt.trim();
-    if (!ask || busy) return;
-    setBusy('gen');
+  async function probe() {
+    setBusy(true);
     try {
-      const [pid, ...rest] = String(model || '').split('::');
-      const out = await sbx.generate({
-        prompt: ask,
-        language: lang === 'python' ? 'python' : lang === 'bash' ? 'shell' : 'JavaScript',
-        model: rest.join('::') || model,
-        provider: rest.length ? pid : undefined,
-        effort
-      });
-      if (!out.ok || !out.code) { notify('The model did not return code — try a narrower ask'); return; }
-      setCode(out.code);
-      notify('Code written — Run to see what it actually does');
-      setTimeout(() => taRef.current?.focus(), 40);
-    } catch (e) {
-      notify(e.message || 'Code generation failed', 'warn');
-    } finally { setBusy(''); }
+      const r = await api.daytona.probe();
+      setDaytona((d) => ({ ...d, probe: r }));
+      notify(r.ok ? `Reached ${r.identity || 'the box'}` : (r.hint || r.error || 'Probe failed'));
+    } catch (e) { notify(e.message); }
+    finally { setBusy(false); }
   }
 
-  async function openFile(name) {
-    if (!result?.run_id) return;
+  async function makeKey() {
     try {
-      const r = await sbx.read(result.run_id, name);
-      setViewing(r.ok ? { name, content: r.content } : { name, content: r.error || 'could not read it' });
-    } catch (e) { setViewing({ name, content: e.message }); }
+      const k = await api.daytona.key();
+      setKeyInfo(k);
+      if (!k.ok) notify(k.error);
+    } catch (e) { notify(e.message); }
   }
 
-  const blocked = status && status.ok === false;
-  const langs = status?.languages || [];
-  const selectedProfile = remote.profiles.find((p) => p.id === profileId) || null;
-  const remoteReady = Boolean(selectedProfile) && remote.available && !remote.loading;
-  const runDisabled = Boolean(busy) || (target === 'remote' ? !remoteReady : Boolean(blocked));
+  // Save a typed connection. The shapes Daytona's console hands out are all
+  // accepted (`ssh user`, `user@host`, `user@host:22`, `Daytona host`) and stored
+  // in one canonical form on this machine, so it survives a restart and the SSH
+  // argv, the status panel and the "copy these fields" table cannot disagree.
+  async function saveConnection() {
+    const value = conn.trim();
+    if (!value) return;
+    setSaving(true);
+    try {
+      const r = await api.daytona.configure({ target: value });
+      if (r?.ok) {
+        setDaytona((prev) => ({ ...(prev || {}), ...(r.status || {}), config: r.config }));
+        const saved = r.status || {};
+        notify(saved.configured
+          ? `Saved — Daytona target ${saved.ssh?.target || value}`
+          : 'Saved, but no workspace user was in that value');
+        if (saved.configured) setTarget('daytona');
+      } else {
+        notify(r?.error || 'Could not save that connection');
+      }
+    } catch (e) { notify(e.message); }
+    finally { setSaving(false); }
+  }
+
+  const d = daytona || {};
+  const daConfigured = Boolean(d.configured);
+
+  // Declared after `daConfigured` on purpose: a hook body runs in render order, so
+  // reading it above its `const` is a temporal-dead-zone crash — which is exactly
+  // what the mount suite caught ("Cannot access 'daConfigured' before initialization").
+  useEffect(() => {
+    if (!daConfigured) return;
+    api.daytona.steps().then(setSteps).catch(() => {});
+  }, [daConfigured]);
 
   return (
     <div className="page">
-      <div className="head">
+      <div className="page-head">
         <div>
           <h1>Sandbox</h1>
-          <p className="tiny">
-            Write code, or let the model write it, then run it for real. Every run gets a fresh
-            directory, a scrubbed environment and {Math.round((status?.limits?.max_timeout_ms || 15000) / 1000)}s at most.
+          <p className="sub">
+            Run code where it belongs. Locally: a disposable directory, a scrubbed environment and a wall-clock kill. On Daytona: the
+            same call over SSH to a real remote box. Every result says which machine ran it — <code className="code-inline">local</code>{' '}
+            or <code className="code-inline">daytona:&lt;user&gt;</code>.
           </p>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <Link className="btn small ghost" to="/images">Image gen →</Link>
-          <Link className="btn small ghost" to="/codex">Codex workspace →</Link>
+        <div className="actions">
+          <div className="chips">
+            <button className={`chip ${target === 'local' ? 'active' : ''}`} onClick={() => setTarget('local')}>This machine</button>
+            <button className={`chip ${target === 'daytona' ? 'active' : ''}`} onClick={() => setTarget('daytona')} disabled={!daConfigured && !d.local}>Daytona</button>
+          </div>
         </div>
       </div>
 
-      <div className="sb-target" role="tablist" aria-label="Where to run">
-        <button
-          role="tab" aria-selected={target === 'local'}
-          className={`sb-target-btn ${target === 'local' ? 'on' : ''}`}
-          onClick={() => setTarget('local')}
-        >
-          <Icon name="terminal" size={15} /> This machine
-        </button>
-        <button
-          role="tab" aria-selected={target === 'remote'}
-          className={`sb-target-btn ${target === 'remote' ? 'on' : ''}`}
-          onClick={() => setTarget('remote')}
-        >
-          <Icon name="remote" size={15} /> Remote over SSH
-        </button>
-        <span className="tiny sb-target-note">
-          {target === 'local'
-            ? 'A fresh directory and a hard time limit on this computer.'
-            : selectedProfile
-              ? `${selectedProfile.username || selectedProfile.username_hint || 'stored access string'}@${selectedProfile.host}:${selectedProfile.port}`
-              : 'Save an SSH profile below, then run there.'}
-        </span>
+      <Facts items={[
+        { k: 'Target', v: target === 'daytona' ? 'Daytona' : 'Local', d: daConfigured ? 'configured' : 'not configured' },
+        { k: 'Runtimes', v: (status?.languages || []).filter((l) => l.available).length, d: (status?.languages || []).map((l) => l.id).join(', ') || '—' },
+        { k: 'Timeout', v: `${(status?.limits?.max_timeout_ms || 15000) / 1000}s`, d: 'hard kill, not a suggestion' },
+        { k: 'Output cap', v: `${Math.round((status?.limits?.max_output_bytes || 64000) / 1024)} KB` },
+        { k: 'SSH key', v: d.ssh?.key ? 'found' : 'none yet', d: d.ssh?.key?.path || 'press “Make a key”' }
+      ]} />
+
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="card-head">
+          <h3>Remote over SSH — Daytona connection</h3>
+          <div className="right">
+            <span className={`pill ${daConfigured ? 'ok' : 'warn'}`}>{daConfigured ? 'configured' : 'not configured'}</span>
+            {d.mode && <span className="pill">{d.mode}</span>}
+          </div>
+        </div>
+        <div className="tiny" style={{ marginBottom: 8 }}>
+          Paste the target Daytona shows you. All of these work and are stored the same way:{' '}
+          <code className="code-inline">ssh {d.ssh?.user || '&lt;workspace-user&gt;'}</code>,{' '}
+          <code className="code-inline">{d.ssh?.user || '&lt;workspace-user&gt;'}@{d.ssh?.host || 'ssh.app.daytona.io'}</code>,{' '}
+          <code className="code-inline">{d.ssh?.user || '&lt;workspace-user&gt;'}@{d.ssh?.host || 'ssh.app.daytona.io'}:{d.ssh?.port || 22}</code>.
+          It is written to <code className="code-inline">{d.ssh?.saved_file || '~/.qoder/daytona.json'}</code> as a username, a host and a port —
+          never a key or a token. Environment variables still win, so a one-off <code className="code-inline">DAYTONA_SSH_USER=…</code> overrides this.
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            value={conn}
+            onChange={(e) => setConn(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') saveConnection(); }}
+            placeholder="WtMs6F8XVkKfRX7TDUrzlAunuPS3pqJs@ssh.app.daytona.io:22"
+            spellCheck={false}
+            style={{ flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
+          />
+          <button className="btn small primary" onClick={saveConnection} disabled={saving || !conn.trim()}>{saving ? 'Saving…' : 'Save'}</button>
+          <button className="btn small" onClick={runDiagnose} disabled={diagBusy || !daConfigured}>{diagBusy ? 'Checking…' : 'Diagnose'}</button>
+          <button className="btn small ghost" onClick={makeKey} disabled={busy}>Make a key</button>
+        </div>
+        {d.session_token?.known && (
+          <div style={{ marginTop: 8 }}>
+            {/* The countdown. A Daytona workspace user is issued for 1,440 minutes;
+                a long agent run that starts at 23h55m has five minutes to live, and
+                the page has to say so before the run, not after it fails. */}
+            <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+              <span className={`pill ${d.session_token.state === 'valid' ? 'ok' : d.session_token.state === 'soon' ? 'warn' : 'err'}`}>
+                {d.session_token.state === 'expired'
+                  ? `expired ${Math.abs(Math.round((d.session_token.expires_at - now) / 60000))} min ago`
+                  : `${Math.floor(Math.max(0, d.session_token.expires_at - now) / 3600000)}h ${Math.floor((Math.max(0, d.session_token.expires_at - now) % 3600000) / 60000)}m left`}
+              </span>
+              <span className="tiny">…{d.session_token.suffix} · {d.session_token.ttl_minutes} min lifetime</span>
+              <div style={{ flex: 1, minWidth: 80, height: 6, background: 'var(--bg-input)', borderRadius: 99, overflow: 'hidden' }}>
+                <div style={{ width: `${Math.max(0, Math.min(100, 100 * (1 - Math.max(0, d.session_token.expires_at - now) / (d.session_token.ttl_minutes * 60000))))}%`, height: '100%', background: d.session_token.state === 'valid' ? 'var(--ok)' : 'var(--danger)' }} />
+              </div>
+              <button className="btn tiny ghost" onClick={revoke}>Forget token</button>
+            </div>
+            <div className="tiny" style={{ marginTop: 4 }}>{d.session_token.note}</div>
+            {Array.isArray(d.rotation) && d.rotation.length > 0 && (
+              <div className="tiny" style={{ marginTop: 4, opacity: .75 }}>
+                Rotated {d.rotation.length}× this machine · last: …{d.rotation[d.rotation.length - 1].replaced_suffix} → …{d.rotation[d.rotation.length - 1].set_suffix} on {new Date(d.rotation[d.rotation.length - 1].replaced_at).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+        {diag && (
+          <div style={{ marginTop: 8 }}>
+            {/* Layer by layer, first failure highlighted. A green tick above a red
+                row is the useful part: it proves the network works and moves the
+                suspicion to the one thing a user can actually change. */}
+            <table className="table" style={{ fontSize: 12 }}>
+              <caption className="sr-only">Connection layers, in the order they are tested</caption>
+              <tbody>
+                {(diag.rows || []).map((r) => (
+                  <tr key={r.layer}>
+                    <td style={{ width: 16 }}><span aria-hidden="true">{r.ok ? '✓' : '✗'}</span><span className="sr-only">{r.ok ? 'ok' : 'failed'}</span></td>
+                    <th scope="row" style={{ width: 58, fontFamily: 'var(--mono)', textAlign: 'left' }}>{r.layer}</th>
+                    <td style={{ whiteSpace: 'pre-wrap' }}>{r.detail}</td>
+                    <td className="tiny" style={{ color: r.ok ? undefined : 'var(--danger)' }}>{r.hint}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {diag.failed_at ? (
+              <div className="tiny" style={{ marginTop: 6 }}>
+                Stopped at <b>{diag.failed_at}</b>. Everything above it works, so the fix is on that row.
+              </div>
+            ) : diag.ok ? (
+              <div className="tiny" style={{ marginTop: 6 }}>Every layer answered — the workspace is usable right now.</div>
+            ) : null}
+            {diag.error && <div className="tiny" style={{ color: 'var(--danger)', marginTop: 6 }}>{diag.error}</div>}
+            {diag.missing?.length > 0 && (
+              <div className="tiny" style={{ marginTop: 6 }}>Missing on the box: {diag.missing.join(', ')} — run the install below.</div>
+            )}
+            {diag.public_key && diag.failed_at === 'auth' && (
+              <div className="tiny" style={{ marginTop: 6 }}>
+                Add this key in Daytona, then retry:
+                <code style={{ display: 'block', wordBreak: 'break-all', fontFamily: 'var(--mono)', marginTop: 3 }}>{diag.public_key}</code>
+              </div>
+            )}
+          </div>
+        )}
+        {d.source && (
+          <div className="tiny" style={{ marginTop: 6 }}>
+            Source: user {d.source.user}, host {d.source.host}, port {d.source.port}, key {d.source.key}.
+          </div>
+        )}
+        {d.note && <div className="tiny" style={{ marginTop: 4 }}>{d.note}</div>}
+
+        {/* Install / repair: the checklist that makes the remote box usable by the
+            agent (git, rg, node, python, qodercli…). Every row is a command whose
+            output was read — no row says "done" because a script exited 0. */}
+        {daConfigured && (
+          <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+            <div className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+              <b style={{ fontSize: 13 }}>Install / repair the sandbox</b>
+              <div className="between" />
+              <button className="btn small primary" onClick={() => runProvision()} disabled={provision?.running}>
+                {provision?.running ? 'Installing…' : 'Run all steps'}
+              </button>
+            </div>
+            <div className="tiny" style={{ marginTop: 4 }}>
+              Idempotent, sequential, and honest per step. A required step that fails stops the run; an optional one (qodercli,
+              skillui, vibesec) is reported and skipped.
+            </div>
+            {(provision?.steps?.length > 0 || steps?.steps?.length > 0) && (
+              <table className="table" style={{ fontSize: 12, marginTop: 8 }}>
+                <tbody>
+                  {(provision?.steps || []).map((st) => (
+                    <tr key={st.id}>
+                      <td style={{ width: 18 }}><span aria-hidden="true">{st.ok ? '✓' : st.optional ? '·' : '✗'}</span><span className="sr-only">{st.ok ? 'done' : st.optional ? 'skipped' : 'failed'}</span></td>
+                      <th scope="row" style={{ textAlign: 'left', fontWeight: 500 }}>{st.label}</th>
+                      <td className="tiny" style={{ whiteSpace: 'pre-wrap', opacity: .8 }}>{st.detail || st.error}</td>
+                      <td className="tiny" style={{ textAlign: 'right' }}>{st.seconds}s</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {provision?.summary?.line && <div className="tiny" style={{ marginTop: 6 }}>{provision.summary.line}</div>}
+            {provision?.error && <div className="tiny" style={{ marginTop: 6, color: 'var(--danger)' }}>{provision.error}</div>}
+            {!provision && (steps?.steps || []).length > 0 && (
+              <div className="tiny" style={{ marginTop: 8 }}>
+                Steps: {(steps.steps || []).map((x) => x.label).join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {target === 'remote' && (
-        <div className="card sb-remote">
-          <div className="row between sb-remote-head">
-            <div>
-              <strong>Remote over SSH</strong>
-              <div className="tiny">
-                Runs the snippet on a machine you own — Daytona, a dev box, a CI runner. The profile stores
-                host, port, username and an optional key <em>path</em>; never a password and never the key itself.
-              </div>
-            </div>
-            <span className={`badge ${remote.available ? 'ok' : remote.loading ? '' : 'warn'}`}>
-              {remote.loading ? 'Checking OpenSSH…' : remote.available ? 'OpenSSH ready' : 'OpenSSH missing'}
-            </span>
-          </div>
-
-          {remote.error && <p className="tiny sb-err">{remote.error}</p>}
-
-          <div className="sb-remote-grid">
-            <div className="sb-remote-list">
-              <div className="sb-label">Saved profiles</div>
-              {!remote.loading && remote.profiles.length === 0 && (
-                <div className="tiny sb-empty">No profiles yet. The form on the right saves one.</div>
-              )}
-              {remote.profiles.map((p) => (
-                <div key={p.id} className={`sb-profile ${profileId === p.id ? 'on' : ''}`}>
-                  <button className="sb-profile-main" onClick={() => selectProfile(p)} title={`Use ${p.label}`}>
-                    <span className="sb-profile-name">{p.label}</span>
-                    <span className="sb-profile-meta">
-                      {p.username || p.username_hint || 'access string stored'}@{p.host}:{p.port}
-                      {' · '}
-                      {p.has_credential ? '24h access string' : p.key_path ? p.key_path : 'ssh config / agent'}
-                    </span>
-                  </button>
-                  <button
-                    className="icon-btn sb-profile-del"
-                    title={`Remove ${p.label}`}
-                    onClick={() => deleteProfile(p)}
-                    disabled={Boolean(remoteBusy)}
-                  ><Icon name="trash" size={14} /></button>
-                </div>
-              ))}
-
-              <div className="tiny sb-remote-note">
-                <Icon name="key" size={13} />
-                <span>Auth is this machine&apos;s SSH config, ssh-agent and keys first (<span className="mono">BatchMode=yes</span>). A key path only needs setting when OpenSSH cannot already reach the host.</span>
-              </div>
-
-              <div className="row sb-remote-actions">
-                <button
-                  className="btn small ghost"
-                  onClick={testProfile}
-                  disabled={Boolean(remoteBusy) || (!form.id && !form.username.trim())}
-                >{remoteBusy === 'test' ? 'Testing…' : 'Test connection'}</button>
-                <button className="btn small ghost" onClick={newProfile} disabled={Boolean(remoteBusy)}>New profile</button>
-              </div>
-
-              {remoteCheck && (
-                <div className={`sb-check ${remoteCheck.ok ? 'ok' : 'err'}`}>
-                  <div className="row between">
-                    <b className="tiny">{remoteCheck.ok ? 'Reachable' : 'Not reachable'}</b>
-                    <span className="tiny">{remoteCheck.duration_ms != null ? `${remoteCheck.duration_ms} ms` : ''}{remoteCheck.exit_code != null ? ` · exit ${remoteCheck.exit_code}` : ''}</span>
-                  </div>
-                  {remoteCheck.error && <p className="tiny sb-err">{remoteCheck.error}</p>}
-                  {(remoteCheck.probe || []).length > 0 && <pre className="sb-out">{remoteCheck.probe.join('\n')}</pre>}
-                  {!remoteCheck.ok && remoteCheck.stderr && <pre className="sb-out sb-err">{String(remoteCheck.stderr).slice(-1200)}</pre>}
-                </div>
-              )}
-            </div>
-
-            <div className="sb-profile-form">
-              <div className="row between">
-                <div className="sb-label">{form.id ? 'Edit profile' : 'New profile'}</div>
-                {form.id && <span className="pill">saved</span>}
-              </div>
-              <div className="sb-fields">
-                <label className="sb-field sb-field-wide">
-                  <span>Paste the SSH command <span className="tiny">(the whole line from Daytona / your host)</span></span>
-                  <div className="row" style={{ gap: 8 }}>
-                    <input
-                      value={sshPaste}
-                      onChange={(e) => setSshPaste(e.target.value)}
-                      onPaste={(e) => {
-                        const text = e.clipboardData?.getData('text');
-                        if (text) { e.preventDefault(); applySshPaste(text); }
-                      }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); applySshPaste(sshPaste); } }}
-                      placeholder="ssh At2W…@ssh.app.daytona.io"
-                      spellCheck={false}
-                      autoComplete="off"
-                      className="mono"
-                      style={{ flex: 1 }}
-                    />
-                    <button type="button" className="btn small ghost" onClick={() => applySshPaste(sshPaste)} disabled={!sshPaste.trim()}>
-                      Fill fields
-                    </button>
-                  </div>
-                </label>
-                {pasteNote && (
-                  <div className={`sb-paste-note ${pasteNote.error ? 'err' : 'ok'}`}>
-                    {pasteNote.error
-                      ? pasteNote.error
-                      : <>Parsed <b>{pasteNote.username}@{pasteNote.host}:{pasteNote.port}</b>{pasteNote.access ? ' — this is a bearer access string, so it is stored on this machine and shown only as a hint.' : ''}</>}
+      <div className="section split">
+        <div>
+          <div className="card">
+            <div className="card-head">
+              <h3>{target === 'daytona' ? 'Remote command (SSH)' : `Code — ${LANGS.find((l) => l.id === lang)?.label}`}</h3>
+              <div className="right">
+                {target === 'local' && (
+                  <div className="chips">
+                    {LANGS.map((l) => <button key={l.id} className={`chip ${lang === l.id ? 'active' : ''}`} onClick={() => pickLang(l.id)}>{l.label}</button>)}
                   </div>
                 )}
-                <label className="sb-field">
-                  <span>Label</span>
-                  <input value={form.label} onChange={(e) => field('label', e.target.value)} placeholder="Daytona workspace" />
-                </label>
-                <label className="sb-field">
-                  <span>Host</span>
-                  <input value={form.host} onChange={(e) => field('host', e.target.value)} placeholder="ssh.app.daytona.io" spellCheck={false} />
-                </label>
-                <label className="sb-field">
-                  <span>Port</span>
-                  <input type="number" min="1" max="65535" value={form.port} onChange={(e) => field('port', e.target.value)} />
-                </label>
-                <label className="sb-field">
-                  <span>Username {looksLikeAccessString(form.host, form.username) ? <span className="tiny">(access string)</span> : null}</span>
-                  <input
-                    value={form.username}
-                    onChange={(e) => { field('username', e.target.value); setStoredCredential(false); }}
-                    type={looksLikeAccessString(form.host, form.username) ? 'password' : 'text'}
-                    placeholder={storedCredential ? 'stored — paste the ssh command again to replace' : 'the account on that host'}
-                    spellCheck={false} autoComplete="off"
-                  />
-                </label>
-                <label className="sb-field sb-field-wide">
-                  <span>Private key path <span className="tiny">(optional)</span></span>
-                  <input value={form.key_path} onChange={(e) => field('key_path', e.target.value)} placeholder="~/.ssh/id_ed25519" spellCheck={false} />
-                </label>
+                <button className="btn small primary" onClick={execute} disabled={busy}>{busy ? 'Running…' : '▶ Run'}</button>
               </div>
-              <div className="row sb-profile-save">
-                <button
-                  className="btn small primary" onClick={saveProfile}
-                  disabled={Boolean(remoteBusy) || !form.host.trim() || (!form.username.trim() && !storedCredential)}
-                >
-                  {remoteBusy === 'save' ? 'Saving…' : form.id ? 'Update profile' : 'Save profile'}
-                </button>
-                <span className="tiny">No password field on purpose — OpenSSH cannot use one non-interactively here.</span>
+            </div>
+            <textarea
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              rows={14}
+              spellCheck={false}
+              style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: 11, fontFamily: 'var(--mono)', fontSize: 12.8, lineHeight: 1.6, outline: 'none' }}
+            />
+            <div className="tiny" style={{ marginTop: 6 }}>
+              {target === 'daytona'
+                ? 'The snippet is written to a temp file on the remote box and executed there; the target and its exit code come back with the output.'
+                : 'Runs with a scrubbed environment in a new directory under the data folder. This is not a container and not a kernel sandbox — it is a process boundary, and the runs are only for the person sitting at this machine. Daytona is the strong version.'}
+            </div>
+          </div>
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-head">
+              <h3>Command</h3>
+              <div className="right"><button className="btn small" onClick={runCommand} disabled={busy}>Run command</button></div>
+            </div>
+            <input
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              aria-label="Shell command to run"
+              spellCheck={false}
+              style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)', padding: '9px 11px', fontFamily: 'var(--mono)', fontSize: 12.8, outline: 'none' }}
+            />
+            <div className="tiny" style={{ marginTop: 6 }}>Same target switch. A remote command runs over SSH; a local one goes through the workspace policy gate.</div>
+          </div>
+        </div>
+
+        <div>
+          <div className="card" style={{ minHeight: 260 }}>
+            <div className="card-head">
+              <h3>Result</h3>
+              <div className="right">
+                {run?.target && <span className="pill info">{run.target}</span>}
+                {run?.exit_code != null && <span className={`pill ${run.exit_code === 0 ? 'ok' : 'err'}`}>exit {run.exit_code}</span>}
+                {run?.duration_ms != null && <span className="pill">{run.duration_ms} ms</span>}
+                {run?.timed_out && <span className="pill warn">timed out</span>}
               </div>
-              <p className="tiny sb-remote-hint">
-                Daytona&apos;s gateway is <span className="mono">ssh.app.daytona.io:22</span>. A Daytona access string
-                is a bearer credential that lasts up to <b>1,440 minutes (24 h)</b>; generate a fresh one when it expires.
-                The profile also works for any host in your <span className="mono">~/.ssh/config</span>.
-              </p>
+            </div>
+            {!run && <div className="empty">Run something. Output, exit code and duration appear here — for whichever machine ran it.</div>}
+            {run?.error && <div className="card" style={{ borderColor: 'var(--danger)', color: 'var(--danger)', fontSize: 13 }}>{run.error}</div>}
+            {run?.hint && <div className="pill warn" style={{ marginBottom: 8 }}>{run.hint}</div>}
+            {run?.stdout !== undefined && (
+              <>
+                <div className="tiny" style={{ marginBottom: 4 }}>stdout</div>
+                <pre style={{ margin: 0, padding: 11, background: 'var(--bg-input)', borderRadius: 9, fontSize: 12.3, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{run.stdout || '(no output)'}</pre>
+              </>
+            )}
+            {run?.stderr ? (
+              <>
+                <div className="tiny" style={{ marginTop: 8, marginBottom: 4 }}>stderr</div>
+                <pre style={{ margin: 0, padding: 11, background: 'var(--danger-bg)', borderRadius: 9, fontSize: 12.3, maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap', color: 'var(--danger)' }}>{run.stderr}</pre>
+              </>
+            ) : null}
+            {run?.files?.length ? (
+              <>
+                <div className="tiny" style={{ marginTop: 8, marginBottom: 4 }}>files written</div>
+                <div className="row wrap" style={{ gap: 4 }}>{run.files.map((f) => <span className="pill mono" key={f.name || f}>{f.name || f}</span>)}</div>
+              </>
+            ) : null}
+          </div>
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="card-head">
+              <h3>Daytona</h3>
+              <div className="right">
+                <StatusPill status={daConfigured ? 'live' : 'partial'} />
+                <button className="btn small" onClick={probe} disabled={busy || !d.ssh?.available}>Probe</button>
+              </div>
+            </div>
+            <table className="tbl">
+              <tbody>
+                {Object.entries(d.fields || {}).map(([k, v]) => (
+                  <tr key={k}><th scope="row" className="tiny" style={{ width: 110, textAlign: 'left', fontWeight: 500 }}>{k}</th><td className="mono tiny">{v}</td></tr>
+                ))}
+              </tbody>
+            </table>
+            {d.note && <div className="tiny" style={{ marginTop: 8 }}>{d.note}</div>}
+            {d.probe && (
+              <div className="card tight" style={{ marginTop: 8, borderColor: d.probe.ok ? 'var(--ok)' : 'var(--danger)' }}>
+                <div className="tiny">{d.probe.ok ? `Reached ${d.probe.identity || 'the box'}` : (d.probe.hint || d.probe.error || 'No answer')}</div>
+                {d.probe.stdout && <pre style={{ margin: '6px 0 0', fontSize: 11.5 }}>{d.probe.stdout}</pre>}
+              </div>
+            )}
+            <div className="row" style={{ marginTop: 8, gap: 6 }}>
+              <button className="btn small" onClick={makeKey}>Make a key</button>
+              <span className="tiny">Generates ~/.qoder/ssh/daytona_ed25519 and shows the public half to paste into Daytona.</span>
+            </div>
+            {keyInfo?.ok && (
+              <div style={{ marginTop: 8 }}>
+                <CopyField label="Public key — add this to the Daytona workspace" value={keyInfo.key} />
+              </div>
+            )}
+            <div style={{ marginTop: 10 }}>
+              <div className="tiny" style={{ marginBottom: 4 }}>Environment for a permanent target</div>
+              <CopyField value={'export DAYTONA_SSH_USER="<workspace-user>"\nexport DAYTONA_SSH_HOST="ssh.app.daytona.io"\nexport ANTICODEX_SANDBOX=daytona'} />
             </div>
           </div>
         </div>
-      )}
-
-      {blocked && (
-        <div className="card sb-blocked">
-          <strong>Running code happens on your own machine.</strong>
-          <p className="tiny">{status.error}</p>
-          <p className="tiny">Install ANTICODEX Desktop — the Sandbox works there, with your own Node and Python. Remote SSH is gated the same way, because the bridge is the thing holding the connection.</p>
-        </div>
-      )}
-
-      {status?.ok && (
-        <div className="row sb-meta">
-          {langs.map((l) => (
-            <span key={l.id} className={`sb-lang${l.available ? ' on' : ''}`} title={l.hint || ''}>
-              {l.label} {l.available ? '·' : '· missing'}
-            </span>
-          ))}
-          <span className="tiny">runs kept: {status.runs?.length || 0}</span>
-        </div>
-      )}
-
-      <div className="sb-grid">
-        <div className="card sb-pane">
-          <div className="row sb-pane-head">
-            <select className="sb-select" value={lang} onChange={(e) => switchLang(e.target.value)} aria-label="Language">
-              {LANGS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
-            </select>
-            <select className="sb-select" value={timeoutMs} onChange={(e) => setTimeoutMs(Number(e.target.value))} aria-label="Time limit">
-              {[2000, 5000, 8000, 12000, 15000].map((ms) => <option key={ms} value={ms}>{ms / 1000}s limit</option>)}
-            </select>
-            <div style={{ flex: 1 }} />
-            <button
-              className="btn small"
-              onClick={run}
-              disabled={runDisabled}
-              title={target === 'remote' && !selectedProfile ? 'Save or select an SSH profile first' : target === 'remote' && !remote.available ? 'OpenSSH is not installed on this machine' : ''}
-            >
-              {busy === 'run' ? (target === 'remote' ? 'Running over SSH…' : 'Running…') : target === 'remote' ? '▶ Run remotely' : '▶ Run'}
-            </button>
-          </div>
-          <textarea
-            ref={taRef}
-            className="sb-code"
-            spellCheck={false}
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); } }}
-            aria-label="Code"
-          />
-          <div className="row sb-gen">
-            <input
-              className="sb-input"
-              placeholder="…or describe it: “fibonacci up to 1000, printed one per line”"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') generate(); }}
-            />
-            <button className="btn small ghost" onClick={generate} disabled={Boolean(busy) || !prompt.trim()}>
-              {busy === 'gen' ? 'Writing…' : `Write with ${effort}`}
-            </button>
-          </div>
-        </div>
-
-        <div className="card sb-pane">
-          <div className="row sb-pane-head">
-            <strong className="tiny">Output</strong>
-            {result?.remote && (
-              <span className="pill sb-remote-badge"><Icon name="remote" size={12} /> {result.username}@{result.host}</span>
-            )}
-            {result?.run_id && <span className="tiny sb-runid">run {result.run_id}</span>}
-            <div style={{ flex: 1 }} />
-            {result && (
-              <span className={`badge ${result.ok ? 'ok' : 'warn'}`}>
-                {result.timed_out ? 'timed out' : result.ok ? 'exit 0' : `exit ${result.exit_code}`} · {result.duration_ms} ms
-              </span>
-            )}
-          </div>
-          {!result && <p className="tiny">Nothing has run yet. Press Run — the output below is the real process.</p>}
-          {result?.error && !result.stdout && <pre className="sb-out sb-err">{result.error}</pre>}
-          {result?.error && result.stdout && <p className="tiny sb-err">{result.error}</p>}
-          {result && (
-            <>
-              <pre className="sb-out">{result.stdout || '(no stdout)'}</pre>
-              {result.stderr ? <pre className="sb-out sb-err">{result.stderr}</pre> : null}
-              {result.truncated && <p className="tiny">Output was cut at {status?.limits?.max_output_bytes || 64000} bytes.</p>}
-              {!result.remote && (result.files || []).length > 0 && (
-                <div className="row sb-files">
-                  <span className="tiny">files:</span>
-                  {result.files.map((f) => (
-                    <button key={f.name} className="pill sb-file" onClick={() => openFile(f.name)} title={`${f.bytes} bytes`}>
-                      {f.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {viewing && (
-                <div className="sb-view">
-                  <div className="row">
-                    <span className="tiny">{viewing.name}</span>
-                    <div style={{ flex: 1 }} />
-                    <button className="icon-btn" title="Close" onClick={() => setViewing(null)}>×</button>
-                  </div>
-                  <pre className="sb-out">{viewing.content}</pre>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="card sb-note">
-        <strong className="tiny">What this is not</strong>
-        <p className="tiny">
-          The sandbox is a separate directory, a scrubbed environment and a hard time limit — not a container.
-          A program can still open sockets and read files it has permission to read. It runs only for the person
-          sitting at the machine (the desktop app, or a server you started yourself), never for a remote visitor.
-        </p>
       </div>
     </div>
   );

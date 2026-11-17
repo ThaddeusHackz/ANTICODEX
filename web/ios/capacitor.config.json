@@ -1,0 +1,17 @@
+{
+  "appId": "app.anticodex.ios",
+  "appName": "ANTICODEX",
+  "webDir": "../dist",
+  "server": {
+    "url": "https://anticodex.vercel.app",
+    "cleartext": false,
+    "allowNavigation": [
+      "https://anticodex.vercel.app/*"
+    ]
+  },
+  "ios": {
+    "contentInset": "always",
+    "limitsNavigationsToAppBoundDomains": false,
+    "backgroundColor": "#0e0f12"
+  }
+}

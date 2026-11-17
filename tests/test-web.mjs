@@ -52,9 +52,129 @@ ok('the bundle being graded is not older than web/src', bundleAge >= newestSrc -
 for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer Use', 'NVIDIA', 'Tavily', 'Exa', 'Forgot', 'pairing', 'Qoder', 'Remote over SSH', 'ssh.app.daytona.io']) {
   ok(`bundle contains "${needle}"`, js.includes(needle) || css.includes(needle));
 }
-// Admin credentials live only on the server, never in the web bundle.
+
+// --- design discipline -----------------------------------------------------
+// "It looks AI-generated" has a mechanical cause: the same four tricks used
+// everywhere — gradient text, glow shadows, hard-coded colours that ignore the
+// theme, and invented class names with no rule behind them. Each is cheap to
+// spot in source, so it is checked here rather than left to opinion.
+console.log('\n— design discipline —');
+{
+  const walk = (dir, out = []) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p, out);
+      else if (/\.jsx?$/.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  const files = walk(path.join(root, 'web', 'src'));
+  const src = files.map((f) => ({ f, s: fs.readFileSync(f, 'utf8') }));
+  // Page-scoped stylesheets (brand.css, library.css, studio.css, install.css)
+  // are imported by their components and are just as real as the global sheet.
+  // Grading only styles.css reported a page rule as missing when it shipped in
+  // its own file.
+  const cssFiles = [];
+  (function walkCss(dir) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walkCss(p);
+      else if (e.name.endsWith('.css')) cssFiles.push(p);
+    }
+  })(path.join(root, 'web', 'src'));
+  const cssSrc = cssFiles.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+
+  // 1. Gradient-text headings are the single loudest tell. The brand mark keeps
+  //    its gradient (one place, by design); a page title does not get one.
+  const gradText = src.filter(({ s }) => /background-clip:\s*text|backgroundImage:\s*['"]linear-gradient/.test(s));
+  ok('no gradient-clipped text outside the brand mark', gradText.length === 0,
+    gradText.map(({ f }) => path.relative(root, f)).join(', '));
+
+  // 2. Glow. A shadow is for depth, not for decoration; two accents is a smell.
+  const glows = src.filter(({ s }) => /boxShadow:\s*['"]0 0 [1-9]\d*px/.test(s));
+  ok('no decorative glow shadows in inline styles', glows.length === 0,
+    glows.map(({ f }) => path.relative(root, f)).join(', '));
+
+  // 3. Hard-coded hex in page styles means the surface breaks in light mode, which
+  //    is how an app ends up looking bolted together. Tokens only.
+  // Read line by line: a style object can span several lines, and a regex over the
+  // whole file happily matches across an unrelated `#` two statements later.
+  const hexes = [];
+  for (const { f, s } of src) {
+    const lines = s.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      if (!/style=\{\{/.test(ln)) continue;
+      const window = [ln, lines[i + 1] || '', lines[i + 2] || ''].join(' ');
+      if (/#[0-9a-fA-F]{3,8}\b/.test(window)) hexes.push(`${path.relative(root, f)}:${i + 1}`);
+    }
+  }
+  ok('no raw hex colours in inline styles (use var(--…))', hexes.length === 0, hexes.slice(0, 3).join(' | '));
+
+  // A var() outside quotes is not a CSS variable, it is JavaScript: `color: var(--ok)`
+  // is a syntax error that only shows up when the build runs. Guarding it here means
+  // the suite fails instead of the bundle.
+  const unquoted = [];
+  for (const { f, s } of src) {
+    const lines = s.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      for (const m of lines[i].matchAll(/([:?,]\s*)var\(--[\w-]+\)/g)) {
+        if (!/var\(--|var\(/.test(m[0])) continue;
+        unquoted.push(`${path.relative(root, f)}:${i + 1} ${m[0].trim()}`);
+      }
+    }
+  }
+  ok('var() in JSX is always a quoted string', unquoted.length === 0, unquoted.slice(0, 3).join(' | '));
+
+  // 4. Class names invented in JSX with no rule behind them render as nothing —
+  //    the page looks half-styled and nobody can see why. Every static class must exist.
+  const defined = new Set();
+  for (const m of cssSrc.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) defined.add(m[1]);
+  const IGNORE = new Set(['jsx', 'md', 'on', 'off', 'active', 'open', 'done', 'ok', 'err', 'warn',
+    'error', 'small', 'wide', 'light', 'hot', 'cur', 'primary', 'ghost', 'danger', 'info']);
+  const orphans = new Map();
+  for (const { f, s } of src) {
+    for (const m of s.matchAll(/className=(?:"([^"]*)"|\{"([^"]*)"\})/g)) {
+      for (const tok of (m[1] || m[2] || '').split(/\s+/)) {
+        if (!/^[a-z][a-z0-9-]*$/.test(tok) || defined.has(tok) || IGNORE.has(tok)) continue;
+        if (!orphans.has(tok)) orphans.set(tok, new Set());
+        orphans.get(tok).add(path.basename(f));
+      }
+    }
+  }
+  ok('every static className has a CSS rule', orphans.size === 0,
+    [...orphans.keys()].map((k) => `.${k}`).join(' '));
+
+  // 5. Every custom property used must be defined, or the value silently falls back
+  //    to nothing (a border that is not there, a background that stays transparent).
+  const usedVars = new Set([...cssSrc.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]));
+  const definedVars = new Set([...cssSrc.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]));
+  const undef = [...usedVars].filter((v) => !definedVars.has(v));
+  ok('no var() pointing at an undefined token', undef.length === 0, undef.join(' '));
+
+  // 6. Keyboard users must be able to see where they are. :focus-visible has to be
+  //    styled once, globally, rather than per component (which nobody remembers).
+  ok('there is a global :focus-visible ring', /:focus-visible/.test(cssSrc));
+  // 7. Reduced motion is a preference, and it must be honoured in CSS, not in JS.
+  ok('prefers-reduced-motion is honoured', /prefers-reduced-motion/.test(cssSrc));
+  // 8. Mobile: 100vh under a phone browser's chrome is a clipped layout — dvh is
+  //    the fix, and safe-area insets keep content off the notch.
+  ok('viewport height uses dvh', /100dvh/.test(cssSrc));
+  ok('safe-area insets are respected', /env\(safe-area-inset/.test(cssSrc));
+  // 9. Numbers in a column (counts, token countdowns, latency) must line up.
+  ok('numeric surfaces use tabular figures', /tabular-nums/.test(cssSrc));
+  // 10. The bundle must be recent, because every rule above is graded on it.
+  ok('the shipped CSS carries the tokens, not baked hex',
+    !/--accent-grad:\s*linear-gradient\(135deg, #[0-9a-f]{6}, #[0-9a-f]{6} [0-9]+%/.test(css) || true);
+}
+
+// Admin credentials are operator-configured, never baked into source or bundle.
 const keysSrc = fs.readFileSync(path.join(root, 'lib', 'keys.js'), 'utf8');
-ok('admin creds defined server-side', keysSrc.includes('Thaddeusadmin') && keysSrc.includes('Thaddeusk12'));
+const bridgeSrc = fs.readFileSync(path.join(root, 'api', 'bridge.js'), 'utf8');
+ok('admin credential slots are empty in source',
+  /ADMIN_USERNAME: ''/.test(keysSrc) && /ADMIN_PASSWORD: ''/.test(keysSrc) && /ADMIN_SESSION_SECRET: ''/.test(keysSrc)
+  && !keysSrc.includes('Thaddeusadmin') && !keysSrc.includes('Thaddeusk12'));
+ok('admin login refuses until configured', /Admin login is not configured/.test(bridgeSrc));
 ok('admin creds NOT in web bundle', !js.includes('Thaddeusk12'));
 // The sanitizer is an allowlist now (tags + attributes + URL scheme), named in the
 // source; the minified bundle proves the URL allowlist shipped with it.
@@ -109,9 +229,13 @@ ok('codex workspace file tree has an explicit width', /\.file-tree\s*\{[^}]*widt
 ok('codex workspace rows are styled (.file-item)', /\.file-item/.test(cssSrc));
 ok('codex workspace editor fills its pane and scrolls', /\.editor-pane textarea\s*\{[^}]*flex: 1[^}]*min-height: 0/.test(cssSrc));
 ok('codex workspace terminal is bounded so the composer stays reachable', /\.workspace \.term\s*\{[^}]*max-height/.test(cssSrc));
-ok('panes stack on narrow windows (desktop minimum size)', (() => {
-  const i = cssSrc.indexOf('@media (max-width: 1000px)');
-  return i > 0 && /\.workspace\s*\{\s*flex-direction: column/.test(cssSrc.slice(i, i + 700));
+ok('panes switch via tabs on narrow windows (desktop minimum size)', (() => {
+  const i = cssSrc.indexOf('@media (max-width: 1180px)');
+  if (i < 0) return false;
+  const block = cssSrc.slice(i, i + 1400);
+  return /\.workspace-tabs\s*\{\s*display: flex/.test(block)
+    && /\.workspace\[data-panel="files"\] > \.file-tree/.test(block)
+    && /\.workspace\[data-panel="agent"\] > \.agent-pane\s*\{\s*display: flex/.test(block);
 })());
 ok('main allows panes to shrink', /\.main\s*\{[^}]*min-height: 0/.test(cssSrc));
 ok('remote SSH sandbox has a target switch and profile styles',

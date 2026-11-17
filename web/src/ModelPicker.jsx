@@ -226,6 +226,12 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
         {currentProvider && !currentProvider.configured && <span className="mp-warn" title="this provider has no key yet">needs key</span>}
         <span className="mp-caret">▾</span>
       </button>
+      {/* Portaled to #root: the topbar carries backdrop-filter, which makes it the
+          containing block for fixed descendants — rendered inside it, the dialog
+          anchored to the 48px bar instead of the screen and clipped away. #root is
+          outside the topbar, so fixed positioning means the viewport again. (The
+          jsdom mount test scopes every query to #root, so the dialog must live
+          there; document.body breaks that contract.) */}
       {open && createPortal(
         <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
           <div
@@ -367,7 +373,7 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
             </div>
           </div>
         </div>,
-        document.body
+        document.getElementById('root') || document.body
       )}
     </div>
   );

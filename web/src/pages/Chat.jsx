@@ -1,33 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useApp, saveThreadLocal, threadsChanged, loadThreads, userKey } from '../lib/state.jsx';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
 import { modelLabel, rememberLabel } from '../ModelPicker.jsx';
-import SkillPicker from '../SkillPicker.jsx';
-import Icon from '../Icon.jsx';
 import * as api from '../lib/api.js';
 import { renderMarkdown } from '../lib/markdown.js';
+import { Modal } from '../ui.jsx';
 
 const SUGGESTIONS = [
-  { icon: 'codex', title: 'Write code with Codex', text: 'Build me a REST API scaffold with auth and tests', to: '/codex' },
-  { icon: 'search', title: 'Search the web', text: 'Search: what changed in AI this week?', tool: 'search' },
-  { icon: 'images', title: 'Generate an image', text: 'Imagine a clean geometric logo in cyan and violet', to: '/images' },
-  { icon: 'video', title: 'Generate a video', text: 'A short product teaser video with smooth camera motion', to: '/video' }
-];
-
-const QUICK_MODES = [
-  { to: '/codex', icon: 'codex', title: 'Codex', desc: 'A real folder, terminal and diff approvals' },
-  { to: '/claude', icon: 'agent', title: 'Agent Studio', desc: 'Plans, memory and a visible tool log' },
-  { to: '/sandbox', icon: 'sandbox', title: 'Sandbox', desc: 'Run code locally or over SSH' },
-  { to: '/skills', icon: 'skills', title: 'Skills', desc: 'Give every model the instructions it needs' }
+  { icon: '⌘', title: 'Write code with Codex', text: 'Build me a REST API scaffold with auth and tests', to: '/codex' },
+  { icon: '✦', title: 'Search the web', text: 'Search: what changed in AI this week?' , tool: 'search' },
+  { icon: '▦', title: 'Generate an image', text: 'Imagine a clean geometric logo in cyan and violet', to: '/images' },
+  { icon: '▶', title: 'Generate a video', text: 'A short product teaser video with smooth camera motion', to: '/video' }
 ];
 
 function ToolChips({ active, setActive }) {
   const chips = [
-    { id: 'search', label: 'Search', icon: 'search' },
-    { id: 'imagine', label: 'Imagine', icon: 'images' },
-    { id: 'video', label: 'Video', icon: 'video' },
-    { id: 'research', label: 'Deep research', icon: 'compass' },
-    { id: 'mcp', label: 'MCP tools', icon: 'connectors' }
+    { id: 'search', label: '⌕ Search' },
+    { id: 'imagine', label: '✦ Imagine' },
+    { id: 'video', label: '▶ Video' },
+    { id: 'research', label: '∞ Deep research' },
+    { id: 'mcp', label: '⇄ MCP tools' },
+    { id: 'skills', label: '✦ Skills' }
   ];
   return (
     <>
@@ -38,7 +31,7 @@ function ToolChips({ active, setActive }) {
           className={`chip-toggle ${active[c.id] ? 'on' : ''}`}
           onClick={() => setActive((a) => ({ ...a, [c.id]: !a[c.id] }))}
         >
-          <Icon name={c.icon} size={13} /> {c.label}
+          {c.label}
         </button>
       ))}
     </>
@@ -109,6 +102,7 @@ function MessageActions({ text, onRegen }) {
 
 export default function ChatPage() {
   const { model, setModel, user, notify, cfg, effort } = useApp();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -122,41 +116,39 @@ export default function ChatPage() {
   // that matters — nothing is shown that failed validation on disk.
   const [template, setTemplate] = useState(null);
   const [picker, setPicker] = useState(null);
-  const [skillsOpen, setSkillsOpen] = useState(false);
-  const [skillCount, setSkillCount] = useState(0);
-  const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true });
+  const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true, skills: true });
+  // Skills that shaped this answer, announced by the bridge on the `skills` frame.
+  // The trail is per-message so an old answer keeps its provenance.
+  const [skillTrail, setSkillTrail] = useState([]);
+  const [pickedSkills, setPickedSkills] = useState([]);
+  const [skillPicker, setSkillPicker] = useState(null);
+  // The numbers on the empty state are read, not written into the copy: if a
+  // runtime is missing or the atlas failed to build, the tile says so.
+  const [stats, setStats] = useState(null);
   const [threadId, setThreadId] = useState(() => new URLSearchParams(window.location.search).get('thread') || `th_${Date.now()}`);
   const scrollRef = useRef(null);
   const taRef = useRef(null);
-  const enabledSkillsKey = userKey('acx_enabled_skills', user?.id);
 
-  // The composer's Skills chip is a count, not decoration: it reads the same
-  // per-account set the Skills page writes, so "3 enabled" means three skill
-  // bodies will actually be added to the next request.
+  // "+ New chat" from the rail lands here with ?new=<timestamp>. It has to clear
+  // the thread, not just navigate to "/": the rail renders the same route, so
+  // without this the previous conversation stayed on screen and the button looked
+  // broken. A fresh id means the next message starts a new thread on save.
+  const route = useLocation();
+  const newToken = new URLSearchParams(route.search).get('new');
   useEffect(() => {
-    let gone = false;
-    const read = () => {
-      try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { setSkillCount(0); }
-    };
-    read();
-    window.addEventListener('storage', read);
-    window.addEventListener('acx:skills', read);
-    return () => { gone = true; window.removeEventListener('storage', read); window.removeEventListener('acx:skills', read); };
-  }, [enabledSkillsKey, skillsOpen]);
-
-  // "New chat" in the rail is a real reset, not a navigation to the same URL.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (!params.get('new')) return;
-    setMessages([]); setInput(''); setLive(null); setTemplate(null);
+    if (!newToken) return;
+    setMessages([]);
+    setLive(null);
     setThreadId(`th_${Date.now()}`);
-    window.history.replaceState({}, '', '/');
-  }, [window.location.search]);
+    setTemplate(null);
+    setSkillTrail([]);
+  }, [newToken]);
 
   // Opening a chat from the rail (?thread=…) must work offline too: read the
   // local copy immediately, then let the server copy win if it is newer.
+  const openThreadId = new URLSearchParams(route.search).get('thread');
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get('thread');
+    const t = openThreadId;
     if (!t) return;
     const local = loadThreads().find((x) => x && x.id === t);
     if (local?.messages?.length) { setMessages(local.messages); setThreadId(local.id); }
@@ -164,7 +156,7 @@ export default function ChatPage() {
       const th = (r.threads || []).find((x) => x.id === t);
       if (th?.messages?.length) { setMessages(th.messages); setThreadId(th.id); saveThreadLocal(th); threadsChanged(); }
     }).catch(() => {});
-  }, [window.location.search, user?.id]);
+  }, [openThreadId, user?.id]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -202,31 +194,6 @@ export default function ChatPage() {
     }
   }
 
-  // Resolve enabled skills plus any `$skill` mention into a bounded system
-  // block. This is the difference between "Skills" being a gallery and a model
-  // actually receiving the instructions it is supposed to follow.
-  async function skillBlockFor(text) {
-    let names = [];
-    try { names = JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]'); } catch { /* private mode */ }
-    try {
-      const mentioned = await api.skills.resolve(text);
-      names = [...new Set([...names, ...(mentioned.matched || []).map((m) => m.name)])];
-    } catch { /* the registry is optional */ }
-    const blocks = [];
-    let bytes = 0;
-    for (const name of names.slice(0, 8)) {
-      try {
-        const r = await api.skills.get(name);
-        if (!r?.ok || !r.instructions) continue;
-        if (bytes + r.instructions.length > 60000) break;
-        bytes += r.instructions.length;
-        blocks.push(r.instructions);
-      } catch { /* one broken skill must not kill the answer */ }
-    }
-    if (!blocks.length) return '';
-    return `\n\nThe user enabled these skills for this turn. Follow their instructions when relevant:\n\n${blocks.join('\n\n')}`;
-  }
-
   async function chooseTemplate(card) {
     try {
       const r = await api.artifacts.choose(picker.kind, card.id);
@@ -236,6 +203,16 @@ export default function ChatPage() {
     } catch (e) {
       setPicker((p) => ({ ...p, note: e.message || 'That template is no longer available.' }));
     }
+  }
+
+  /** Send with search forced on, even though `setActive` has not committed yet —
+   *  React state updates are asynchronous, so `send()` would read the old value. */
+  function sendSearch(text) {
+    const q = String(text || '').replace(/^search:\s*/i, '').trim();
+    setActive((a) => ({ ...a, search: true }));
+    // One tick later the state is committed; the chip visibly turns on first, which
+    // is the honest order (you see the mode you asked for).
+    setTimeout(() => send(q), 0);
   }
 
   async function send(text) {
@@ -259,7 +236,29 @@ export default function ChatPage() {
     setMessages(next);
     setBusy(true);
     const started = Date.now();
+
+    // ⌕ Search means: search, then answer. Before this, the chip only added a line
+    // to the system prompt ("use search results when available") and hoped a tool
+    // would fire — with no key, or no MCP search server, nothing was ever searched
+    // and the model just answered from memory while the chip looked active.
+    let searchContext = null;
+    let searchNote = null;
+    if (active.search && text === undefined) {
+      setLive((l) => (l ? { ...l, phase: 'searching' } : l));
+      try {
+        const r = await api.search({ query: content, max_results: 6 });
+        if (r?.results?.length) {
+          searchContext = r.results;
+          searchNote = `${r.results.length} source${r.results.length === 1 ? '' : 's'}${r.answer ? ' · summarised' : ''}`;
+        } else {
+          searchNote = r?.error || 'no results';
+        }
+      } catch (e) {
+        searchNote = e.message || 'search failed';
+      }
+    }
     setLive({ phase: 'contacting', elapsed: 0, text: '', thinking: '', firstToken: null, chars: 0, tools: [] });
+    setSkillTrail([]);
     const controller = new AbortController();
     abortRef.current = controller;
     // A clock that ticks even when nothing else does: silence for 20 seconds is
@@ -271,9 +270,13 @@ export default function ChatPage() {
       let system = active.research
         ? 'You are ANTICODEX in Deep Research mode. Plan, use the search tool when available, and produce a structured, cited report.'
         : undefined;
-      if (active.search) system = ((system ? system + '\n' : '') + 'Use web search results when the search tool is available; cite sources as [n].');
-      const skillBlock = await skillBlockFor(content);
-      if (skillBlock) system = `${system || 'You are ANTICODEX, a precise, tool-using AI workspace.'}${skillBlock}`;
+      if (active.search) {
+        system = (system ? system + '\n\n' : '') + (searchContext
+          ? `Web search results for the user's question are below. Answer from them, cite each claim as [n] matching the number, and say plainly if they do not answer the question.\n\n${
+            searchContext.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet || ''}`).join('\n\n')
+          }`
+          : `Search returned nothing usable (${searchNote || 'unavailable'}). Say so instead of answering from memory.`);
+      }
       const out = await api.chatStream({
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
@@ -281,7 +284,10 @@ export default function ChatPage() {
         system,
         effort,
         template: template || undefined,
-        use_mcp: active.mcp !== false
+        use_mcp: active.mcp !== false,
+        use_skills: active.skills !== false,
+        skills: pickedSkills.length ? pickedSkills : undefined,
+        skills_mode: pickedSkills.length ? 'manual' : (active.skills === false ? 'off' : 'auto')
       }, {
         signal: controller.signal,
         onEvent: (evt) => {
@@ -290,6 +296,7 @@ export default function ChatPage() {
           if (evt.type === 'thinking') setLive((l) => (l ? { ...l, phase: l.phase === 'streaming' ? 'streaming' : 'thinking', thinking: ((l.thinking || '') + evt.text).slice(-40000) } : l));
           if (evt.type === 'delta') setLive((l) => (l ? { ...l, phase: 'streaming', text: (l.text + evt.text).slice(-20000), chars: (l.chars || 0) + evt.text.length } : l));
           if (evt.type === 'tool') setLive((l) => (l ? { ...l, phase: 'tools', tools: [...(l.tools || []), { name: evt.name, status: evt.status }] } : l));
+          if (evt.type === 'skills') setSkillTrail(evt.injected || []);
         }
       });
       // A provider failure comes back as { ok:false, error, settings_link } on a
@@ -322,7 +329,10 @@ export default function ChatPage() {
         note: out.note || undefined,
         // So a thread remembers how slow this answer was.
         first_token_ms: out.first_token_ms ?? null,
-        elapsed_ms: out.elapsed_ms ?? (Date.now() - started)
+        elapsed_ms: out.elapsed_ms ?? (Date.now() - started),
+        // Which skills shaped this answer — kept with the message, so the trail
+        // survives a reload. One of the few things people ask about a good reply.
+        skills: skillTrail.length ? skillTrail : undefined
       };
       const merged = [...next, reply];
       setMessages(merged);
@@ -349,31 +359,61 @@ export default function ChatPage() {
     }
   }
 
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      api.skillkit.stats().catch(() => null),
+      api.sandbox.status().catch(() => null),
+      api.daytona.status().catch(() => null),
+      api.mcp.list().catch(() => null),
+      api.codexMap.map().catch(() => null)
+    ]).then(([sk, sb, dt, mc, cm]) => {
+      if (!alive) return;
+      const runtimes = (sb?.languages || []).filter((l) => l.available).length;
+      const parity = cm?.rows?.length ? Math.round(((cm.tally?.parity || 0) / cm.rows.length) * 100) : 0;
+      setStats({
+        count: sk?.count || 0,
+        sandbox: runtimes,
+        daytona: dt?.configured ? 'Daytona' : 'Daytona off',
+        connectors: (mc?.connections || []).length,
+        parity
+      });
+    });
+    return () => { alive = false; };
+  }, []);
+
   const empty = messages.length === 0;
 
   return (
     <div className="chat-wrap" ref={scrollRef} style={{ display: 'flex', flexDirection: 'column' }}>
       <div className={empty ? 'composer-wrap floating' : 'chat-col'} style={empty ? { width: '100%' } : {}}>
         {empty && (
-          <>
           <div className="hero">
-            <div className="hero-mark"><span className="hero-glow" /><Icon name="spark" size={26} /></div>
-            <h1>What are we building?</h1>
-            <div className="sub">One workspace for chat, code, agents and every model you connect.</div>
+            <h1>What can I do for you?</h1>
+            <div className="sub">
+              {stats
+                ? `${stats.count.toLocaleString()} skills · ${stats.sandbox} runtime${stats.sandbox === 1 ? '' : 's'} · ${stats.daytona} · every model you have connected`
+                : 'Chat, Codex, Agents, Connectors — powered by your models'}
+            </div>
+            <div className="row wrap" style={{ justifyContent: 'center', gap: 5, marginTop: 6 }}>
+              {[
+                { label: 'Skills', value: stats ? stats.count.toLocaleString() : '…', to: '/skills', hint: 'retrievable, and grounded into every turn' },
+                { label: 'Sandbox', value: stats ? `${stats.sandbox} local · ${stats.daytona}` : '…', to: '/sandbox', hint: 'this machine, or Daytona over SSH' },
+                { label: 'Connectors', value: stats ? stats.connectors : '…', to: '/mcp', hint: 'MCP servers, including stdio' },
+                { label: 'Codex parity', value: stats ? `${stats.parity}%` : '…', to: '/parity', hint: 'traced to upstream crates' }
+              ].map((tile) => (
+                <button
+                  key={tile.label}
+                  className="pill"
+                  title={tile.hint}
+                  onClick={() => navigate(tile.to)}
+                  style={{ cursor: 'pointer', padding: '4px 10px' }}
+                >
+                  {tile.label} <b style={{ marginLeft: 4 }}>{tile.value}</b>
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="mode-grid">
-            {QUICK_MODES.map((m) => (
-              <Link key={m.to} to={m.to} className="mode-card">
-                <span className="mode-ico"><Icon name={m.icon} size={18} /></span>
-                <span>
-                  <b>{m.title}</b>
-                  <span className="tiny">{m.desc}</span>
-                </span>
-                <Icon name="arrow" size={15} className="mode-arrow" />
-              </Link>
-            ))}
-          </div>
-          </>
         )}
         {!empty && (
           <>
@@ -437,6 +477,14 @@ export default function ChatPage() {
                         <div className="tiny">{(tc.function?.arguments || '').slice(0, 240)}</div>
                       </div>
                     ))}
+                    {m.skills?.length ? (
+                      <div className="skill-trail" title="Skills injected into this turn">
+                        <span className="tiny" style={{ opacity: .7 }}>skills</span>
+                        {m.skills.map((k) => (
+                          <span key={k.slug} className={`pill ${k.flags?.length ? 'warn' : ''}`} title={k.why || ''}>{k.slug}</span>
+                        ))}
+                      </div>
+                    ) : null}
                     <MessageActions text={m.content} onRegen={i === messages.length - 1 ? () => send() : undefined} />
                   </>
                 )}
@@ -500,9 +548,9 @@ export default function ChatPage() {
             }}
           />
           <div className="composer-bar">
-            <button className="icon-btn" title="Add files" onClick={() => notify('Attach from the Codex workspace — drag & drop lands in v0.2')}><Icon name="attach" size={17} /></button>
+            <button className="icon-btn" title="Add files" onClick={() => notify('Attach from the Codex workspace — drag & drop lands in v0.2')}>＋</button>
             <label className="icon-btn" title="Voice input (Whisper)" style={{ cursor: 'pointer' }}>
-              <Icon name="mic" size={17} />
+              🎤
               <input type="file" accept="audio/*" style={{ display: 'none' }} onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -515,10 +563,7 @@ export default function ChatPage() {
                 } catch (err) { notify('Transcription failed: ' + err.message); }
               }} />
             </label>
-            <button className="icon-btn" title="Choose a document, deck or sheet template" onClick={() => openTemplates(template?.artifact_kind?.replace('google-', '') || 'document')}><Icon name="layers" size={17} /></button>
-            <button className={`chip-toggle skill-chip ${skillCount ? 'on' : ''}`} onClick={() => setSkillsOpen(true)} title="Skills available to the next answer">
-              <Icon name="skills" size={14} /> Skills{skillCount ? ` ${skillCount}` : ''}
-            </button>
+            <button className="icon-btn" title="Choose a document, deck or sheet template" onClick={() => openTemplates(template?.artifact_kind?.replace('google-', '') || 'document')}>▤</button>
             <ToolChips active={active} setActive={setActive} />
             <button
               className={`send-btn ${busy ? 'stop' : ''}`}
@@ -526,19 +571,18 @@ export default function ChatPage() {
               disabled={busy ? false : !input.trim()}
               onClick={() => { if (busy) abortRef.current?.abort(); else send(); }}
             >
-              {busy ? <Icon name="stop" size={16} /> : <Icon name="send" size={17} />}
+              {busy ? '■' : '↑'}
             </button>
           </div>
         </div>
-        <SkillPicker open={skillsOpen} onClose={() => setSkillsOpen(false)} onChanged={() => { try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { /* ignored */ } }} />
 
         {picker && (
-          <div className="modal-back" onClick={(e) => { if (e.target === e.currentTarget) setPicker(null); }}>
-            <div className="modal" style={{ width: 720, maxWidth: '94vw' }}>
-              <div className="modal-head row between">
-                <span>What style should this {TEMPLATE_KINDS.find((k) => k.id === picker.kind)?.label.toLowerCase() || 'document'} use?</span>
-                <button className="icon-btn" onClick={() => setPicker(null)}>×</button>
-              </div>
+          <Modal
+            title={`What style should this ${TEMPLATE_KINDS.find((k) => k.id === picker.kind)?.label.toLowerCase() || 'document'} use?`}
+            onClose={() => setPicker(null)}
+            width={720}
+          >
+            <div>
               <div className="row" style={{ padding: '0 22px', gap: 6 }}>
                 {TEMPLATE_KINDS.map((k) => (
                   <button key={k.id} className={`chip-toggle ${picker.kind === k.id ? 'on' : ''}`} onClick={() => openTemplates(k.id)}>{k.label}</button>
@@ -562,7 +606,7 @@ export default function ChatPage() {
                 )}
               </div>
             </div>
-          </div>
+          </Modal>
         )}
 
         {empty && (
@@ -571,10 +615,16 @@ export default function ChatPage() {
               {SUGGESTIONS.map((s) => (
                 <button key={s.title} className="suggest-card" onClick={() => {
                   if (s.to) { window.location.href = s.to + (s.text ? `?q=${encodeURIComponent(s.text)}` : ''); return; }
-                  if (s.tool) setActive((a) => ({ ...a, [s.tool]: true }));
+                  if (s.tool) {
+                    // Turn the mode on *and* send in one gesture: the card's promise
+                    // is "this will search", so the send must carry the search.
+                    setActive((a) => ({ ...a, [s.tool]: true }));
+                    sendSearch(s.text);
+                    return;
+                  }
                   send(s.text);
                 }}>
-                  <strong><Icon name={s.icon} size={15} /> {s.title}</strong>
+                  <strong>{s.icon} {s.title}</strong>
                   <div className="tiny" style={{ marginTop: 4 }}>{s.text}</div>
                 </button>
               ))}

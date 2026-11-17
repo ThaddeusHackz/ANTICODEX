@@ -37,7 +37,7 @@ const STATE_FILE = path.join(app.getPath('userData'), 'anticodex-state.json');
 // A `.skill` is a ZIP holding `<name>/SKILL.md` — the packaged form both shipped
 // desktop assistants exchange. The installer is the registry's own, so the app
 // and the bridge cannot disagree about what a valid archive is.
-async function installSkillArchive() {
+async function installSkillArchive({ dest: destArg, target = 'codex' } = {}) {
   const { extractSkillArchive, readSkillArchive } = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'skills.js')).href);
   const parent = win && !win.isDestroyed() ? win : null;
   const dialogOpts = {
@@ -53,10 +53,10 @@ async function installSkillArchive() {
   if (!peek.skills.length) {
     return { ok: false, error: peek.errors[0]?.message || 'that archive does not contain a SKILL.md' };
   }
-  const dest = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'skills');
+  const dest = destArg || path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'skills');
   try {
     const result = extractSkillArchive(file, dest);
-    return { ok: true, ...result, description: peek.skills[0].description };
+    return { ok: true, ...result, target, description: peek.skills[0].description };
   } catch (e) {
     if (e.code === 'Exists') {
       const boxOpts = {
@@ -67,7 +67,7 @@ async function installSkillArchive() {
       const go = parent ? await dialog.showMessageBox(parent, boxOpts) : await dialog.showMessageBox(boxOpts);
       if (go.response !== 0) return { ok: false, canceled: true };
       const result = extractSkillArchive(file, dest, { overwrite: true });
-      return { ok: true, ...result, replaced: true, description: peek.skills[0].description };
+      return { ok: true, ...result, target, replaced: true, description: peek.skills[0].description };
     }
     return { ok: false, error: String(e.message || e) };
   }
@@ -102,15 +102,48 @@ async function startLocalServer() {
     '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.map': 'application/json'
   };
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
+    let url, pathname;
+    try {
+      url = new URL(req.url, 'http://127.0.0.1');
+      pathname = decodeURIComponent(url.pathname);
+      if (pathname.includes('\0')) throw new URIError('invalid path');
+    } catch {
+      res.writeHead(400);
+      return res.end('Bad request');
+    }
     if (url.pathname.startsWith('/api/')) {
       if (bridge) return bridge(req, res);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'bridge unavailable' }));
     }
-    let filePath = path.join(WEB_DIST, decodeURIComponent(url.pathname));
-    if (!filePath.startsWith(WEB_DIST) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-      filePath = path.join(WEB_DIST, 'index.html');
+    const contains = (root, file) => {
+      const relative = path.relative(root, file);
+      return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    const safePath = (file) => {
+      if (!contains(WEB_DIST, file)) return false;
+      if (!fs.existsSync(WEB_DIST)) return true;
+      let existing = file;
+      while (!fs.existsSync(existing)) existing = path.dirname(existing);
+      return contains(fs.realpathSync(WEB_DIST), fs.realpathSync(existing));
+    };
+    let filePath = path.join(WEB_DIST, pathname);
+    try {
+      if (!safePath(filePath)) {
+        res.writeHead(403);
+        return res.end('Forbidden');
+      }
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        filePath = path.join(WEB_DIST, 'index.html');
+      }
+      if (!safePath(filePath)) {
+        res.writeHead(403);
+        return res.end('Forbidden');
+      }
+      if (fs.existsSync(filePath)) filePath = fs.realpathSync(filePath);
+    } catch {
+      res.writeHead(500);
+      return res.end('Unable to read web bundle');
     }
     if (!fs.existsSync(filePath)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -209,8 +242,6 @@ ipcMain.handle('acx:saveKeys', (_e, keys) => {
   return { ...out, backend: kc.status().backend };
 });
 
-ipcMain.handle('acx:getKeys', () => getKeychain().load().keys);
-
 ipcMain.handle('acx:keychainStatus', () => getKeychain().status());
 
 // Custom gateways (Ollama, LM Studio, a LAN vLLM box) belong to this machine, so
@@ -228,9 +259,81 @@ ipcMain.handle('acx:getCustoms', () => {
   return Array.isArray(list) ? list : [];
 });
 
-ipcMain.handle('acx:skillInstall', async () => {
-  try { return await installSkillArchive(); }
-  catch (e) { return { ok: false, error: String(e?.message || e) }; }
+// Installing a skill has two shapes in this app and they used to be two
+// different code paths that disagreed about the destination: the picker wrote to
+// ~/.codex/skills only, while the Skills page exported to ~/.qoder/skills. A
+// skill installed from Browse therefore could not be seen by the Installed tab.
+// One handler now serves both, and the root is explicit.
+const SKILL_TARGETS = {
+  qoder: () => path.join(os.homedir(), '.qoder', 'skills'),
+  codex: () => path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'skills'),
+  claude: () => path.join(os.homedir(), '.claude', 'skills')
+};
+
+ipcMain.handle('acx:skillInstall', async (_e, opts = {}) => {
+  try {
+    const target = SKILL_TARGETS[opts.target] ? opts.target : 'qoder';
+    if (opts.slug) {
+      // From the atlas: the body ships with the app, so this works offline and the
+      // file written is byte-identical to what would be installed from the web UI.
+      const { exportSkill } = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'skillkit.js')).href);
+      const out = exportSkill(String(opts.slug), SKILL_TARGETS[target](), { overwrite: opts.overwrite === true });
+      return { ...out, target, root: SKILL_TARGETS[target]() };
+    }
+    const out = await installSkillArchive({ dest: SKILL_TARGETS[target](), target });
+    return { ...out, target, root: SKILL_TARGETS[target]() };
+  } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+});
+
+ipcMain.handle('acx:skillRoots', () => Object.fromEntries(Object.entries(SKILL_TARGETS).map(([k, f]) => [k, f()])));
+
+// --- Daytona -----------------------------------------------------------------
+// SSH lives in the main process, never the renderer: the private key never enters
+// a page, and a page cannot open an arbitrary socket. Either an explicit API key is
+// configured or the machine's TCP 22 does the work; both are reported honestly
+// (`mode: 'api' | 'ssh' | 'unconfigured'`) so the UI never claims a sandbox it
+// does not have.
+ipcMain.handle('acx:daytona', async (_e, op, args = {}) => {
+  try {
+    const d = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'daytona.js')).href);
+    switch (op) {
+      case 'status': {
+        const st = d.daytonaStatus();
+        return { ok: true, ...st, recipe: d.setupRecipe(), config: d.daytonaConfig(), session_token: st.token };
+      }
+      case 'config': {
+        // Same normalisation as the bridge: one canonical target, never a ragged
+        // `ssh user@host:port` that only some code paths understand.
+        const set = { ...(args.set || {}) };
+        if (set.target) {
+          const t = d.normaliseTarget(set.target, set.user);
+          const [user, hostPort] = t.split('@');
+          set.user = user || undefined;
+          set.host = (hostPort || '').split(':')[0] || undefined;
+          const port = (hostPort || '').split(':')[1];
+          if (port) set.port = port;
+          delete set.target;
+        }
+        if (set.user) set.user = d.normaliseUser(set.user);
+        return { ...d.saveDaytonaConfig(set), status: d.daytonaStatus() };
+      }
+      case 'key': return { ok: true, ...d.publicKey() };
+      case 'probe': return { ok: true, ...(await d.sshProbe()) };
+      case 'exec': return await d.sshExec(String(args.command || ''), { timeoutMs: args.timeout_ms, cwd: args.cwd || undefined });
+      case 'list': return await d.sshList(args.path === undefined ? '.' : String(args.path));
+      case 'read': return await d.sshRead(String(args.path || ''));
+      case 'write': return await d.sshWrite(String(args.path || ''), args.content);
+      case 'anywhere': return await d.execAnywhere(String(args.command || ''), { target: args.target, timeoutMs: args.timeout_ms, cwd: args.cwd });
+      case 'steps': return { ok: true, steps: d.PROVISION_STEPS.map((x) => ({ id: x.id, label: x.label, why: x.why, optional: Boolean(x.optional) })), session_token: d.daytonaStatus().token };
+      case 'provision': return await d.provisionWorkspace({ only: args.only || null, timeoutMs: args.timeout_ms });
+      case 'diagnose': return await d.diagnose({ timeoutMs: args.timeout_ms });
+      case 'revoke': {
+        const out = d.saveDaytonaConfig({ clear_token: true, user: null });
+        return { ok: true, cleared: true, file: out.file, note: 'The saved token is gone from this machine. To invalidate it for real, rotate or delete the workspace user in Daytona.' };
+      }
+      default: return { ok: false, error: `unknown daytona op: ${op}` };
+    }
+  } catch (e) { return { ok: false, error: String(e?.message || e) }; }
 });
 
 ipcMain.handle('acx:api', async (_e, action, payload) => {
@@ -401,8 +504,8 @@ ipcMain.handle('acx:computer', async (_e, cmd, args) => {
 
 ipcMain.handle('acx:state', (_e, patch) => {
   const next = (patch ? saveState(patch) : loadState()) || {};
-  // Key material never travels on the generic state channel: the renderer reads it
-  // through acx:getKeys, which is where encryption is actually applied.
+  // Key material never travels on the generic state channel — or any channel:
+  // the main process attaches keychain keys in-process when proxying API calls.
   const { providerKeys, providerKeysEnc, ...rest } = next;
   return { ...rest, keychain: getKeychain().status() };
 });

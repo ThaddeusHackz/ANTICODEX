@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../lib/state.jsx';
+import * as api from '../lib/api.js';
 import Icon from '../Icon.jsx';
 import '../library.css';
 import {
@@ -350,6 +351,27 @@ export default function LibraryPage() {
   const [selected, setSelected] = useState(() => new Set());
   const [preview, setPreview] = useState(null);
   const [confirmBulk, setConfirmBulk] = useState(false);
+  // Artifacts written by the bridge (sandbox output, documents, skills, and the
+  // server copy of every image/video render) live in the account's library file,
+  // not in localStorage. They are a separate, honest group: this page never
+  // pretends a server record is a browser record or vice versa.
+  const [server, setServer] = useState({ loading: true, items: [], summary: null, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    setServer((prev) => ({ ...prev, loading: true }));
+    Promise.all([
+      api.library.summary().catch((e) => ({ error: e?.message || String(e) })),
+      api.library.list({ limit: 60 }).catch((e) => ({ error: e?.message || String(e), items: [] }))
+    ]).then(([summary, list]) => {
+      if (!alive) return;
+      const error = list?.error || summary?.error || null;
+      setServer({ loading: false, items: Array.isArray(list?.items) ? list.items : [], summary: summary && !summary.error ? summary : null, error });
+    }).catch((e) => {
+      if (alive) setServer({ loading: false, items: [], summary: null, error: e?.message || String(e) });
+    });
+    return () => { alive = false; };
+  }, [tick]);
 
   const data = useMemo(() => readLibrary(store), [store, tick]);
   const summary = useMemo(() => summarize(data.items), [data.items]);
@@ -756,6 +778,67 @@ export default function LibraryPage() {
         </div>
       )}
 
+      <section className="acx-lib-server" aria-label="Artifacts saved by the workspace">
+        <div className="acx-lib-server-head">
+          <div>
+            <div className="acx-lib-eyebrow">Workspace artifacts</div>
+            <h2>Saved by the bridge</h2>
+            <p className="tiny">
+              Sandbox output, documents, exported skills and the account copy of every image or video render.
+              These records live in this account’s library on the server; the local list above is this browser.
+            </p>
+          </div>
+          <div className="acx-lib-server-count">
+            {server.loading ? 'Reading…' : server.summary ? `${Number(server.summary.total || 0).toLocaleString()} total` : '—'}
+          </div>
+        </div>
+
+        {server.error ? (
+          <div className="acx-lib-alert" role="alert">
+            <Icon name="alert" size={17} />
+            <div>
+              <b>The workspace library could not be read.</b>
+              <div>{server.error}</div>
+            </div>
+          </div>
+        ) : server.loading ? (
+          <div className="acx-lib-note">Reading the workspace library…</div>
+        ) : server.items.length === 0 ? (
+          <div className="acx-lib-note">
+            No workspace artifacts yet. Generate an image or video, run code in the Sandbox, or export a
+            skill — each one writes a record here. Records made only in this browser stay in the list above.
+          </div>
+        ) : (
+          <div className="acx-lib-server-grid">
+            {server.items.map((item) => {
+              const href = mediaUrl(item.url) || mediaUrl(item.path);
+              const thumb = mediaUrl(item.thumb);
+              return (
+                <article className="acx-lib-server-card" key={item.id}>
+                  <div className="acx-lib-server-thumb">
+                    {thumb ? <img src={thumb} alt="" loading="lazy" /> : <Icon name={item.kind === 'video' ? 'video' : item.kind === 'image' ? 'images' : 'library'} size={22} />}
+                    <span className="acx-lib-tag">{item.kind || 'record'}</span>
+                  </div>
+                  <div className="acx-lib-server-body">
+                    <b title={item.title}>{item.title || 'Untitled artifact'}</b>
+                    <div className="tiny">
+                      {[item.source, item.bytes ? formatBytes(item.bytes) : null, item.created_at ? shortDate(Date.parse(item.created_at)) : null]
+                        .filter(Boolean).join(' · ') || 'No source recorded'}
+                    </div>
+                    <div className="acx-lib-server-actions">
+                      {href && <a className="btn small ghost" href={href} target="_blank" rel="noreferrer">Open</a>}
+                      <button type="button" className="btn small ghost" onClick={() => copyValue(item.url || item.path || item.id, 'Artifact reference copied')}>
+                        Copy ref
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       <footer className="acx-lib-foot">
         <span>
           Stored in this browser: <code>{LIBRARY_KEYS.image}</code>, <code>{LIBRARY_KEYS.video}</code>.
@@ -770,6 +853,7 @@ export default function LibraryPage() {
       {preview && (
         <div
           className="modal-back"
+          role="presentation" aria-hidden="true"
           onClick={(event) => { if (event.target === event.currentTarget) setPreview(null); }}
         >
           <div className="modal acx-lib-modal" role="dialog" aria-modal="true" aria-labelledby="acx-lib-modal-title">

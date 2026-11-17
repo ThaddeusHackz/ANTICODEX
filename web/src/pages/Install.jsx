@@ -1,235 +1,270 @@
-// Install ANTICODEX — the install-anywhere surface. iOS gets the PWA
-// (Add to Home Screen), Android/desktop Chrome get beforeinstallprompt,
-// macOS/Windows get the real desktop builds from GitHub Releases.
-//
-// Honesty rules (AGENTS.md): the version and download links come ONLY from the
-// bridge's update_check action (api/bridge.js handleUpdateCheck → GitHub
-// releases/latest). If the feed is unreachable or an asset is missing, the page
-// says so — it never invents a version or a download URL. The releases URL
-// below is the same repo desktop/updater.mjs polls (REPO constant).
-
 import React, { useEffect, useState } from 'react';
-import { api } from '../lib/api.js';
-import '../install.css';
+import * as api from '../lib/api.js';
+import { CopyField, Facts, StatusPill } from '../ui.jsx';
+import { onInstallState, promptInstall, dismissInstall, clearDismiss } from '../lib/pwa.js';
 
-const RELEASES_URL = 'https://github.com/ThaddeusHackz/ANTICODEX/releases/latest';
-
-function detectPlatform() {
-  const ua = navigator.userAgent || '';
-  const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const android = /Android/i.test(ua);
-  if (ios) return 'ios';
-  if (android) return 'android';
-  if (/Windows/i.test(ua)) return 'windows';
-  if (/Macintosh|Mac OS X/i.test(ua)) return 'macos';
-  return 'other';
-}
-
-function isStandalone() {
-  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
-    || navigator.standalone === true;
-}
-
-// The iOS Share glyph (square with an up-arrow) — the button step 2 refers to.
-function ShareIcon() {
-  return (
-    <svg className="install-share-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"
-      fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3v12" /><path d="M8 7l4-4 4 4" />
-      <path d="M8 10H6.5A2.5 2.5 0 0 0 4 12.5v6A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5v-6A2.5 2.5 0 0 0 17.5 10H16" />
-    </svg>
-  );
-}
-
-const PLATFORM_CARDS = [
-  { id: 'ios', title: 'iPhone / iPad', kind: 'Web app (PWA)', blurb: 'Add to Home Screen from Safari — full-screen, offline shell, no App Store needed.' },
-  { id: 'android', title: 'Android', kind: 'Web app (PWA)', blurb: 'One-tap install from Chrome, or Add to Home Screen from the browser menu.' },
-  { id: 'macos', title: 'macOS', kind: 'Native .app', blurb: 'Electron app with the local bridge, keychain and anticodex:// pairing. Unsigned build.' },
-  { id: 'windows', title: 'Windows', kind: 'Portable .exe', blurb: 'Extract the release zip and run ANTICODEX.exe — auto-update included.' }
-];
+// Install — one page that answers "how do I actually get this on my Mac / iPhone"
+// without pretending a web server can compile or sign anything.
+//
+// Three facts drive every row:
+//   * the website is already an installable PWA (manifest + service worker), so iOS
+//     works today with two taps and no Apple account;
+//   * a macOS .app is a build artifact — unsigned here, signed when built on macOS
+//     with a Developer ID — and the GitHub release is where the artifact lives;
+//   * an .ipa needs a Mac, Xcode and your team id. Nothing on this page can conjure
+//     a certificate, and it says so instead of offering a dead button.
 
 export default function InstallPage() {
-  const [platform] = useState(detectPlatform);
-  const [standalone] = useState(isStandalone);
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [installResult, setInstallResult] = useState(null); // 'accepted' | 'dismissed'
-  const [release, setRelease] = useState(null); // null = still checking
+  const [release, setRelease] = useState(null);
+  const [releaseErr, setReleaseErr] = useState(null);
+  const [pwa, setPwa] = useState(null);
+  const [detect, setDetect] = useState({ ios: false, mac: false, standalone: false, touch: false });
+  // Live install state from lib/pwa.js: whether *this* browser can show a prompt,
+  // whether we are already installed, and whether the offer was dismissed.
+  const [installState, setInstallState] = useState(null);
+  const [promptMsg, setPromptMsg] = useState(null);
 
   useEffect(() => {
-    const onPrompt = (e) => { e.preventDefault(); setDeferredPrompt(e); };
-    window.addEventListener('beforeinstallprompt', onPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+    api.raw('update_check', {}).then(setRelease).catch((e) => setReleaseErr(e.message));
+    // What this device already has, so the page can lead with the right answer.
+    const ua = navigator.userAgent || '';
+    const standalone = window.matchMedia?.('(display-mode: standalone)')?.matches || navigator.standalone === true;
+    setDetect({
+      ios: /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1),
+      mac: /Macintosh|Mac OS X/.test(ua) && !/iPhone|iPad/.test(ua),
+      standalone: Boolean(standalone),
+      touch: navigator.maxTouchPoints > 0
+    });
+    const un = onInstallState(setInstallState);
+    setPwa({
+      manifest: Boolean(document.querySelector('link[rel=manifest]')),
+      serviceWorker: 'serviceWorker' in navigator,
+      appleIcon: Boolean(document.querySelector('link[rel=apple-touch-icon]')),
+      registered: false
+    });
+    return un;
   }, []);
 
-  useEffect(() => {
-    let alive = true;
-    api('update_check')
-      .then((r) => { if (alive) setRelease(r && typeof r === 'object' ? r : { ok: false, error: 'unexpected bridge response' }); })
-      .catch((e) => { if (alive) setRelease({ ok: false, error: String((e && e.message) || e) }); });
-    return () => { alive = false; };
-  }, []);
-
-  async function promptInstall() {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    try {
-      const choice = await deferredPrompt.userChoice;
-      setInstallResult(choice && choice.outcome === 'accepted' ? 'accepted' : 'dismissed');
-    } catch {
-      setInstallResult('dismissed');
-    }
-    setDeferredPrompt(null);
+  async function doInstall() {
+    const r = await promptInstall();
+    setPromptMsg(r.outcome === 'accepted'
+      ? 'Installing — the app will open in its own window.'
+      : r.outcome === 'dismissed'
+        ? 'Dismissed. Nothing was installed; you can offer it again from this page.'
+        : (r.reason || 'This browser did not offer an install prompt.'));
   }
 
-  const assets = release && release.ok && Array.isArray(release.assets) ? release.assets : [];
-  const winAsset = assets.find((a) => /win32/i.test(a.name) && /\.zip$/i.test(a.name))
-    || assets.find((a) => /\.exe$/i.test(a.name)) || null;
-  const macAsset = assets.find((a) => /darwin/i.test(a.name) && /\.zip$/i.test(a.name)) || null;
-
-  const ua = navigator.userAgent || '';
-  const iosSafari = platform === 'ios' && /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS/i.test(ua);
+  const assets = release?.assets || [];
+  const macArm = assets.find((a) => /arm64|aarch64/i.test(a.name));
+  const macX64 = assets.find((a) => /(x64|amd64|intel)/i.test(a.name));
 
   return (
-    <div className="install-page">
-      <header className="install-hero">
-        <img className="install-logo" src="/icon-192.png" alt="ANTICODEX logo" width="88" height="88" />
-        <h1>Install ANTICODEX</h1>
-        <p className="install-tagline">One workspace, every model — on your home screen, your dock, your desktop.</p>
-        {release === null && <span className="install-version-pill install-muted">Checking the release feed…</span>}
-        {release && release.ok && (
-          <span className="install-version-pill">Latest release: v{release.version}</span>
-        )}
-        {release && !release.ok && (
-          <span className="install-version-pill install-warn">Release feed unreachable: {release.error}</span>
-        )}
-      </header>
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>Install</h1>
+          <p className="sub">
+            ANTICODEX runs in the browser, as a desktop app, and on your phone. This page is the honest status of each: the PWA works
+            right now, the macOS app is a build you can produce in one command (signed only if you sign it), and the iPhone app ships
+            as a home-screen web app or a native shell you build in Xcode.
+          </p>
+        </div>
+      </div>
 
-      {standalone && (
-        <div className="install-banner install-banner-ok">
-          ANTICODEX is already running as an installed app on this device.
+      <Facts items={[
+        { k: 'This device', v: detect.mac ? 'Mac' : detect.ios ? 'iPhone / iPad' : detect.touch ? 'Touch device' : 'Desktop', d: detect.standalone ? 'running installed' : 'in a browser' },
+        { k: 'PWA manifest', v: pwa?.manifest ? 'linked' : 'missing', d: 'Add to Home Screen' },
+        { k: 'Service worker', v: pwa?.serviceWorker ? 'supported' : 'unavailable', d: 'offline shell' },
+        { k: 'Latest release', v: release?.ok ? release.version : '—', d: release?.ok ? new Date(release.published_at).toLocaleDateString() : (releaseErr || 'GitHub releases') }
+      ]} />
+
+      {/* One card that says what THIS browser can do, rather than a button that
+          silently fails. Chromium gets a real prompt; Safari on iOS gets the two
+          taps; a browser that cannot install says so and stays quiet. */}
+      {installState && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="card-head">
+            <h3>Install on this browser</h3>
+            <div className="right">
+              <StatusPill status={installState.can === 'installed' ? 'live' : installState.can === 'unsupported' ? 'missing' : 'partial'} />
+              <span className="pill">{installState.can}</span>
+            </div>
+          </div>
+          {installState.can === 'installed' && (
+            <div className="tiny">
+              Already installed — you are reading this in the installed app, not a tab. Nothing to do.
+            </div>
+          )}
+          {installState.can === 'prompt' && (
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <button className="btn small primary" onClick={doInstall}>Install ANTICODEX</button>
+              <span className="tiny">Chrome/Edge will show its own install sheet. Nothing is downloaded until you accept.</span>
+            </div>
+          )}
+          {installState.can === 'awaiting-prompt' && (
+            <div className="tiny">
+              This browser supports installation but has not offered its prompt yet — it usually appears after the page has been
+              visited once, or use the install icon in the address bar. If the app is already installed, this stays quiet on purpose.
+            </div>
+          )}
+          {installState.can === 'ios-steps' && (
+            <ol style={{ paddingLeft: 20, fontSize: 13.5, lineHeight: 1.8, margin: '4px 0 6px' }}>
+              <li>Tap the <b>Share</b> button (the square with an arrow) in Safari's toolbar.</li>
+              <li>Scroll and tap <b>Add to Home Screen</b>.</li>
+              <li>Tap <b>Add</b> — the app opens full-screen from the home screen, with no Safari chrome.</li>
+            </ol>
+          )}
+          {installState.can === 'ios-other-browser' && (
+            <div className="tiny">
+              On iOS only Safari can add an app to the home screen. Open this page in Safari to install it — Chrome and Firefox on
+              iPhone are Safari underneath but do not expose the Share → Add to Home Screen flow.
+            </div>
+          )}
+          {installState.can === 'unsupported' && (
+            <div className="tiny">
+              This browser cannot install a web app (Firefox desktop is the common case). The macOS app and the PWA on a phone are
+              the two paths that work; this page has both below.
+            </div>
+          )}
+          {promptMsg && <div className="tiny" style={{ marginTop: 6 }}>{promptMsg}</div>}
+          {installState.dismissed && (
+            <div className="tiny" style={{ marginTop: 6 }}>
+              You dismissed the offer, so the app will not ask for 14 days.{' '}
+              <button className="btn tiny ghost" onClick={clearDismiss}>Ask me again</button>
+            </div>
+          )}
+          {!installState.dismissed && installState.can !== 'installed' && installState.can !== 'unsupported' && (
+            <button className="btn tiny ghost" style={{ marginTop: 6 }} onClick={dismissInstall}>Not now</button>
+          )}
         </div>
       )}
 
-      <section className="install-current" aria-label="Install on this device">
-        <h2>This device</h2>
-
-        {platform === 'ios' && (
-          <div className="install-card install-card-active">
-            <h3>Install on iPhone / iPad</h3>
-            {!iosSafari && (
-              <p className="install-warn">Open this page in <strong>Safari</strong> — on iOS, only Safari can add apps to the Home Screen.</p>
-            )}
-            <ol className="install-steps">
-              <li>Open <strong>{window.location.host || 'this site'}</strong> in Safari.</li>
-              <li>Tap the <strong>Share</strong> button <ShareIcon /> in the toolbar.</li>
-              <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
-              <li>Tap <strong>Add</strong>. ANTICODEX opens full-screen from your Home Screen, like a native app.</li>
-            </ol>
-            <p className="install-muted">The app shell is cached for offline launch; your chats and keys stay on the server bridge.</p>
-          </div>
-        )}
-
-        {platform === 'android' && (
-          <div className="install-card install-card-active">
-            <h3>Install on Android</h3>
-            {deferredPrompt ? (
-              <>
-                <button className="install-btn" onClick={promptInstall}>Install ANTICODEX</button>
-                {installResult === 'accepted' && <p className="install-ok-text">Installed — look for ANTICODEX on your home screen.</p>}
-                {installResult === 'dismissed' && <p className="install-muted">Install dismissed. You can retry any time.</p>}
-              </>
-            ) : (
-              <ol className="install-steps">
-                <li>Open the Chrome menu <strong>⋮</strong>.</li>
-                <li>Tap <strong>Install app</strong> (or <strong>Add to Home screen</strong>).</li>
-                <li>Confirm — ANTICODEX opens full-screen like a native app.</li>
-              </ol>
-            )}
-            {installResult === 'accepted' && deferredPrompt === null && standalone === false && (
-              <p className="install-muted">If the icon does not appear, check your app drawer.</p>
-            )}
-          </div>
-        )}
-
-        {platform === 'windows' && (
-          <div className="install-card install-card-active">
-            <h3>Download for Windows</h3>
-            {winAsset ? (
-              <>
-                <a className="install-btn" href={winAsset.url}>Download {winAsset.name}</a>
-                <p className="install-muted">Portable zip — extract it and run <strong>ANTICODEX.exe</strong>. No installer; the app updates itself from GitHub Releases.</p>
-              </>
-            ) : (
-              <>
-                <p className="install-warn">
-                  {release && release.ok
-                    ? `Release v${release.version} has no Windows asset attached.`
-                    : 'Could not read the release feed, so no download link can be shown.'}
-                </p>
-                <a className="install-btn install-btn-secondary" href={RELEASES_URL} target="_blank" rel="noreferrer">Browse GitHub Releases</a>
-              </>
-            )}
-          </div>
-        )}
-
-        {platform === 'macos' && (
-          <div className="install-card install-card-active">
-            <h3>Download for macOS</h3>
-            {macAsset ? (
-              <>
-                <a className="install-btn" href={macAsset.url}>Download {macAsset.name}</a>
-                <p className="install-muted">Unsigned, not notarized: right-click ANTICODEX.app → Open on first launch.</p>
-              </>
-            ) : (
-              <>
-                <p className="install-warn">
-                  {release && release.ok
-                    ? `Release v${release.version} has no macOS build attached yet.`
-                    : 'Could not read the release feed, so no download link can be shown.'}
-                </p>
-                <p>Build it on a Mac (Apple Silicon or Intel):</p>
-                <pre className="install-code">cd desktop{'\n'}npm install{'\n'}npm run package:mac</pre>
-                <p className="install-muted">Produces an unsigned ANTICODEX.app in release/. Until then, use the web app below.</p>
-                <a className="install-btn install-btn-secondary" href={RELEASES_URL} target="_blank" rel="noreferrer">Browse GitHub Releases</a>
-              </>
-            )}
-          </div>
-        )}
-
-        {platform === 'other' && (
-          <div className="install-card install-card-active">
-            <h3>Install from your browser</h3>
-            {deferredPrompt ? (
-              <button className="install-btn" onClick={promptInstall}>Install ANTICODEX</button>
-            ) : (
-              <p>Use your browser&apos;s <strong>Install</strong> / <strong>Apps</strong> menu to install this site, or grab a desktop build below.</p>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="install-platforms" aria-label="All platforms">
-        <h2>Every platform</h2>
-        <div className="install-grid">
-          {PLATFORM_CARDS.map((c) => (
-            <div key={c.id} className={`install-card${platform === c.id ? ' install-card-active' : ''}`}>
-              <div className="install-card-head">
-                <h3>{c.title}</h3>
-                {platform === c.id && <span className="install-badge">This device</span>}
-              </div>
-              <span className="install-kind">{c.kind}</span>
-              <p>{c.blurb}</p>
+      {/* ---------------- iOS ---------------- */}
+      <div className="section">
+        <h2>iPhone &amp; iPad</h2>
+        <div className="grid two">
+          <div className="card">
+            <div className="card-head">
+              <h3>Home-screen app</h3>
+              <div className="right"><StatusPill status="live" /><span className="pill">no App Store</span></div>
             </div>
-          ))}
-        </div>
-      </section>
+            <ol style={{ paddingLeft: 20, fontSize: 13.5, lineHeight: 1.8, margin: '4px 0 10px' }}>
+              <li>Open this site in <b>Safari</b> (Apple only allows Safari to install web apps).</li>
+              <li>Tap <b>Share</b> <span className="kbd">□↑</span>.</li>
+              <li>Tap <b>Add to Home Screen</b>, name it <b>ANTICODEX</b>, tap <b>Add</b>.</li>
+            </ol>
+            <div className="row wrap" style={{ gap: 6 }}>
+              <a className="btn small primary" href="/install">Open the one-page guide</a>
+              <a className="btn small" href="/manifest.webmanifest" target="_blank" rel="noreferrer">Inspect the manifest</a>
+            </div>
+            <div className="tiny" style={{ marginTop: 8 }}>
+              Installed this way it opens full-screen, keeps your session, and survives a dropped connection for everything already on the device.
+              {detect.ios ? ' You are on iOS — this is the fastest path.' : ''}
+            </div>
+          </div>
 
-      <footer className="install-footer">
-        {release && release.ok && release.published_at && (
-          <span className="install-muted">Latest release published {String(release.published_at).slice(0, 10)}.</span>
-        )}
-        <a href={RELEASES_URL} target="_blank" rel="noreferrer">All releases on GitHub</a>
-      </footer>
+          <div className="card">
+            <div className="card-head">
+              <h3>Native <code className="code-inline">.ipa</code></h3>
+              <div className="right"><StatusPill status="needs-cli" /></div>
+            </div>
+            <p className="tiny" style={{ marginTop: 0 }}>
+              A Capacitor shell that loads the deployed origin in a <code className="code-inline">WKWebView</code>. It adds an app icon,
+              a launch screen and safe-area handling — not a second implementation of the UI, because a second UI is a second product to
+              keep in sync.
+            </p>
+            <CopyField label="1 · scaffold the project (any OS)" value="node scripts/build-ios.mjs --team YOURTEAMID" />
+            <CopyField label="2 · on a Mac, open it in Xcode" value="cd web/ios && npm install && npx cap add ios && npx cap open ios" />
+            <CopyField label="3 · archive a signed build (Mac + Apple Developer)" value="node scripts/build-ios.mjs --team YOURTEAMID --archive" />
+            <div className="tiny" style={{ marginTop: 8 }}>
+              Signing is done by Xcode with your team, in the Signing &amp; Capabilities pane. No script can invent a certificate — that is
+              why step 3 says “Mac + Apple Developer” rather than pretending otherwise.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ---------------- macOS ---------------- */}
+      <div className="section">
+        <h2>macOS</h2>
+        <div className="grid two">
+          <div className="card">
+            <div className="card-head">
+              <h3>Build the app</h3>
+              <div className="right"><StatusPill status="live" /><span className="pill">Electron</span></div>
+            </div>
+            <CopyField label="Apple silicon or Intel — pick the arch" value="node desktop/package-mac.mjs --arch arm64 --release" />
+            <CopyField label="Signed + notarised (run on macOS)" value={'CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \\\n  APPLE_ID=you@example.com APPLE_TEAM_ID=TEAMID APPLE_APP_PASSWORD=xxxx \\\n  node desktop/package-mac.mjs --arch arm64 --release --sign'} />
+            <div className="tiny" style={{ marginTop: 8 }}>
+              Produces <code className="code-inline">desktop/release/ANTICODEX-darwin-arm64/ANTICODEX.app</code>, a
+              <code className="code-inline"> .zip</code> and (on macOS) a <code className="code-inline">.dmg</code>. Without a Developer ID
+              the bundle is unsigned — Gatekeeper will ask once, and right-click → Open works. The script prints exactly which of the two
+              it produced, so a build never claims to be signed when it is not.
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h3>Download a build</h3>
+              <div className="right">
+                {release?.ok ? <StatusPill status="live" /> : <StatusPill status="partial" />}
+              </div>
+            </div>
+            {release?.ok ? (
+              <>
+                <div className="tiny" style={{ marginBottom: 8 }}>Release {release.version} · {new Date(release.published_at).toLocaleString()}</div>
+                <table className="tbl">
+                  <caption className="sr-only">macOS downloads in this release</caption>
+                  <thead><tr><th scope="col">File</th><th scope="col">Size</th><th scope="col">Download</th></tr></thead>
+                  <tbody>
+                    {macArm && <tr><td className="mono tiny">{macArm.name}</td><td className="num">{(macArm.size / 1024 / 1024).toFixed(1)} MB</td><td><a className="btn small" href={macArm.url}>Download</a></td></tr>}
+                    {macX64 && <tr><td className="mono tiny">{macX64.name}</td><td className="num">{(macX64.size / 1024 / 1024).toFixed(1)} MB</td><td><a className="btn small" href={macX64.url}>Download</a></td></tr>}
+                    {!macArm && !macX64 && <tr><td colSpan={3} className="tiny">This release has no macOS asset yet — build it with the command on the left, or open the release page.</td></tr>}
+                  </tbody>
+                </table>
+                <div className="row" style={{ gap: 6, marginTop: 10 }}>
+                  <a className="btn small" href={`https://github.com/ThaddeusHackz/ANTICODEX/releases/tag/v${release.version}`} target="_blank" rel="noreferrer">Release page</a>
+                  <a className="btn small ghost" href="https://github.com/ThaddeusHackz/ANTICODEX/releases" target="_blank" rel="noreferrer">All releases</a>
+                </div>
+              </>
+            ) : (
+              <div className="tiny">
+                No published release could be read ({releaseErr || 'not checked yet'}). The app still builds locally with one command, and the
+                release workflow publishes macOS, Windows and Linux artifacts when a tag is pushed.
+              </div>
+            )}
+            <div className="tiny" style={{ marginTop: 10 }}>
+              The Windows build is <code className="code-inline">npm run package:win</code>; Linux uses electron-packager with
+              <code className="code-inline"> --platform=linux</code>.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ---------------- what installation buys ---------------- */}
+      <div className="section">
+        <h2>What the install adds</h2>
+        <table className="tbl">
+          <thead><tr><th>Capability</th><th>Browser</th><th>Home-screen (iOS)</th><th>Desktop app</th></tr></thead>
+          <tbody>
+            {[
+              ['Chat, skills, library, connectors', 'yes', 'yes', 'yes'],
+              ['Offline shell (app paints without network)', 'yes (service worker)', 'yes', 'yes'],
+              ['Local sandbox execution', 'only via a local server', 'no — runs on your server', 'yes'],
+              ['Daytona SSH execution', 'no — the browser cannot open port 22', 'no', 'yes'],
+              ['Computer Use (screen + input)', 'no', 'no', 'yes'],
+              ['Provider keys in the OS keychain', 'no', 'no', 'yes (safeStorage)'],
+              ['Reading ~/.qoder/skills', 'no', 'no', 'yes']
+            ].map(([cap, b, i, d]) => (
+              <tr key={cap}><td>{cap}</td><td className="tiny">{b}</td><td className="tiny">{i}</td><td className="tiny">{d}</td></tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="tiny" style={{ marginTop: 8 }}>
+          The browser cannot open an SSH socket or read your filesystem — that is the platform, not a missing feature. The desktop app is
+          where those live; the phone is a remote control for work happening on your machine or your server.
+        </div>
+      </div>
     </div>
   );
 }
