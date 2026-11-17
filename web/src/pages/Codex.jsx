@@ -307,7 +307,7 @@ export default function CodexPage() {
         provider: model.includes('::') ? model.split('::')[0] : undefined,
         effort,
         use_skills: true,
-        use_mcp: false,
+        use_mcp: true,
         system: `You are the ANTICODEX coding assistant (mode: ${mode}). Working files:\n${fileContext}\nWhen you change a file, output:\n\n\`\`\`proposed-file <path>\n<full new contents>\n\`\`\`\nOne block per file. The UI previews a real diff and applies it only through the workspace approval policy. Do not claim files were changed or commands ran without a tool result.`,
         messages: projectBlock
           ? [{ role: 'user', content: projectBlock }, ...history, { role: 'user', content }]
