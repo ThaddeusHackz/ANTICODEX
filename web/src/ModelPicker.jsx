@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import * as api from './lib/api.js';
 import { useApp } from './lib/state.jsx';
@@ -109,6 +110,16 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
   };
 
   useEffect(() => { if (index) memoryIndex = index; }, [index]);
+  // Escape must work even when the dialog is portalled out of this subtree (the
+  // topbar used to clip the old absolutely-placed menu, close button included).
+  useEffect(() => {
+    if (!open) return;
+    const onDocKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); setOpen(false); }
+    };
+    document.addEventListener('keydown', onDocKey);
+    return () => document.removeEventListener('keydown', onDocKey);
+  }, [open]);
   // Pull the index once on mount, not only on open: without it the top bar can
   // only print the raw id ("deepseek-ai/deepseek-r1") instead of the model's
   // name, and the first click has nothing to mark as current.
@@ -215,9 +226,13 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
         {currentProvider && !currentProvider.configured && <span className="mp-warn" title="this provider has no key yet">needs key</span>}
         <span className="mp-caret">▾</span>
       </button>
-      {open && (
+      {open && createPortal(
         <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
-          <div className={`modal mp-modal ${align === 'right' ? 'right' : ''}`} role="dialog" aria-label="Choose a model">
+          <div
+            className={`modal mp-modal ${align === 'right' ? 'right' : ''}`}
+            role="dialog" aria-modal="true" aria-label="Choose a model"
+            onKeyDown={onKeyDown}
+          >
             <div className="mp-head">
               <div>
                 <div className="mp-title">Choose a model</div>
@@ -228,7 +243,7 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
               </div>
               <div className="row" style={{ gap: 6 }}>
                 <button className="btn small ghost" onClick={load.bind(null, true)} disabled={busy === 'list'}>↻ Reload</button>
-                <button className="icon-btn" onClick={() => setOpen(false)} title="Close (Esc)">✕</button>
+                <button className="icon-btn mp-close" onClick={() => setOpen(false)} title="Close (Esc)" aria-label="Close model picker">✕</button>
               </div>
             </div>
             <div className="mp-tools">
@@ -351,7 +366,8 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
               <button className="btn small ghost" onClick={() => { setOpen(false); nav('/settings'); }}>Provider keys…</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

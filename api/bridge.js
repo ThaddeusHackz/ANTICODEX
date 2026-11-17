@@ -42,8 +42,8 @@ import {
 } from '../lib/qoder.js';
 import { QODER_REPOS, atlasTally as qoderAtlasTally } from '../lib/qoder-repos.js';
 import { webSearch } from '../lib/search.js';
-import { generateImage } from '../lib/flux.js';
-import { startVideo, queryVideo } from '../lib/minimax.js';
+import { generateImage, FLUX_FIX, FLUX_MODELS } from '../lib/flux.js';
+import { startVideo, queryVideo, MINIMAX_FIX } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
 import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
 import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
@@ -68,6 +68,14 @@ import { getPolicy, savePolicy, normalizePolicy, POLICY_FLAGS, policyAllows, des
 import { MCP_CATALOG, McpClient, createClient, stdioSpec, isLocalMcp, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { toolsFor, forgetTools, toolCacheSummary } from '../lib/tool-cache.js';
 import { sandboxStatus, runSandbox, readSandboxFile, clearSandbox, listRuns } from '../lib/sandbox.js';
+import {
+  deleteRemoteProfile,
+  listRemoteProfiles,
+  remoteStatus,
+  runRemoteCode,
+  saveRemoteProfile,
+  testRemoteProfile
+} from '../lib/remote.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
 
 // ---------------------------------------------------------------------------
@@ -157,9 +165,28 @@ export default async function handler(req, res) {
       }
       case 'chat': return await handleChat(body, res, req);
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
-      case 'image': return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) }));
-      case 'video_start': return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) }));
-      case 'video_status': return json(res, 200, await queryVideo(body.id));
+      // Media actions answer 200 with `{ok:false,error,fix}` on provider failure:
+      // the old throw became a generic 500 and the page's toast disappeared with
+      // the real reason. A labelled demo result (provider:'demo', demo:true) is
+      // not a failure — it is a preview, and the page says exactly that.
+      case 'image': {
+        try { return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) })); }
+        catch (e) { return json(res, 200, mediaFailure(e, FLUX_FIX)); }
+      }
+      case 'video_start': {
+        try { return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) })); }
+        catch (e) { return json(res, 200, mediaFailure(e, MINIMAX_FIX)); }
+      }
+      case 'video_status': {
+        try {
+          // Status needs the same account/device keys that started the job —
+          // without this, a valid account key queued a render and every poll
+          // read "no key" (or returned a simulated success).
+          return json(res, 200, await queryVideo(body.id, { keys: await mergedKeys(req, body) }));
+        } catch (e) {
+          return json(res, 200, { ...mediaFailure(e, MINIMAX_FIX), id: body.id || null, status: 'unknown' });
+        }
+      }
       case 'user_keys': return await handleUserKeys(req, body, res);
       case 'register': return json(res, 200, await safeAuth(() => authx.register(body)));
       case 'verify_code': return json(res, 200, await safeAuth(() => authx.verifyCode(body)));
@@ -270,9 +297,54 @@ async function handleLogout(req, body, res) {
 
 // --- config -----------------------------------------------------------------
 
+/** Where one key slot was found: the signed-in account, this device's keychain
+ *  (attached as provider_keys), or the server's env/runtime config. Never the
+ *  value itself. */
+function credentialSource(name, keys, accountEnvs) {
+  if (accountEnvs?.has?.(name)) return 'account';
+  if (keys && keys[name]) return 'device';
+  if (getKey(name)) return 'server';
+  return null;
+}
+
+/** Report the same credential resolution the media generators use. The old
+ *  `flux_configured` asked only getKey(), so it said "preview" for a working
+ *  account key and "live" for a stale server key — both wrong. `verified` is
+ *  deliberately absent: only a real render/job can prove the key. */
+function mediaCredentials(envs, keys, accountEnvs, label) {
+  const sources = {};
+  const missing = [];
+  for (const env of envs) {
+    const source = credentialSource(env, keys, accountEnvs);
+    sources[env] = source;
+    if (!source) missing.push(env);
+  }
+  const configured = missing.length === 0;
+  const found = [...new Set(Object.values(sources).filter(Boolean))];
+  const source = !configured ? null : found.length > 1 ? 'mixed' : found[0];
+  const where = { account: 'your account', device: 'this device', server: 'the server', mixed: 'a mix of account/device/server settings' }[source] || 'the configured credentials';
+  const reason = configured
+    ? `${envs.join(' + ')} found in ${where} — not verified until ${label} accepts a real request.`
+    : `Missing ${missing.join(' + ')}. Add ${missing.length === 1 ? 'it' : 'both'} in Settings → Media, or set the same env var${missing.length === 1 ? '' : 's'} on the server.`;
+  return { configured, missing, source, sources, reason };
+}
+
+/** One shape for every media provider failure, so the page can print it. */
+function mediaFailure(e, fallbackFix) {
+  return {
+    ok: false,
+    error: String(e?.message || e || 'The provider call failed.'),
+    fix: e?.fix || fallbackFix,
+    provider: e?.provider || null,
+    retryable: e?.retryable !== false
+  };
+}
+
 async function publicConfig(keys = {}, opts = {}) {
   const gh = { clientId: Boolean(getKey('GITHUB_CLIENT_ID') || process.env.GITHUB_CLIENT_ID), secret: Boolean(getKey('GITHUB_CLIENT_SECRET') || process.env.GITHUB_CLIENT_SECRET) };
   const supa = authx.supabaseInfo();
+  const flux = mediaCredentials(['CF_ACCOUNT_ID', 'CF_API_TOKEN'], keys, opts.accountEnvs, 'Cloudflare Flux');
+  const minimax = mediaCredentials(['MINIMAX_API_KEY'], keys, opts.accountEnvs, 'MiniMax Hailuo');
   return {
     name: 'ANTICODEX',
     version: VERSION,
@@ -316,8 +388,22 @@ async function publicConfig(keys = {}, opts = {}) {
       windy: Boolean(getKey('WINDY_API_KEY')), opensky: Boolean(getKey('OPENSKY_CLIENT_ID')),
       youtube: Boolean(getKey('YOUTUBE_API_KEY')), groq: Boolean(getKey('GROQ_API_KEY'))
     },
-    flux_configured: Boolean(getKey('CF_API_TOKEN') && getKey('CF_ACCOUNT_ID')),
-    minimax_configured: Boolean(getKey('MINIMAX_API_KEY')),
+    flux_configured: flux.configured,
+    flux_missing: flux.missing,
+    flux_source: flux.source,
+    flux_sources: flux.sources,
+    flux_reason: flux.reason,
+    minimax_configured: minimax.configured,
+    minimax_missing: minimax.missing,
+    minimax_source: minimax.source,
+    minimax_sources: minimax.sources,
+    minimax_reason: minimax.reason,
+    // Model lists come from the provider catalog, not from a UI copy that can
+    // drift. The studio renders exactly what the backend will accept.
+    media: {
+      flux_models: FLUX_MODELS,
+      video_models: CATALOG.minimax.models
+    },
     // Key material never leaves the server — not even which optional
     // infrastructure is wired up; nothing in the client read these flags.
     account_keys: (opts.accountEnvs && [...opts.accountEnvs]) || [],
@@ -1013,7 +1099,13 @@ async function handleSandbox(req, body, res) {
     });
   }
   const op = body.op || 'status';
-  if (op === 'status') return json(res, 200, { ok: true, ...sandboxStatus(), runs: listRuns() });
+  const account = String(body.account || body.user_id || 'default');
+  if (op === 'status') {
+    return json(res, 200, {
+      ok: true, ...sandboxStatus(), runs: listRuns(),
+      remote: remoteStatus(account)
+    });
+  }
   if (op === 'run') {
     const out = await runSandbox({
       language: body.language, code: body.code, timeout_ms: body.timeout_ms,
@@ -1028,6 +1120,38 @@ async function handleSandbox(req, body, res) {
   }
   if (op === 'read') return json(res, 200, readSandboxFile(body.run_id, body.name));
   if (op === 'clear') return json(res, 200, clearSandbox(body.run_id));
+
+  // --- remote SSH (Daytona and other machines) -----------------------------
+  // Profiles hold no secret: host/port/user/label and an optional key *path*.
+  // The key is read by OpenSSH on this machine, never by this process.
+  if (op === 'remote_status') return json(res, 200, remoteStatus(account));
+  if (op === 'remote_profiles') {
+    return json(res, 200, { ok: true, profiles: listRemoteProfiles(account), count: listRemoteProfiles(account).length });
+  }
+  if (op === 'remote_save') {
+    const out = saveRemoteProfile(account, body.profile || {});
+    if (out.ok) await audit({ type: 'sandbox.remote_save', host: out.profile.host, port: out.profile.port, ip: clientIp(req) }).catch(() => {});
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  if (op === 'remote_delete') {
+    return json(res, 200, deleteRemoteProfile(account, body.id));
+  }
+  if (op === 'remote_test') {
+    const out = await testRemoteProfile(account, body.profile || { id: body.id });
+    await audit({ type: 'sandbox.remote_test', ok: Boolean(out.ok), host: out.host || null, ip: clientIp(req) }).catch(() => {});
+    return json(res, 200, out);
+  }
+  if (op === 'remote_run') {
+    const out = await runRemoteCode(account, {
+      id: body.id, language: body.language, code: body.code, timeout_ms: body.timeout_ms
+    });
+    await audit({
+      type: 'sandbox.remote_run', host: out.host || null, language: out.language || body.language,
+      ok: Boolean(out.ok), exit_code: out.exit_code ?? null, timed_out: Boolean(out.timed_out),
+      duration_ms: out.duration_ms ?? null, ip: clientIp(req)
+    }).catch(() => {});
+    return json(res, 200, out);
+  }
   return json(res, 400, { ok: false, error: `Unknown sandbox op "${op}".` });
 }
 
@@ -1800,6 +1924,7 @@ async function handleSkills(req, body, res) {
     cwd: local ? (body.cwd || REPO_ROOT) : null,
     codexHome: local ? body.codex_home : null,
     claudeHome: local ? body.claude_home : null,
+    qoderHome: local ? body.qoder_home : null,
     extra,
     archives
   });
@@ -1821,7 +1946,7 @@ async function handleSkills(req, body, res) {
       errors: loaded.errors,
       duplicates: loaded.duplicates,
       roots: loaded.roots,
-      note: local ? null : 'Only the bundled repository skills are visible here — open the desktop app (or run locally) to see this machine\'s ~/.codex and ~/.claude skills.'
+      note: local ? null : 'Only the bundled repository skills are visible here — open the desktop app (or run locally) to see this machine\'s ~/.codex, ~/.claude and ~/.qoder skills.'
     });
   }
 

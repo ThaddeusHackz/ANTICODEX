@@ -1,12 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { chat as chatApi, skills as skillsApi } from '../lib/api.js';
-import { useApp } from '../lib/state.jsx';
+import { useApp, userKey } from '../lib/state.jsx';
+import SkillPicker from '../SkillPicker.jsx';
+import Icon from '../Icon.jsx';
 import { modelLabel } from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { Pill, Field, CopyBtn, Switch } from '../ui.jsx';
 
 export default function ClaudePage() {
-  const { model, notify } = useApp();
+  const { model, notify, user } = useApp();
+  const activeSkillsKey = userKey('acx_enabled_skills', user?.id);
   const [memory, setMemory] = useState(() => localStorage.getItem('acx_memory') ||
     '# ANTICODEX.md — project memory\n\n- Product: ANTICODEX universal AI workspace\n- Stack: React + Vite web, Node bridge API, Supabase, Electron desktop\n- Style: crisp, geometric, dark-first\n');
   const [messages, setMessages] = useState([]);
@@ -25,8 +28,9 @@ export default function ClaudePage() {
   const [skillErrors, setSkillErrors] = useState([]);
   const [skillNote, setSkillNote] = useState(null);
   const [activeSkills, setActiveSkills] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('acx_active_skills') || '[]'); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem(activeSkillsKey) || '[]'); } catch { return []; }
   });
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [installing, setInstalling] = useState(false);
   // Installing writes to this machine, so it is offered only where the app can
   // reach the filesystem — the desktop build, not a hosted page.
@@ -59,8 +63,12 @@ export default function ClaudePage() {
   }, []);
 
   useEffect(() => {
-    try { localStorage.setItem('acx_active_skills', JSON.stringify(activeSkills)); } catch { /* quota */ }
-  }, [activeSkills]);
+    try { localStorage.setItem(activeSkillsKey, JSON.stringify(activeSkills)); } catch { /* quota */ }
+  }, [activeSkills, activeSkillsKey]);
+
+  useEffect(() => {
+    try { setActiveSkills(JSON.parse(localStorage.getItem(activeSkillsKey) || '[]')); } catch { setActiveSkills([]); }
+  }, [activeSkillsKey]);
 
   const toggleSkill = (name) => setActiveSkills((cur) => cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name]);
 
@@ -185,11 +193,20 @@ export default function ClaudePage() {
               <span className="tiny">a packaged skill is a ZIP with &lt;name&gt;/SKILL.md</span>
             </div>
           )}
+          <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn small primary" onClick={() => setSkillsOpen(true)}>
+              <Icon name="skills" size={14} /> Browse all skills
+            </button>
+            <span className="tiny">mention one with <span className="mono">$name</span></span>
+          </div>
           <div className="tiny" style={{ marginTop: 8 }}>
             {skills.length} skill(s) from {new Set(skills.map((s) => s.scope)).size} scope(s)
-            {activeSkills.length ? ` · ${activeSkills.length} active` : ''} · mention one with <span className="mono">$name</span>
+            {activeSkills.length ? ` · ${activeSkills.length} active` : ''}
             {skillNote ? ` — ${skillNote}` : ''}
           </div>
+          <SkillPicker open={skillsOpen} onClose={() => setSkillsOpen(false)} onChanged={() => {
+            try { setActiveSkills(JSON.parse(localStorage.getItem(activeSkillsKey) || '[]')); } catch { /* ignored */ }
+          }} />
         </div>
       </div>
 

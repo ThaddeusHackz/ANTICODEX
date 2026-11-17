@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { chat as chatApi, workspace as workspaceApi, workspaceFs, egress as egressApi, mcp as mcpApi, rea as reaApi } from '../lib/api.js';
+import { chat as chatApi, workspace as workspaceApi, workspaceFs, egress as egressApi, mcp as mcpApi, rea as reaApi, skills as skillsApi } from '../lib/api.js';
 import { Link } from 'react-router-dom';
 import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { CopyBtn, Pill } from '../ui.jsx';
+import SkillPicker from '../SkillPicker.jsx';
+import Icon from '../Icon.jsx';
 
 // The seeded files are the DEMO workspace: hosted visitors get a virtual tree
 // and the page says so. On the desktop app or a local server the same page
@@ -48,6 +50,7 @@ export default function CodexPage() {
   const { model, notify, user } = useApp();
   const account = String(user?.id ?? 'anon');
   const fsKey = userKey('acx_fs', user?.id);
+  const enabledSkillsKey = userKey('acx_enabled_skills', user?.id);
   const readFs = (k) => {
     try { return JSON.parse(localStorage.getItem(k) || 'null') || SEED_FS; } catch { return SEED_FS; }
   };
@@ -87,6 +90,8 @@ export default function CodexPage() {
   const [cwd, setCwd] = useState(() => localStorage.getItem('acx_workspace_cwd') || '');
   const [egress, setEgress] = useState({ running: false, local: true, allowed: 0, denied: 0 });
   const [agentTools, setAgentTools] = useState({ loading: true, connections: [], rea: null });
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillCount, setSkillCount] = useState(0);
 
   // demo persistence (only when there is no real folder)
   useEffect(() => { setDemoFs(readFs(fsKey)); }, [fsKey]);
@@ -95,6 +100,18 @@ export default function CodexPage() {
   }, [demoFs, fsKey, wsMode]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, term, proposals]);
   useEffect(() => { const m = MODES.find((x) => x.id === mode); if (m) setSandbox(m.sandbox); }, [mode]);
+
+  // The Codex agent uses the same account-scoped skill set as Chat and Agent
+  // Studio. The chip is a real count: those bodies are added to the prompt.
+  useEffect(() => {
+    const read = () => {
+      try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { setSkillCount(0); }
+    };
+    read();
+    window.addEventListener('storage', read);
+    window.addEventListener('acx:skills', read);
+    return () => { window.removeEventListener('storage', read); window.removeEventListener('acx:skills', read); };
+  }, [enabledSkillsKey, skillsOpen]);
 
   const loadDir = useCallback(async (dir = '') => {
     const r = await workspaceFs.list(dir, policy());
@@ -283,6 +300,29 @@ export default function CodexPage() {
     return parts.join('\n\n') || '(workspace is empty)';
   }
 
+  async function skillBlockFor(text) {
+    let names = [];
+    try { names = JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]'); } catch { /* private mode */ }
+    try {
+      const mentioned = await skillsApi.resolve(text);
+      names = [...new Set([...names, ...(mentioned.matched || []).map((m) => m.name)])];
+    } catch { /* the registry is optional */ }
+    const blocks = [];
+    let bytes = 0;
+    for (const name of names.slice(0, 8)) {
+      try {
+        const r = await skillsApi.get(name);
+        if (!r?.ok || !r.instructions) continue;
+        if (bytes + r.instructions.length > 60000) break;
+        bytes += r.instructions.length;
+        blocks.push(r.instructions);
+      } catch { /* one broken skill must not kill the answer */ }
+    }
+    return blocks.length
+      ? `\n\nThe user enabled these skills for this task. Follow their instructions when relevant:\n\n${blocks.join('\n\n')}`
+      : '';
+  }
+
   async function askAgent() {
     const content = input.trim();
     if (!content || busy) return;
@@ -291,10 +331,11 @@ export default function CodexPage() {
     try {
       const fileContext = await fileContextForPrompt();
       const projectBlock = agents?.ok && agents.instructions ? agents.instructions : '';
+      const skillBlock = await skillBlockFor(content);
       const r = await chatApi({
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
         provider: model.includes('::') ? model.split('::')[0] : undefined,
-        system: `You are the ANTICODEX Codex agent (mode: ${mode}). Working files:\n${fileContext}\nWhen you change a file, output:\n\n\`\`\`proposed-file <path>\n<full new contents>\n\`\`\`\nOne block per file. The UI previews a real diff and applies it only with approval (or automatically when the policy allows writes).`,
+        system: `You are the ANTICODEX Codex agent (mode: ${mode}). Working files:\n${fileContext}\nWhen you change a file, output:\n\n\`\`\`proposed-file <path>\n<full new contents>\n\`\`\`\nOne block per file. The UI previews a real diff and applies it only with approval (or automatically when the policy allows writes).${skillBlock}`,
         messages: projectBlock
           ? [{ role: 'user', content: projectBlock }, ...messages, { role: 'user', content }]
           : [...messages, { role: 'user', content }]
@@ -384,7 +425,7 @@ export default function CodexPage() {
               if (openDirs[d.path]) setOpenDirs((o) => ({ ...o, [d.path]: false }));
               else { setOpenDirs((o) => ({ ...o, [d.path]: true })); if (!nodes[d.path]) loadDir(d.path); }
             }}>
-              {openDirs[d.path] ? '▾' : '▸'} {d.name}/
+              <Icon name="folder" size={14} /> {d.name}/
             </button>
             {openDirs[d.path] && <TreeNode dir={d.path} depth={depth + 1} />}
           </div>
@@ -392,7 +433,7 @@ export default function CodexPage() {
         {n.files.map((f) => (
           <button key={f.path} className={`file-item ${active?.path === f.path ? 'active' : ''}`}
             style={{ paddingLeft: 10 + depth * 12 }} onClick={() => openFile(f.path)}>
-            ▤ {f.name} <span className="tiny" style={{ opacity: 0.5 }}>{f.bytes}B</span>
+            <Icon name="file" size={14} /> {f.name} <span className="tiny" style={{ opacity: 0.5 }}>{f.bytes}B</span>
           </button>
         ))}
       </>
@@ -400,6 +441,8 @@ export default function CodexPage() {
   }
 
   const dirty = active && active.content !== active.base;
+  const rootListing = nodes[''] || null;
+  const rootEmpty = wsMode === 'real' && rootListing && rootListing.files.length === 0 && rootListing.dirs.length === 0;
 
   return (
     <div className="workspace">
@@ -419,14 +462,21 @@ export default function CodexPage() {
           <>
             {Object.keys(demoFs).map((f) => (
               <button key={f} className={`file-item ${active?.path === f ? 'active' : ''}`}
-                onClick={() => setActive({ path: f, content: demoFs[f], base: demoFs[f] })}>▤ {f}</button>
+                onClick={() => setActive({ path: f, content: demoFs[f], base: demoFs[f] })}><Icon name="file" size={14} /> {f}</button>
             ))}
             <div className="tiny" style={{ padding: 10, opacity: 0.8 }}>
-              Virtual demo workspace — <Link to="/desktop" style={{ color: 'var(--accent, #7c5cff)' }}>ANTICODEX Desktop</Link> (or your own <code>npm start</code>) edits a real folder here.
+              Virtual demo workspace — <Link to="/install" style={{ color: 'var(--accent, #7c5cff)' }}>ANTICODEX Desktop</Link> (or your own <code>npm start</code>) edits a real folder here.
             </div>
           </>
         )}
         {wsMode === 'real' && <TreeNode dir="" depth={0} />}
+        {rootEmpty && (
+          <div className="tree-empty">
+            <Icon name="folder" size={22} />
+            <span>This workspace is empty.</span>
+            <button className="btn small ghost" onClick={newFile}>+ New file</button>
+          </div>
+        )}
 
         <div className="nav-section" style={{ marginTop: 14 }}>Approval mode</div>
         {MODES.map((m) => (
@@ -505,7 +555,18 @@ export default function CodexPage() {
             placeholder="empty file"
           />
         ) : (
-          <div className="muted" style={{ padding: 16, flex: 1 }}>Select a file from the tree.</div>
+          <div className="editor-empty">
+            <span className="editor-empty-icon"><Icon name={wsMode === 'checking' ? 'refresh' : 'codex'} size={26} /></span>
+            <b>{wsMode === 'checking' ? 'Opening workspace…' : rootEmpty ? 'Start with a file' : 'No file open'}</b>
+            <p className="muted">
+              {wsMode === 'checking'
+                ? 'Checking whether this machine can read a workspace folder.'
+                : rootEmpty
+                  ? 'This account’s workspace folder exists but has no files yet. Create one, then edit it here or ask the agent to write it.'
+                  : 'Choose a file from the tree to edit it, or ask the Codex agent to create one.'}
+            </p>
+            {wsMode === 'real' && <button className="btn small primary" onClick={newFile}><Icon name="plus" size={14} /> New file</button>}
+          </div>
         )}
         <div className="term">
           {term.map((t, i) => (
@@ -598,12 +659,26 @@ export default function CodexPage() {
             />
             <div className="composer-bar">
               <ModelPicker compact />
+              <button
+                type="button"
+                className={`chip-toggle skill-chip ${skillCount ? 'on' : ''}`}
+                onClick={() => setSkillsOpen(true)}
+                title="Skills this agent will receive"
+              >
+                <Icon name="skills" size={13} /> Skills{skillCount ? ` ${skillCount}` : ''}
+              </button>
               <div style={{ flex: 1 }} />
+              <Link className="btn small ghost" to="/sandbox" title="Run on a remote machine">SSH sandbox ↗</Link>
               <button className="btn primary small" disabled={busy || !input.trim()} onClick={askAgent}>{busy ? '…' : 'Run ⏎'}</button>
             </div>
           </div>
         </div>
       </div>
+      <SkillPicker
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+        onChanged={() => { try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { /* ignored */ } }}
+      />
     </div>
   );
 }

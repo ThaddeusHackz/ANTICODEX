@@ -1,0 +1,156 @@
+/* Image Studio + Video Studio. Imported by those two pages so the app-wide
+   styles.css stays the shared sheet; every rule here uses its design tokens. */
+
+/* ---------- page head ---------- */
+.studio-head { align-items: flex-start; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.studio-head-main { min-width: 0; flex: 1 1 420px; }
+.studio-title { margin: 0; display: flex; align-items: center; gap: 9px; }
+.studio-sub { margin: 4px 0 0; max-width: 86ch; font-size: 13px; line-height: 1.55; }
+.studio-head-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- provider status ---------- */
+.studio-status {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: #ffffff06; padding: 10px 12px; margin: 0 0 14px;
+}
+.studio-status-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none; margin-top: 5px;
+  background: var(--muted); box-shadow: 0 0 0 3px #ffffff0a;
+}
+.studio-status-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px #34d3991f; }
+.studio-status-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px #fbbf241f; }
+.studio-status-dot.danger { background: var(--danger); box-shadow: 0 0 0 3px #f871711f; }
+.studio-status-body { flex: 1 1 320px; min-width: 0; display: grid; gap: 2px; }
+.studio-status-label { font-size: 12.5px; font-weight: 700; }
+.studio-status-reason { font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+
+/* ---------- form ---------- */
+.studio-form { display: block; }
+.studio-presets { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 12px; }
+.studio-presets .chip-toggle { height: 29px; padding: 0 10px; font-size: 12px; }
+.studio-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.studio-actions .tiny { flex: 1 1 240px; min-width: 0; line-height: 1.45; }
+
+/* ---------- notices / errors ---------- */
+.studio-alert, .studio-notice {
+  border-radius: 12px; padding: 12px 14px; margin: 0 0 14px;
+  border: 1px solid var(--border); overflow-wrap: anywhere;
+}
+.studio-alert { border-color: #7f1d1d; background: #2a1414; }
+.studio-notice { border-color: #6b5314; background: #28220f; }
+.studio-alert-title, .studio-notice-title { font-size: 13px; font-weight: 750; margin: 0 0 4px; }
+.studio-alert-body, .studio-notice-body { font-size: 12.5px; line-height: 1.55; color: var(--text-2); }
+.studio-fix { margin-top: 7px; font-size: 12px; line-height: 1.5; color: var(--warn); }
+.studio-alert code, .studio-notice code {
+  font-family: var(--mono); font-size: 11.5px; background: #ffffff14;
+  padding: 1px 6px; border-radius: 6px; color: var(--text);
+}
+
+/* ---------- results toolbar ---------- */
+.studio-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 18px 0 10px;
+}
+.studio-count { font-size: 12.5px; color: var(--muted); }
+.studio-count b { color: var(--text); font-variant-numeric: tabular-nums; }
+.studio-toolbar-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+
+/* ---------- image cards ---------- */
+.studio-card { display: flex; flex-direction: column; min-width: 0; }
+.studio-media { position: relative; background: #0d0d0d; }
+.studio-media img, .studio-media video { display: block; width: 100%; }
+.studio-media img { max-height: 520px; object-fit: contain; background: #0d0d0d; }
+.studio-preview-badge {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(0, 0, 0, .62); color: var(--warn);
+  border: 1px solid #fbbf2455; border-radius: 7px;
+  padding: 2px 8px; font-size: 10.5px; font-weight: 700; letter-spacing: .02em;
+}
+.studio-meta { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.studio-prompt {
+  font-size: 12.5px; line-height: 1.4; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.studio-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.studio-seed { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.studio-actions-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.studio-actions-row .btn { white-space: nowrap; }
+
+/* ---------- video jobs ---------- */
+.studio-job { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.studio-job-head { display: flex; align-items: flex-start; gap: 10px; }
+.studio-job-main { flex: 1 1 auto; min-width: 0; }
+.studio-job-title { font-size: 13.5px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
+.studio-job-meta {
+  display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap;
+  margin-top: 3px; font-size: 11.5px; color: var(--muted);
+}
+.studio-job-id { font-family: var(--mono); font-size: 10.5px; opacity: .8; overflow-wrap: anywhere; }
+
+/* ---------- timeline ---------- */
+.studio-timeline { display: flex; align-items: flex-start; gap: 6px; }
+.studio-step { display: flex; align-items: flex-start; gap: 6px; flex: 1 1 0; min-width: 0; }
+.studio-step + .studio-step { border-left: 1px solid var(--border); padding-left: 8px; }
+.studio-step-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none; margin-top: 4px;
+  background: #ffffff24; box-shadow: inset 0 0 0 1px #ffffff14;
+}
+.studio-step.done .studio-step-dot { background: var(--ok); box-shadow: none; }
+.studio-step.current .studio-step-dot {
+  background: var(--cyan); box-shadow: 0 0 0 3px #22d3ee1f;
+  animation: studio-pulse 1.25s ease-in-out infinite;
+}
+.studio-step.failed .studio-step-dot { background: var(--danger); box-shadow: none; }
+.studio-step-body { min-width: 0; }
+.studio-step-label { font-size: 11px; font-weight: 650; color: var(--muted); white-space: nowrap; }
+.studio-step.current .studio-step-label { color: var(--text); }
+.studio-step.failed .studio-step-label { color: var(--danger); }
+.studio-step-time {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap; margin-top: 1px;
+}
+@keyframes studio-pulse { 0%, 100% { opacity: .45; transform: scale(.9); } 50% { opacity: 1; transform: scale(1); } }
+
+/* ---------- processing / preview / file ---------- */
+.studio-progress {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: #ffffff06; padding: 10px 12px;
+}
+.studio-spinner {
+  width: 15px; height: 15px; border-radius: 50%; flex: none;
+  border: 2px solid #ffffff24; border-top-color: var(--cyan);
+  animation: studio-spin .9s linear infinite;
+}
+@keyframes studio-spin { to { transform: rotate(360deg); } }
+.studio-progress-main { flex: 1 1 220px; min-width: 0; display: grid; gap: 2px; }
+.studio-progress-title { font-size: 12.5px; font-weight: 650; }
+.studio-elapsed { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
+.studio-demo {
+  border: 1px solid #6b5314; border-radius: 10px; padding: 14px;
+  background: linear-gradient(135deg, #211b0d, #171d2c);
+  text-align: center;
+}
+.studio-demo-title { font-size: 13px; font-weight: 700; color: var(--warn); margin-bottom: 4px; }
+.studio-demo-body { font-size: 12px; color: var(--text-2); line-height: 1.55; margin: 0 auto; max-width: 64ch; }
+.studio-file {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border: 1px dashed var(--border); border-radius: 10px;
+  background: #ffffff06; padding: 10px 12px;
+  font-size: 12px; color: var(--text-2);
+}
+.studio-file .mono { overflow-wrap: anywhere; }
+.studio-video { display: block; width: 100%; max-height: 460px; background: #000; }
+
+@media (max-width: 720px) {
+  .studio-head-side { width: 100%; }
+  .studio-toolbar-actions { margin-left: 0; }
+  .studio-timeline { flex-wrap: wrap; }
+  .studio-step { flex: 1 1 45%; }
+  .studio-step + .studio-step { border-left: 0; padding-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-step.current .studio-step-dot, .studio-spinner { animation: none; }
+}

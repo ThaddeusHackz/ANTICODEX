@@ -1,0 +1,182 @@
+/* Install page styles — imported ONLY by web/src/pages/Install.jsx.
+   Every selector is scoped under .install-page so nothing leaks into the app
+   shell. Colors/spacing come from the real design tokens in styles.css
+   (--bg, --bg-elev, --border, --text, --muted, --accent, --radius, …) — no
+   invented palette. */
+
+.install-page {
+  min-height: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+  color: var(--text);
+  font-family: var(--font);
+}
+
+.install-page h1 {
+  margin: 16px 0 8px;
+  font-size: 32px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.install-page h2 {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.install-page h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.install-page p { margin: 10px 0; }
+
+/* Hero */
+.install-hero { text-align: center; margin-bottom: 32px; }
+.install-logo {
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+}
+.install-tagline { color: var(--muted); font-size: 16px; margin: 0 0 16px; }
+.install-version-pill {
+  display: inline-block;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* Banners + status text */
+.install-banner {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  margin-bottom: 24px;
+  font-size: 14px;
+}
+.install-banner-ok { border-color: var(--ok); color: var(--ok); background: var(--bg-elev); }
+.install-muted { color: var(--muted); font-size: 13px; }
+.install-warn { color: var(--warn); font-size: 14px; }
+.install-ok-text { color: var(--ok); font-size: 14px; }
+
+/* Cards */
+.install-current { margin-bottom: 40px; }
+.install-platforms { margin-top: 8px; }
+.install-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.install-card-active { border-color: var(--accent); }
+.install-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.install-badge {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+.install-kind {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.install-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+.install-grid .install-card p { color: var(--text-2); font-size: 13px; margin-bottom: 0; }
+
+/* Steps */
+.install-steps {
+  margin: 14px 0;
+  padding-left: 0;
+  list-style: none;
+  counter-reset: install-step;
+}
+.install-steps li {
+  counter-increment: install-step;
+  position: relative;
+  padding: 8px 0 8px 44px;
+  font-size: 14px;
+}
+.install-steps li::before {
+  content: counter(install-step);
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+.install-share-icon { vertical-align: -3px; color: var(--accent); }
+
+/* Buttons + code */
+.install-btn {
+  display: inline-block;
+  margin: 8px 0;
+  padding: 10px 22px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.install-btn:hover { filter: brightness(1.1); }
+.install-btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.install-code {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-x: auto;
+}
+
+/* Footer */
+.install-footer {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.install-footer a { color: var(--accent); }
+
+@media (max-width: 600px) {
+  .install-page { padding: 32px 16px 48px; }
+  .install-page h1 { font-size: 26px; }
+}

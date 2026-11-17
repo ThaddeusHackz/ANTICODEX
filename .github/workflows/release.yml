@@ -66,6 +66,63 @@ jobs:
           name: ANTICODEX-win32-x64
           path: release/ANTICODEX-*-win32-x64.zip
 
+  # macOS builds must happen on macOS: Electron's darwin payload and the .app
+  # bundle layout cannot be produced honestly on Linux. The output is the same
+  # unsigned zip the Install page offers; signing/notarization is not configured
+  # anywhere in this repo, so the job does not pretend it is.
+  macos:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web bundle
+        run: |
+          cd web
+          npm ci || npm install
+          npm run build
+      - name: Install desktop packaging deps
+        working-directory: desktop
+        run: npm ci || npm install
+      - name: Build ANTICODEX for macOS (arm64 + x64)
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run package:mac
+      - name: Verify the assets match the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v=$(node -p "require('./desktop/package.json').version")
+          if [ "v$v" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match desktop/package.json version $v — installed apps would never see this release."
+            exit 1
+          fi
+          for arch in arm64 x64; do
+            if [ ! -f "release/ANTICODEX-$v-darwin-$arch.zip" ]; then
+              echo "::error::release/ANTICODEX-$v-darwin-$arch.zip was not produced by package:mac"
+              exit 1
+            fi
+          done
+        env:
+          TAG: ${{ github.ref_name }}
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release/ANTICODEX-*-darwin-*.zip
+          generate_release_notes: true
+      - name: Upload build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ANTICODEX-darwin
+          path: release/ANTICODEX-*-darwin-*.zip
+
   tests:
     runs-on: ubuntu-latest
     strategy:

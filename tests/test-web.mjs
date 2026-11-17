@@ -49,7 +49,7 @@ const bundleAge = fs.statSync(path.join(dist, 'index.html')).mtimeMs;
 ok('the bundle being graded is not older than web/src', bundleAge >= newestSrc - 1000,
   ' → web/dist predates the source; run `npm run build --prefix web`');
 
-for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer Use', 'NVIDIA', 'Tavily', 'Exa', 'Forgot', 'pairing']) {
+for (const needle of ['ANTICODEX', 'MCP', 'Codex', 'Flux', 'Hailuo', 'Computer Use', 'NVIDIA', 'Tavily', 'Exa', 'Forgot', 'pairing', 'Qoder', 'Remote over SSH', 'ssh.app.daytona.io']) {
   ok(`bundle contains "${needle}"`, js.includes(needle) || css.includes(needle));
 }
 // Admin credentials live only on the server, never in the web bundle.
@@ -73,7 +73,20 @@ const jsxFiles = [];
     if (fs.statSync(p2).isDirectory()) walk(p2); else if (/\.jsx?$/.test(f)) jsxFiles.push(p2);
   }
 })(srcRoot);
-const cssSrc = fs.readFileSync(path.join(srcRoot, 'styles.css'), 'utf8');
+// Install.jsx imports install.css directly, so coverage has to include it or a
+// page-level rule can ship missing while the test grades only the global sheet.
+// Every stylesheet under web/src counts: page-scoped sheets (brand.css,
+// library.css, studio.css) are imported by their component and are just as real
+// as the global sheet.
+const cssFiles = [];
+(function walkCss(d) {
+  for (const f of fs.readdirSync(d)) {
+    const p2 = path.join(d, f);
+    if (fs.statSync(p2).isDirectory()) walkCss(p2);
+    else if (f.endsWith('.css')) cssFiles.push(p2);
+  }
+})(srcRoot);
+const cssSrc = cssFiles.map((f) => fs.readFileSync(f, 'utf8')).join('\n');
 const styled = new Set([...cssSrc.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]));
 // classes that are behaviour/state hooks only, styled through a parent selector
 const HOOK_ONLY = new Set(['tab']);
@@ -83,11 +96,11 @@ for (const f of jsxFiles) {
   for (const m of src.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
     const raw = (m[1] || m[2] || '').replace(/\$\{[^}]*\}/g, ' ');
     for (const c of raw.split(/\s+/)) {
-      if (c && /^[A-Za-z][\w-]*$/.test(c) && !styled.has(c) && !HOOK_ONLY.has(c)) unstyled.push(`${path.basename(f)}: .${c}`);
+      if (c && /^[A-Za-z][\w-]*$/.test(c) && !c.endsWith('--') && !styled.has(c) && !HOOK_ONLY.has(c)) unstyled.push(`${path.basename(f)}: .${c}`);
     }
   }
 }
-ok('every className used by a page has a rule in styles.css', unstyled.length === 0);
+ok('every className used by a page has a rule in the app stylesheets', unstyled.length === 0);
 if (unstyled.length) console.log('      ' + [...new Set(unstyled)].join(', '));
 
 ok('codex workspace is sized by flex (no 100vh overflow clipping)',
@@ -101,6 +114,13 @@ ok('panes stack on narrow windows (desktop minimum size)', (() => {
   return i > 0 && /\.workspace\s*\{\s*flex-direction: column/.test(cssSrc.slice(i, i + 700));
 })());
 ok('main allows panes to shrink', /\.main\s*\{[^}]*min-height: 0/.test(cssSrc));
+ok('remote SSH sandbox has a target switch and profile styles',
+  /\.sb-target\s*\{/.test(cssSrc) && /\.sb-remote\s*\{/.test(cssSrc) && /\.sb-profile\s*\{/.test(cssSrc));
+ok('universal skill picker is styled (not a bare list)',
+  /\.skill-picker\s*\{/.test(cssSrc) && /\.skill-row-main\s*\{/.test(cssSrc) && /\.skill-preview\s*\{/.test(cssSrc));
+ok('empty-chat hero and mode cards have layout rules',
+  /\.hero-mark\s*\{/.test(cssSrc) && /\.mode-grid\s*\{/.test(cssSrc) && /\.mode-card\s*\{/.test(cssSrc));
+ok('the SVG shell icon set has a base rule', /\.acx-icon\s*\{/.test(cssSrc));
 
 // A named import that the module does not export renders a blank page (React
 // throws at render time), so it is worth failing CI on.
@@ -137,6 +157,31 @@ console.log('\n— repo integrity —');
 for (const f of ['api/bridge.js', 'server.mjs', 'supabase/schema.sql', 'skills/leanrea/SKILL.md',
   'skills/reverse-engineer-anything/SKILL.md', 'docs/FORENSIC-REPORT.md', 'desktop/main.mjs', 'desktop/package.json']) {
   ok(`${f} exists`, fs.existsSync(path.join(root, f)));
+}
+
+// A key pasted into a chat must never become a fixture. Walk the source tree and
+// fail on the prefixes of the credentials this project has been asked to hold.
+// `data/` is gitignored runtime config and is deliberately not read here.
+{
+  const banned = [/sk-numes-v1-[A-Za-z0-9]{20,}/, /github_pat_[A-Za-z0-9_]{20,}/, /nvapi-[A-Za-z0-9_-]{20,}/, /sk-ant-[A-Za-z0-9_-]{20,}/];
+  const skip = new Set(['node_modules', 'dist', '.git', 'data', 'release', 'vendor', 'tests']);
+  const hits = [];
+  const walk = (dir, depth = 0) => {
+    if (depth > 6) return;
+    let rows = [];
+    try { rows = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of rows) {
+      if (skip.has(e.name)) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(p, depth + 1); continue; }
+      if (!/\.(mjs|js|jsx|json|md|css|html|yml|yaml|toml|env)$/i.test(e.name)) continue;
+      let text = '';
+      try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
+      if (banned.some((re) => re.test(text))) hits.push(path.relative(root, p));
+    }
+  };
+  walk(root);
+  ok('no live API key or GitHub token is committed in the source tree', hits.length === 0, hits.join(', '));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

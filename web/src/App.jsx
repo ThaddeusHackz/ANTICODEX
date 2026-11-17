@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { useApp, loadThreads, mergeThreads } from './lib/state.jsx';
+import { useApp, loadThreads, mergeThreads, deleteThreadLocal, threadsChanged } from './lib/state.jsx';
 import * as api from './lib/api.js';
 import { Brand, Toast } from './ui.jsx';
+import Icon from './Icon.jsx';
 import ModelPicker from './ModelPicker.jsx';
 import EffortPicker from './EffortPicker.jsx';
+import SearchChats from './SearchChats.jsx';
 import ChatPage from './pages/Chat.jsx';
 import CodexPage from './pages/Codex.jsx';
 import ClaudePage from './pages/Claude.jsx';
+import LibraryPage from './pages/Library.jsx';
 import ImagesPage from './pages/Images.jsx';
 import VideoPage from './pages/Video.jsx';
 import McpPage from './pages/Mcp.jsx';
@@ -19,24 +22,34 @@ import ComputerPage from './pages/Computer.jsx';
 import SettingsPage from './pages/Settings.jsx';
 import AdminPage from './pages/Admin.jsx';
 import SetupPage from './pages/Setup.jsx';
+import InstallPage from './pages/Install.jsx';
 import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler, DesktopLinkHandler, DesktopDeepLinkHandler } from './pages/Auth.jsx';
 
-// Sidebar nav mirrors the reverse-engineered ChatGPT desktop rail (new chat,
-// search, library, codex) with ANTICODEX sections added below.
-const NAV = [
-  { to: '/', icon: '⌗', label: 'Chat', end: true, main: true },
-  { to: '/codex', icon: '⌘', label: 'Codex', main: true },
-  { to: '/claude', icon: '✳', label: 'Agent Studio', main: true },
-  { to: '/sandbox', icon: '⌥', label: 'Sandbox' },
-  { to: '/images', icon: '▦', label: 'Images' },
-  { to: '/video', icon: '▶', label: 'Video' },
-  { to: '/mcp', icon: '⇄', label: 'Connectors' },
-  { to: '/computer', icon: '▣', label: 'Computer Use' },
-  { to: '/skills', icon: '✦', label: 'Skills' },
-  { to: '/rea', icon: '⟲', label: 'REA' },
-  { to: '/qoder', icon: '◈', label: 'Qoder' },
-  { to: '/setup', icon: '⇪', label: 'Bring your setup' }
+// Sidebar nav mirrors the reverse-engineered ChatGPT/Codex desktop rail (new
+// chat, search, library, then the agent surfaces) with ANTICODEX sections below.
+export const NAV = [
+  { to: '/', icon: 'chat', label: 'Chat', end: true, main: true, section: 'work' },
+  { to: '/codex', icon: 'codex', label: 'Codex', main: true, section: 'work' },
+  { to: '/claude', icon: 'agent', label: 'Agent Studio', main: true, section: 'work' },
+  { to: '/sandbox', icon: 'sandbox', label: 'Sandbox', section: 'create' },
+  { to: '/images', icon: 'images', label: 'Images', section: 'create' },
+  { to: '/video', icon: 'video', label: 'Video', section: 'create' },
+  { to: '/library', icon: 'library', label: 'Library', section: 'create' },
+  { to: '/mcp', icon: 'connectors', label: 'Connectors', section: 'connect' },
+  { to: '/computer', icon: 'computer', label: 'Computer Use', section: 'connect' },
+  { to: '/skills', icon: 'skills', label: 'Skills', section: 'intelligence' },
+  { to: '/rea', icon: 'rea', label: 'REA', section: 'intelligence' },
+  { to: '/qoder', icon: 'qoder', label: 'Qoder', section: 'intelligence' },
+  { to: '/setup', icon: 'setup', label: 'Bring your setup', section: 'intelligence' }
 ];
+
+const NAV_SECTIONS = [
+  { id: 'work', label: 'Work' },
+  { id: 'create', label: 'Create' },
+  { id: 'connect', label: 'Connect' },
+  { id: 'intelligence', label: 'Intelligence' }
+];
+
 
 function groupThreads(list) {
   const now = Date.now();
@@ -53,7 +66,7 @@ function groupThreads(list) {
   return groups;
 }
 
-function Sidebar() {
+function Sidebar({ onSearch }) {
   const { user, signOut, sidebarOpen, setSidebarOpen, cfg, notify } = useApp();
   const nav = useNavigate();
   const loc = useLocation();
@@ -63,6 +76,18 @@ function Sidebar() {
   // account on the server, with the local copy painted first and merged by id.
   const [threads, setThreads] = useState(() => loadThreads());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('acx_nav_collapsed') || '[]')); } catch { return new Set(); }
+  });
+
+  function toggleSection(id) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      try { localStorage.setItem('acx_nav_collapsed', JSON.stringify([...next])); } catch { /* private mode */ }
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!user) { setThreads([]); return; }
@@ -78,47 +103,73 @@ function Sidebar() {
 
   const groups = useMemo(() => groupThreads(threads), [threads]);
 
+  async function removeThread(e, t) {
+    e.stopPropagation();
+    deleteThreadLocal(t.id);
+    threadsChanged();
+    setThreads(loadThreads());
+    try { await api.threads.remove(t.id); } catch { /* offline ok */ }
+    notify('Chat deleted');
+    if (loc.search.includes(t.id)) nav('/');
+  }
+
   return (
     <aside className={`sidebar ${sidebarOpen ? '' : 'closed'}`}>
       <div className="sidebar-head">
         <Brand />
         <div className="between" />
-        <button className="icon-btn" title="Close sidebar" onClick={() => setSidebarOpen(false)}>⇤</button>
+        <button className="icon-btn" title="Close sidebar" onClick={() => setSidebarOpen(false)}><Icon name="close" size={17} /></button>
       </div>
-      <div style={{ padding: '2px 8px' }}>
-        <button className="nav-item" onClick={() => nav('/')}>
-          <span className="ico">＋</span> New chat
+      <div className="sidebar-top">
+        <button className="nav-item nav-new" onClick={() => nav(`/?new=${Date.now()}`)}>
+          <span className="ico"><Icon name="plus" size={18} /></span> New chat
         </button>
-        <button className="nav-item" onClick={() => notify('Search chats — full-text thread search is on the roadmap')}>
-          <span className="ico">⌕</span> Search chats
-        </button>
-        <button className="nav-item" onClick={() => nav('/images')}>
-          <span className="ico">▤</span> Library
+        <button className="nav-item" onClick={onSearch}>
+          <span className="ico"><Icon name="search" size={18} /></span> Search chats <kbd className="kbd nav-kbd">⌘K</kbd>
         </button>
       </div>
       <div className="sidebar-scroll">
-        {NAV.filter((n) => n.main).map((n) => (
-          <button key={n.to} className={`nav-item ${loc.pathname === n.to ? 'active' : ''}`} onClick={() => nav(n.to)}>
-            <span className="ico">{n.icon}</span> {n.label}
-          </button>
-        ))}
-        <div className="nav-label">Workspace</div>
-        {NAV.filter((n) => !n.main).map((n) => (
-          <button key={n.to} className={`nav-item ${loc.pathname === n.to ? 'active' : ''}`} onClick={() => nav(n.to)}>
-            <span className="ico">{n.icon}</span> {n.label}
-          </button>
-        ))}
+        {NAV_SECTIONS.map((sec) => {
+          const items = NAV.filter((n) => n.section === sec.id);
+          if (!items.length) return null;
+          const isCollapsed = collapsed.has(sec.id);
+          return (
+            <div className="nav-section" key={sec.id}>
+              <button
+                className={`nav-label nav-label-btn ${isCollapsed ? 'collapsed' : ''}`}
+                onClick={() => toggleSection(sec.id)}
+                aria-expanded={!isCollapsed}
+                title={isCollapsed ? `Show ${sec.label}` : `Hide ${sec.label}`}
+              >
+                <span>{sec.label}</span>
+                <span className="nav-count">{items.length}</span>
+                <span className="nav-chev" aria-hidden>{isCollapsed ? '▸' : '▾'}</span>
+              </button>
+              {!isCollapsed && (
+                <div className="nav-group">
+                  {items.map((n) => (
+                    <button key={n.to} className={`nav-item ${loc.pathname === n.to ? 'active' : ''}`} onClick={() => nav(n.to)}>
+                      <span className="ico"><Icon name={n.icon} size={18} /></span> {n.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
         {user && threads.length > 0 && <div className="nav-label">Chats</div>}
         {Object.entries(groups).map(([label, items]) =>
           items.length ? (
-            <div key={label}>
+            <div key={label} className="thread-group">
+              <div className="thread-group-label">{label}</div>
               {items.slice(0, 20).map((t) => (
                 <button
                   key={t.id}
                   className={`thread-item ${loc.search.includes(t.id) ? 'active' : ''}`}
                   onClick={() => nav(`/?thread=${encodeURIComponent(t.id)}`)}
                 >
-                  {t.title || 'Untitled chat'}
+                  <span className="thread-title">{t.title || 'Untitled chat'}</span>
+                  <span className="thread-del" title="Delete chat" onClick={(e) => removeThread(e, t)}>🗑</span>
                 </button>
               ))}
             </div>
@@ -128,6 +179,10 @@ function Sidebar() {
       <div className="sidebar-foot" style={{ position: 'relative' }}>
         {menuOpen && (
           <div className="model-menu" style={{ bottom: 64, top: 'auto', left: 8, width: 240 }}>
+            <button className="m-item" onClick={() => { setMenuOpen(false); nav('/install'); }}>
+              <span>⇩ Install apps</span>
+              <span className="desc">macOS · Windows · iOS</span>
+            </button>
             <button className="m-item" onClick={() => { setMenuOpen(false); nav('/settings'); }}>
               <span>⚙ Settings</span>
               <span className="desc">Provider API keys, personalization, data</span>
@@ -144,9 +199,7 @@ function Sidebar() {
         <div className="user-pill" onClick={() => setMenuOpen((v) => !v)}>
           <div className="avatar">{(user?.name || '?').slice(0, 1).toUpperCase()}</div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {user ? user.name || user.email : 'Sign in'}
-            </div>
+            <div className="user-name">{user ? user.name || user.email : 'Sign in'}</div>
             <div className="tiny">{user ? (cfg?.name || 'ANTICODEX') : 'Sync your chats'}</div>
           </div>
         </div>
@@ -156,33 +209,57 @@ function Sidebar() {
 }
 
 function Topbar() {
-  const { sidebarOpen, setSidebarOpen, cfg } = useApp();
+  const { sidebarOpen, setSidebarOpen } = useApp();
+  const nav = useNavigate();
   const loc = useLocation();
+  const current = [...NAV, { to: '/library', label: 'Library' }, { to: '/install', label: 'Install' }, { to: '/settings', label: 'Settings' }]
+    .find((n) => (n.to === '/' ? loc.pathname === '/' : loc.pathname.startsWith(n.to)));
   return (
     <div className="topbar">
       {!sidebarOpen && (
         <>
-          <button className="icon-btn" title="Open sidebar" onClick={() => setSidebarOpen(true)}>⇥</button>
-          <Brand compact />
+          <button className="icon-btn" title="Open sidebar" onClick={() => setSidebarOpen(true)}><Icon name="menu" size={18} /></button>
+          <Brand small />
         </>
       )}
+      <div className="topbar-title">
+        <span className="topbar-eyebrow">ANTICODEX</span>
+        <span className="topbar-current">{current?.label || 'Workspace'}</span>
+      </div>
+      <div className="spacer" />
+      <button className="topbar-action" title="New chat" onClick={() => nav(`/?new=${Date.now()}`)}>
+        <Icon name="plus" size={16} /><span>New</span>
+      </button>
       <ModelPicker />
       <EffortPicker />
-      <div className="spacer" />
-      <button className="chip-toggle" onClick={() => { window.location.pathname = '/mcp'; }}>⇄ Connect</button>
-      <button className="icon-btn" title="Settings" onClick={() => { window.location.pathname = '/settings'; }}>⚙</button>
+      <button className="icon-btn topbar-connect" title="Connectors" onClick={() => nav('/mcp')}><Icon name="connectors" size={18} /></button>
+      <button className="icon-btn" title="Settings" onClick={() => nav('/settings')}><Icon name="settings" size={18} /></button>
     </div>
   );
 }
 
 function Shell({ children }) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const nav = useNavigate();
+
+  useEffect(() => {
+    function onKey(e) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen((v) => !v); }
+      else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); nav('/'); }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [nav]);
+
   return (
     <div className="app">
-      <Sidebar />
+      <Sidebar onSearch={() => setSearchOpen(true)} />
       <main className="main">
         <Topbar />
         {children}
       </main>
+      <SearchChats open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }
@@ -210,6 +287,7 @@ export default function App() {
         <Route path="/" element={<Shell><Guarded><ChatPage /></Guarded></Shell>} />
         <Route path="/codex" element={<Shell><Guarded><CodexPage /></Guarded></Shell>} />
         <Route path="/claude" element={<Shell><Guarded><ClaudePage /></Guarded></Shell>} />
+        <Route path="/library" element={<Shell><Guarded><LibraryPage /></Guarded></Shell>} />
         <Route path="/sandbox" element={<Shell><Guarded><SandboxPage /></Guarded></Shell>} />
         <Route path="/images" element={<Shell><Guarded><ImagesPage /></Guarded></Shell>} />
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
@@ -220,6 +298,7 @@ export default function App() {
         <Route path="/mcp/callback" element={<Shell><Guarded><McpPage /></Guarded></Shell>} />
         <Route path="/computer" element={<Shell><Guarded><ComputerPage /></Guarded></Shell>} />
         <Route path="/setup" element={<Shell><Guarded><SetupPage /></Guarded></Shell>} />
+        <Route path="/install" element={<Shell><Guarded><InstallPage /></Guarded></Shell>} />
         <Route path="/settings" element={<Shell><Guarded><SettingsPage /></Guarded></Shell>} />
         <Route path="/admin" element={<Shell><AdminPage /></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />

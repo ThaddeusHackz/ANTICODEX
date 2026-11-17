@@ -64,7 +64,7 @@ export function Pill({ kind = '', children }) {
 
 export function Toast({ toast }) {
   if (!toast) return null;
-  return <div className="toast spark">{toast.message}</div>;
+  return <div className="toast" role="status">{toast.message}</div>;
 }
 
 export function CopyBtn({ text, label = 'Copy' }) {

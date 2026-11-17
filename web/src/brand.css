@@ -1,0 +1,39 @@
+/* BrandIcon — the tile that holds a vendored brand mark or a monogram fallback.
+ *
+ * `.mcp-icon` is the existing connector tile class from styles.css, so the
+ * layout is unchanged; this file only styles what goes *inside* the tile and
+ * distinguishes a real mark from a monogram (data attributes, no extra classes).
+ * The imported SVGs already carry fill="#ffffff" for the dark canvas. */
+
+.mcp-icon > img {
+  width: 62%;
+  height: 62%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  /* Simple Icons paths are already white; no invert filter, so a logo whose
+     path happens to carry its own fill is not double-processed. */
+  filter: none;
+}
+
+/* A real mark: quiet neutral plate so dark logos and light logos both read. */
+.mcp-icon[data-brand] {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* No vendored mark: a deliberate monogram, not a fake logo. */
+.mcp-icon[data-monogram] {
+  background: linear-gradient(145deg, rgba(139, 92, 246, 0.3), rgba(34, 211, 238, 0.16));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ece9ff;
+  letter-spacing: 0.02em;
+  font-weight: 800;
+  line-height: 1;
+  user-select: none;
+}
+
+.mcp-icon[data-monogram] > span {
+  display: block;
+  transform: translateY(-0.5px);
+}

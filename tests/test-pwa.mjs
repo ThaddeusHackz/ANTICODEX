@@ -38,6 +38,8 @@ ok('manifest parses as JSON', !!m);
 if (m) {
   ok('name is ANTICODEX', m.name === 'ANTICODEX');
   ok('short_name is ANTICODEX', m.short_name === 'ANTICODEX');
+  ok('id is / (stable install identity across start_url changes)', m.id === '/');
+  ok('description is present and non-empty', typeof m.description === 'string' && m.description.trim().length > 0);
   ok('start_url is /', m.start_url === '/');
   ok('scope is /', m.scope === '/');
   ok('display is standalone', m.display === 'standalone');

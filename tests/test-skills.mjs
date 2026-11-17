@@ -51,6 +51,18 @@ console.log('\nFrontmatter');
   ok('multi-line description collapses to one line',
     parseSkillFrontmatter('---\nname: x\ndescription: "a\\nb"\n---\n', 'd').description === 'a b' || true);
   ok('sanitizeSingleLine collapses whitespace', sanitizeSingleLine('  a\n\n  b \t c ') === 'a b c');
+
+  const folded = parseSkillFrontmatter(
+    '---\nname: folded\ndescription: >\n  Reverse-engineer a product\n  from its artifacts.\n\n  Compare the flows.\n---\n', 'd');
+  ok('folded block scalar is a description, not ">"',
+    folded.description === 'Reverse-engineer a product from its artifacts. Compare the flows.', folded.description);
+  const literal = parseSkillFrontmatter('---\nname: literal\ndescription: |\n  line one\n  line two\n---\n', 'd');
+  ok('literal block scalar keeps its lines', literal.description === 'line one line two', literal.description);
+  const chomped = parseSkillFrontmatter('---\nname: chomped\ndescription: >-\n  no trailing newline\n---\n', 'd');
+  ok('chomping indicators are accepted', chomped.description === 'no trailing newline', chomped.description);
+  const nested = parseSkillFrontmatter(
+    '---\nname: nested\ndescription: d\nmetadata:\n  short-description: >\n    Fast path\n    for agents\n---\n', 'd');
+  ok('a nested block scalar is parsed', nested.short_description === 'Fast path for agents', nested.short_description);
 }
 
 console.log('\nProse repair (Codex repairs instead of rejecting)');
@@ -84,20 +96,26 @@ console.log('\nRoots and loading');
   write(path.join(home, '.claude', 'skills', 'broken'), SKILL_FILENAME, '---\nname: broken\n---\n');
   fs.mkdirSync(path.join(home, '.claude', 'skills', 'empty'), { recursive: true });
   write(path.join(home, '.claude', 'skills', 'noskill'), 'README.md', 'not a skill');
+  // Qoder's user-level skills are part of the same registry. Point the fixture at
+  // an isolated home so a developer's real ~/.qoder cannot change the count.
+  const qoderHome = path.join(home, '.qoder');
+  write(path.join(qoderHome, 'skills', 'delta'), SKILL_FILENAME, '---\nname: delta\ndescription: qoder delta\n---\n');
 
-  const roots = skillRoots({ cwd: project, codexHome: path.join(home, '.codex'), claudeHome: path.join(home, '.claude') });
+  const roots = skillRoots({ cwd: project, codexHome: path.join(home, '.codex'), claudeHome: path.join(home, '.claude'), qoderHome });
   ok('ordered: project .agents, project skills, then user roots', roots[0].path.endsWith(path.join('.agents', 'skills')) && roots[1].path.endsWith('skills') && roots.some((r) => r.scope === 'user'));
   ok('roots are de-duplicated', new Set(roots.map((r) => r.path)).size === roots.length);
+  ok('the Qoder skills root is registered', roots.some((r) => r.path === path.join(qoderHome, 'skills') && r.label === '~/.qoder'));
 
-  const loaded = loadSkills({ cwd: project, codexHome: path.join(home, '.codex'), claudeHome: path.join(home, '.claude') });
-  ok('counts the valid skills', loaded.count === 3, String(loaded.count));
+  const loaded = loadSkills({ cwd: project, codexHome: path.join(home, '.codex'), claudeHome: path.join(home, '.claude'), qoderHome });
+  ok('counts the valid skills', loaded.count === 4, String(loaded.count));
   ok('beta took its name from its directory', loaded.skills.find((s) => s.name === 'beta')?.description === 'project beta');
   ok('project shadows user', loaded.skills.find((s) => s.name === 'alpha')?.description === 'project alpha');
+  ok('a Qoder skill is visible to the same registry', loaded.skills.find((s) => s.name === 'delta')?.description === 'qoder delta');
   ok('the shadowed one is reported', loaded.duplicates.length === 1 && loaded.duplicates[0].name === 'alpha');
   ok('a broken skill is an error entry', loaded.errors.length === 1 && loaded.errors[0].code === 'MissingField');
   ok('the error carries its path', loaded.errors[0].path.endsWith(path.join('broken', SKILL_FILENAME)));
   ok('a directory without SKILL.md is skipped', !loaded.skills.some((s) => s.name === 'noskill'));
-  ok('skills are sorted by name', loaded.skills.map((s) => s.name).join(',') === 'alpha,beta,gamma');
+  ok('skills are sorted by name', loaded.skills.map((s) => s.name).join(',') === 'alpha,beta,delta,gamma');
   ok('each skill records its document path', loaded.skills.every((s) => s.path_to_skills_md.endsWith(SKILL_FILENAME)));
   ok('scope is labelled', loaded.skills.find((s) => s.name === 'gamma').scope === 'user');
 
@@ -206,7 +224,7 @@ console.log('\nPackaged .skill archives');
   ok('an archive with no SKILL.md is an error with a reason', noSkill.errors[0].code === 'MissingSkillFile');
 
   // The registry lists directory skills and packaged ones side by side.
-  const merged = loadSkills({ cwd: path.join(tmp, 'proj'), archives: [dir], codexHome: path.join(tmp, 'home', '.codex'), claudeHome: path.join(tmp, 'home', '.claude') });
+  const merged = loadSkills({ cwd: path.join(tmp, 'proj'), archives: [dir], codexHome: path.join(tmp, 'home', '.codex'), claudeHome: path.join(tmp, 'home', '.claude'), qoderHome: path.join(tmp, 'empty-qoder') });
   ok('packaged skills join the same list', merged.skills.some((s) => s.name === 'notes' && s.packaged));
   ok('a packaged root is reported with its ref', merged.roots.some((r) => r.agent_skills_ref === '42'));
 

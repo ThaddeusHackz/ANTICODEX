@@ -1,24 +1,33 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
+import { useApp, saveThreadLocal, threadsChanged, loadThreads, userKey } from '../lib/state.jsx';
 import { modelLabel, rememberLabel } from '../ModelPicker.jsx';
+import SkillPicker from '../SkillPicker.jsx';
+import Icon from '../Icon.jsx';
 import * as api from '../lib/api.js';
 import { renderMarkdown } from '../lib/markdown.js';
 
 const SUGGESTIONS = [
-  { icon: '⌘', title: 'Write code with Codex', text: 'Build me a REST API scaffold with auth and tests', to: '/codex' },
-  { icon: '✦', title: 'Search the web', text: 'Search: what changed in AI this week?' , tool: 'search' },
-  { icon: '▦', title: 'Generate an image', text: 'Imagine a clean geometric logo in cyan and violet', to: '/images' },
-  { icon: '▶', title: 'Generate a video', text: 'A short product teaser video with smooth camera motion', to: '/video' }
+  { icon: 'codex', title: 'Write code with Codex', text: 'Build me a REST API scaffold with auth and tests', to: '/codex' },
+  { icon: 'search', title: 'Search the web', text: 'Search: what changed in AI this week?', tool: 'search' },
+  { icon: 'images', title: 'Generate an image', text: 'Imagine a clean geometric logo in cyan and violet', to: '/images' },
+  { icon: 'video', title: 'Generate a video', text: 'A short product teaser video with smooth camera motion', to: '/video' }
+];
+
+const QUICK_MODES = [
+  { to: '/codex', icon: 'codex', title: 'Codex', desc: 'A real folder, terminal and diff approvals' },
+  { to: '/claude', icon: 'agent', title: 'Agent Studio', desc: 'Plans, memory and a visible tool log' },
+  { to: '/sandbox', icon: 'sandbox', title: 'Sandbox', desc: 'Run code locally or over SSH' },
+  { to: '/skills', icon: 'skills', title: 'Skills', desc: 'Give every model the instructions it needs' }
 ];
 
 function ToolChips({ active, setActive }) {
   const chips = [
-    { id: 'search', label: '⌕ Search' },
-    { id: 'imagine', label: '✦ Imagine' },
-    { id: 'video', label: '▶ Video' },
-    { id: 'research', label: '∞ Deep research' },
-    { id: 'mcp', label: '⇄ MCP tools' }
+    { id: 'search', label: 'Search', icon: 'search' },
+    { id: 'imagine', label: 'Imagine', icon: 'images' },
+    { id: 'video', label: 'Video', icon: 'video' },
+    { id: 'research', label: 'Deep research', icon: 'compass' },
+    { id: 'mcp', label: 'MCP tools', icon: 'connectors' }
   ];
   return (
     <>
@@ -29,7 +38,7 @@ function ToolChips({ active, setActive }) {
           className={`chip-toggle ${active[c.id] ? 'on' : ''}`}
           onClick={() => setActive((a) => ({ ...a, [c.id]: !a[c.id] }))}
         >
-          {c.label}
+          <Icon name={c.icon} size={13} /> {c.label}
         </button>
       ))}
     </>
@@ -113,10 +122,36 @@ export default function ChatPage() {
   // that matters — nothing is shown that failed validation on disk.
   const [template, setTemplate] = useState(null);
   const [picker, setPicker] = useState(null);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillCount, setSkillCount] = useState(0);
   const [active, setActive] = useState({ search: false, imagine: false, video: false, research: false, mcp: true });
   const [threadId, setThreadId] = useState(() => new URLSearchParams(window.location.search).get('thread') || `th_${Date.now()}`);
   const scrollRef = useRef(null);
   const taRef = useRef(null);
+  const enabledSkillsKey = userKey('acx_enabled_skills', user?.id);
+
+  // The composer's Skills chip is a count, not decoration: it reads the same
+  // per-account set the Skills page writes, so "3 enabled" means three skill
+  // bodies will actually be added to the next request.
+  useEffect(() => {
+    let gone = false;
+    const read = () => {
+      try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { setSkillCount(0); }
+    };
+    read();
+    window.addEventListener('storage', read);
+    window.addEventListener('acx:skills', read);
+    return () => { gone = true; window.removeEventListener('storage', read); window.removeEventListener('acx:skills', read); };
+  }, [enabledSkillsKey, skillsOpen]);
+
+  // "New chat" in the rail is a real reset, not a navigation to the same URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get('new')) return;
+    setMessages([]); setInput(''); setLive(null); setTemplate(null);
+    setThreadId(`th_${Date.now()}`);
+    window.history.replaceState({}, '', '/');
+  }, [window.location.search]);
 
   // Opening a chat from the rail (?thread=…) must work offline too: read the
   // local copy immediately, then let the server copy win if it is newer.
@@ -167,6 +202,31 @@ export default function ChatPage() {
     }
   }
 
+  // Resolve enabled skills plus any `$skill` mention into a bounded system
+  // block. This is the difference between "Skills" being a gallery and a model
+  // actually receiving the instructions it is supposed to follow.
+  async function skillBlockFor(text) {
+    let names = [];
+    try { names = JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]'); } catch { /* private mode */ }
+    try {
+      const mentioned = await api.skills.resolve(text);
+      names = [...new Set([...names, ...(mentioned.matched || []).map((m) => m.name)])];
+    } catch { /* the registry is optional */ }
+    const blocks = [];
+    let bytes = 0;
+    for (const name of names.slice(0, 8)) {
+      try {
+        const r = await api.skills.get(name);
+        if (!r?.ok || !r.instructions) continue;
+        if (bytes + r.instructions.length > 60000) break;
+        bytes += r.instructions.length;
+        blocks.push(r.instructions);
+      } catch { /* one broken skill must not kill the answer */ }
+    }
+    if (!blocks.length) return '';
+    return `\n\nThe user enabled these skills for this turn. Follow their instructions when relevant:\n\n${blocks.join('\n\n')}`;
+  }
+
   async function chooseTemplate(card) {
     try {
       const r = await api.artifacts.choose(picker.kind, card.id);
@@ -212,6 +272,8 @@ export default function ChatPage() {
         ? 'You are ANTICODEX in Deep Research mode. Plan, use the search tool when available, and produce a structured, cited report.'
         : undefined;
       if (active.search) system = ((system ? system + '\n' : '') + 'Use web search results when the search tool is available; cite sources as [n].');
+      const skillBlock = await skillBlockFor(content);
+      if (skillBlock) system = `${system || 'You are ANTICODEX, a precise, tool-using AI workspace.'}${skillBlock}`;
       const out = await api.chatStream({
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         model: model.includes('::') ? model.split('::').slice(1).join('::') : model,
@@ -293,10 +355,25 @@ export default function ChatPage() {
     <div className="chat-wrap" ref={scrollRef} style={{ display: 'flex', flexDirection: 'column' }}>
       <div className={empty ? 'composer-wrap floating' : 'chat-col'} style={empty ? { width: '100%' } : {}}>
         {empty && (
+          <>
           <div className="hero">
-            <h1>What can I do for you?</h1>
-            <div className="sub">ANTICODEX · Chat, Codex, Agents, Connectors — powered by your models</div>
+            <div className="hero-mark"><span className="hero-glow" /><Icon name="spark" size={26} /></div>
+            <h1>What are we building?</h1>
+            <div className="sub">One workspace for chat, code, agents and every model you connect.</div>
           </div>
+          <div className="mode-grid">
+            {QUICK_MODES.map((m) => (
+              <Link key={m.to} to={m.to} className="mode-card">
+                <span className="mode-ico"><Icon name={m.icon} size={18} /></span>
+                <span>
+                  <b>{m.title}</b>
+                  <span className="tiny">{m.desc}</span>
+                </span>
+                <Icon name="arrow" size={15} className="mode-arrow" />
+              </Link>
+            ))}
+          </div>
+          </>
         )}
         {!empty && (
           <>
@@ -423,9 +500,9 @@ export default function ChatPage() {
             }}
           />
           <div className="composer-bar">
-            <button className="icon-btn" title="Add files" onClick={() => notify('Attach from the Codex workspace — drag & drop lands in v0.2')}>＋</button>
+            <button className="icon-btn" title="Add files" onClick={() => notify('Attach from the Codex workspace — drag & drop lands in v0.2')}><Icon name="attach" size={17} /></button>
             <label className="icon-btn" title="Voice input (Whisper)" style={{ cursor: 'pointer' }}>
-              🎤
+              <Icon name="mic" size={17} />
               <input type="file" accept="audio/*" style={{ display: 'none' }} onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
@@ -438,7 +515,10 @@ export default function ChatPage() {
                 } catch (err) { notify('Transcription failed: ' + err.message); }
               }} />
             </label>
-            <button className="icon-btn" title="Choose a document, deck or sheet template" onClick={() => openTemplates(template?.artifact_kind?.replace('google-', '') || 'document')}>▤</button>
+            <button className="icon-btn" title="Choose a document, deck or sheet template" onClick={() => openTemplates(template?.artifact_kind?.replace('google-', '') || 'document')}><Icon name="layers" size={17} /></button>
+            <button className={`chip-toggle skill-chip ${skillCount ? 'on' : ''}`} onClick={() => setSkillsOpen(true)} title="Skills available to the next answer">
+              <Icon name="skills" size={14} /> Skills{skillCount ? ` ${skillCount}` : ''}
+            </button>
             <ToolChips active={active} setActive={setActive} />
             <button
               className={`send-btn ${busy ? 'stop' : ''}`}
@@ -446,10 +526,11 @@ export default function ChatPage() {
               disabled={busy ? false : !input.trim()}
               onClick={() => { if (busy) abortRef.current?.abort(); else send(); }}
             >
-              {busy ? '■' : '↑'}
+              {busy ? <Icon name="stop" size={16} /> : <Icon name="send" size={17} />}
             </button>
           </div>
         </div>
+        <SkillPicker open={skillsOpen} onClose={() => setSkillsOpen(false)} onChanged={() => { try { setSkillCount(JSON.parse(localStorage.getItem(enabledSkillsKey) || '[]').length); } catch { /* ignored */ } }} />
 
         {picker && (
           <div className="modal-back" onClick={(e) => { if (e.target === e.currentTarget) setPicker(null); }}>
@@ -493,7 +574,7 @@ export default function ChatPage() {
                   if (s.tool) setActive((a) => ({ ...a, [s.tool]: true }));
                   send(s.text);
                 }}>
-                  <strong>{s.icon} {s.title}</strong>
+                  <strong><Icon name={s.icon} size={15} /> {s.title}</strong>
                   <div className="tiny" style={{ marginTop: 4 }}>{s.text}</div>
                 </button>
               ))}

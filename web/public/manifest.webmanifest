@@ -2,6 +2,7 @@
   "name": "ANTICODEX",
   "short_name": "ANTICODEX",
   "description": "ANTICODEX: chat, code agents, MCP connectors, image & video generation, computer-use. One workspace, every model.",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -257,6 +257,14 @@ export const sandbox = {
   run: (payload) => api('sandbox', { op: 'run', ...payload }),
   read: (runId, name) => api('sandbox', { op: 'read', run_id: runId, name }),
   clear: (runId) => api('sandbox', { op: 'clear', run_id: runId }),
+  // Remote SSH (Daytona and other machines). Profiles store host/port/user and
+  // an optional key *path*; no key or password ever reaches the browser.
+  remoteStatus: (account) => api('sandbox', { op: 'remote_status', account }),
+  remoteProfiles: (account) => api('sandbox', { op: 'remote_profiles', account }),
+  remoteSave: (account, profile) => api('sandbox', { op: 'remote_save', account, profile }),
+  remoteDelete: (account, id) => api('sandbox', { op: 'remote_delete', account, id }),
+  remoteTest: (account, profile) => api('sandbox', { op: 'remote_test', account, profile }),
+  remoteRun: (account, payload) => api('sandbox', { op: 'remote_run', account, ...payload }),
   // Ask the model for a snippet and hand back the first fenced code block: the
   // "code gen" half of the page, kept separate from running it.
   async generate({ prompt, language = 'node', model, provider, effort }) {
@@ -318,7 +326,11 @@ export const skills = {
   // machine's ~/.codex/skills (local only), `manifest` reads a bundled manifest.
   archive: (file) => api('skills', { op: 'archive', file }),
   install: (file, p = {}) => api('skills', { op: 'install', file, ...p }),
-  manifest: (dir) => api('skills', { op: 'manifest', dir })
+  manifest: (dir) => api('skills', { op: 'manifest', dir }),
+  // The registry already scans project, ~/.codex, ~/.claude and ~/.qoder. A
+  // caller may add more roots (a Qoder pack checkout, a team skills repo) for
+  // this request without writing anything to disk.
+  listRoots: (roots = []) => api('skills', { op: 'list', extra_roots: roots })
 };
 
 export const workspace = {

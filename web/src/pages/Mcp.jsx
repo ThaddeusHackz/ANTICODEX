@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../lib/state.jsx';
 import * as api from '../lib/api.js';
+import BrandIcon from '../BrandIcon.jsx';
 
 function GatewayCard({ g, notify }) {
   return (
     <div className="mcp-card" style={{ borderColor: '#8b5cf666' }}>
       <div className="row">
-        <div className="mcp-icon">⚡</div>
+        <BrandIcon brand={g.id} name={g.vendor || g.name} />
         <div>
           <h3>{g.name}</h3>
           <div className="tiny">{g.vendor} · free hosted gateway</div>
@@ -28,14 +29,19 @@ function GatewayCard({ g, notify }) {
 }
 
 function CatalogCard({ item, onConnect, status }) {
+  // An entry with `needs_config` cannot launch until the user supplies a value
+  // the connect flow does not collect yet. Saying which value that is (and the
+  // exact command) is honest; a button that silently throws is not.
+  const cfg = item.needs_config;
+  const label = cfg ? `Needs ${cfg.label || cfg.field}` : 'Connect';
   return (
     <div className="mcp-card">
       <div className="row">
-        <div className="mcp-icon">{item.name.slice(0, 1)}</div>
+        <BrandIcon brand={item.id} name={item.name} />
         <div style={{ minWidth: 0 }}>
           <h3>{item.name}</h3>
           <div className="tiny">
-          {item.vendor} {item.oauth ? '· OAuth sign-in in browser' : '· no sign-in needed'}
+          {item.vendor} {item.oauth ? '· OAuth sign-in in browser' : item.local ? '· local process' : '· no sign-in needed'}
           {item.version ? ` · v${item.version}` : ''}
         </div>
         </div>
@@ -46,9 +52,22 @@ function CatalogCard({ item, onConnect, status }) {
         {(item.tags || []).slice(0, 6).map((t) => <span key={t} className="source-chip">{t}</span>)}
       </div>
       <div className="row" style={{ marginTop: 4 }}>
-        <button className="btn primary" onClick={() => onConnect(item)}>{status || (item.oauth ? 'Connect' : 'Connect')}</button>
+        <button
+          className="btn primary"
+          onClick={() => onConnect(item)}
+          disabled={Boolean(cfg) || Boolean(status)}
+          title={cfg ? `${cfg.label || cfg.field}: ${cfg.example || ''}` : undefined}
+        >{status || label}</button>
         {item.gateway && <a className="tiny" href={item.gateway} target="_blank" rel="noreferrer">gateway ↗</a>}
       </div>
+      {cfg && (
+        <div className="tiny" style={{ color: 'var(--text-2)', borderTop: '1px dashed var(--border)', paddingTop: 8 }}>
+          <strong style={{ color: 'var(--text)' }}>Not connectable yet — needs {cfg.label || cfg.field}.</strong>{' '}
+          {cfg.why}
+          {cfg.example && <div style={{ marginTop: 4 }}>Required value: <span className="kbd">{cfg.example}</span></div>}
+          {cfg.command && <div style={{ marginTop: 4 }}>Launch command: <span className="mono">{cfg.command}</span></div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -88,12 +107,23 @@ export default function McpPage() {
   }, []);
 
   async function connect(item) {
+    if (item.needs_config) {
+      const c = item.needs_config;
+      notify(`This connector needs ${c.label || c.field}. ${c.why || ''}`.trim());
+      return;
+    }
+    // A local server is a child process of the machine the bridge runs on. On the
+    // hosted site that is not this machine, so do not fire a handshake that can
+    // only be refused — say where it does work.
+    const onOwnMachine = Boolean(window.anticodexDesktop)
+      || /^(localhost|127\.0\.0\.1|\[::1\]|::1)$/.test(window.location.hostname);
+    if (item.local && !onOwnMachine) {
+      notify('This server runs on your machine — connect it from the desktop app or a local `npm start`, not from the hosted site.');
+      return;
+    }
     setBusy(item.id);
     setProbeOut(null);
     try {
-      if (item.local && !window.anticodexDesktop) {
-        notify('This server runs on your machine — connect it from the desktop app or a local `npm start`, not from the hosted site.');
-      }
       if (item.url?.startsWith('REPLACE') || item.url?.includes('YOUR-')) {
         notify('This one needs your personal endpoint URL — open its gateway page first, then paste the URL below');
         window.open(item.gateway || item.url, '_blank', 'noopener');
@@ -175,6 +205,7 @@ export default function McpPage() {
           {connections.map((c) => (
             <div key={c.id} className="perm-row">
               <div className="row">
+                <BrandIcon brand={c.id} name={c.name} size={28} />
                 <span className="status-dot ok" />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</div>

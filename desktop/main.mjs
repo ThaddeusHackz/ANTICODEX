@@ -253,7 +253,37 @@ ipcMain.handle('acx:api', async (_e, action, payload) => {
   if (Array.isArray(state.customProviders) && state.customProviders.length) body.provider_defs = state.customProviders;
   const res = await fetch(`${base}/api/bridge`, { method: 'POST', headers, body: JSON.stringify(body) });
   const text = await res.text();
-  try { return JSON.parse(text); } catch { return { ok: false, error: `bridge answered HTTP ${res.status}: ${text.slice(0, 200)}` }; }
+  let data;
+  try { data = JSON.parse(text); } catch { return { ok: false, error: `bridge answered HTTP ${res.status}: ${text.slice(0, 200)}` }; }
+  // A packaged app keeps its own JSON account store. If the account was created
+  // on the website, the local bridge cannot know its password and answers 401 —
+  // which used to read as "my password is wrong" in the desktop login form. Ask
+  // the website, then adopt that session locally so /me and /threads work.
+  const accountAction = action === 'login' || action === 'register';
+  const localRejected = accountAction && base === apiBase && !data.token && (data.error || res.status === 401);
+  if (!localRejected) return data;
+  try {
+    const siteRes = await fetch(`${SITE}/api/bridge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, action }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const site = await siteRes.json();
+    if (site?.token) {
+      saveState({ desktopToken: site.token, user: site.user || null, pairedAt: new Date().toISOString() });
+      try { await localBridge({ action: 'pair', op: 'adopt', token: site.token, user: site.user }); } catch { /* non-fatal */ }
+      return { ...site, linked: 'website', local_note: data.error || null };
+    }
+    if (site?.error) {
+      // Both ledgers rejected it: report the website's sentence (the account it
+      // knows about) and keep the local reason for support, not as the headline.
+      return { ...site, local_error: data.error || null, fix: site.fix || 'Check the email and password, or use “Continue with GitHub” to link this app.' };
+    }
+  } catch (e) {
+    return { ...data, offline: true, error: data.error || 'This app could not reach anticodex.vercel.app to check that account.', fix: 'Sign in with GitHub (it pairs this app automatically), or start a local account with Sign up.' };
+  }
+  return data;
 });
 
 // --- streamed chat -----------------------------------------------------------

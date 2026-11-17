@@ -207,8 +207,14 @@ globalThis.__mount = (route) => {
     if (act === 'models' && modelsStub) return Promise.resolve({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(modelsStub)) });
     return rawFetch(input, init);
   };
-  const q = (sel) => win.document.querySelector(sel);
-  const qa = (sel) => [...win.document.querySelectorAll(sel)];
+  // The model picker is portalled to <body> so no ancestor can clip it. Queries
+  // still start at #root (the page); when that misses, fall back to the same
+  // selector without the prefix so the dialog is observable from the document.
+  const q = (sel) => win.document.querySelector(sel) || win.document.querySelector(String(sel).replace(/^#root\s+/, ''));
+  const qa = (sel) => {
+    const first = [...win.document.querySelectorAll(sel)];
+    return first.length ? first : [...win.document.querySelectorAll(String(sel).replace(/^#root\s+/, ''))];
+  };
   const click = (el) => el.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
   const typeIn = (el, value) => {
     const proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
@@ -574,6 +580,78 @@ globalThis.__mount = (route) => {
     ok('it says where the key goes, not the key itself', /QODER_PAT/.test(text) && !/qpat_/.test(text), text.slice(0, 200));
     ok('the atlas is on screen', /integrated/.test(text) && /better-harness/.test(text), text.slice(-260));
     ok('the local agent panel explains ACP', /qodercli --acp/.test(text), text.slice(-260));
+  }
+
+  console.log('\n— the media studios and Library render real records —');
+  {
+    // A 1×1 PNG — the same fixture the artifact suite uses.
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3V9wAAAABJRU5ErkJggg==';
+    const images = [
+      {
+        id: 'img_mount_1', image: PNG, mime: 'image/png', ext: 'png', provider: 'demo', demo: true,
+        prompt: 'Mount test aurora prism', width: 1024, height: 1024, seed: 7,
+        at: '2026-11-16T10:00:00.000Z'
+      },
+      {
+        id: 'img_mount_2', image: PNG, mime: 'image/png', ext: 'png', provider: 'cloudflare-flux', demo: false,
+        prompt: 'Mount test product shot', width: 1344, height: 768,
+        at: '2026-11-16T11:00:00.000Z'
+      }
+    ];
+    const videos = [
+      {
+        id: 'task_mount_1', prompt: 'Mount test neon drone flight', status: 'ready', demo: false,
+        model: 'MiniMax-Hailuo-2.3', duration: 6, resolution: '768P',
+        video: 'https://example.com/mount.mp4', created_at: '2026-11-16T12:00:00.000Z',
+        events: [{ status: 'queued', at: '2026-11-16T12:00:00.000Z' }, { status: 'ready', at: '2026-11-16T12:04:00.000Z' }]
+      },
+      {
+        id: 'task_mount_2', prompt: 'Mount test storm ridge', status: 'demo', demo: true,
+        model: 'MiniMax-Hailuo-2.3', duration: 6, resolution: '768P',
+        reason: 'MiniMax Hailuo is not configured here — MINIMAX_API_KEY is missing.',
+        created_at: '2026-11-16T13:00:00.000Z'
+      }
+    ];
+    win.eval(`localStorage.setItem('acx_images', ${JSON.stringify(JSON.stringify(images))}); localStorage.setItem('acx_videos', ${JSON.stringify(JSON.stringify(videos))});`);
+
+    let imageText = await mountAt('/images', { token: reg.token, user: reg.user });
+    await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('Mount test aurora prism'));
+    imageText = win.document.getElementById('root').textContent.replace(/\s+/g, ' ');
+    ok('Image Studio renders', imageText.includes('Image Studio') && imageText.includes('Generate'), imageText.slice(0, 180));
+    ok('saved images are visible with their prompts',
+      imageText.includes('Mount test aurora prism') && imageText.includes('Mount test product shot'), imageText.slice(0, 400));
+    ok('a preview image is labelled, not sold as a render', /preview/i.test(imageText));
+    ok('the missing-key reason is on the page, not in a vanished toast',
+      /CF_ACCOUNT_ID/.test(imageText) && /CF_API_TOKEN/.test(imageText));
+
+    let videoText = await mountAt('/video', { token: reg.token, user: reg.user });
+    await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('Mount test neon drone flight'));
+    videoText = win.document.getElementById('root').textContent.replace(/\s+/g, ' ');
+    ok('Video Studio renders', videoText.includes('Video Studio') && videoText.includes('Generate video'), videoText.slice(0, 180));
+    ok('durable jobs are restored after reload',
+      videoText.includes('Mount test neon drone flight') && videoText.includes('Mount test storm ridge'), videoText.slice(0, 400));
+    ok('a finished job is Ready and playable', videoText.includes('Ready') && Boolean(win.document.querySelector('video[src="https://example.com/mount.mp4"]')));
+    ok('a simulated job says so', /Simulated job/.test(videoText));
+    ok('the MiniMax key name is printed when it is missing', /MINIMAX_API_KEY/.test(videoText));
+
+    const libraryText = await mountAt('/library', { token: reg.token, user: reg.user });
+    ok('Library renders its records', libraryText.includes('Mount test aurora prism') && libraryText.includes('Mount test neon drone flight'), libraryText.slice(0, 260));
+    ok('Library reports both kinds', /Image/.test(libraryText) && /Video/.test(libraryText));
+    ok('Library stats are derived from the records, not hardcoded',
+      /2 images/i.test(libraryText) || /4 items/i.test(libraryText) || /\b4\b/.test(libraryText), libraryText.slice(0, 260));
+
+    const mcpText = await mountAt('/mcp', { token: reg.token, user: reg.user });
+    await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('Playwright'));
+    const mcpNow = win.document.getElementById('root').textContent.replace(/\s+/g, ' ');
+    ok('Connectors lists the real local MCP servers', /Playwright/.test(mcpNow) && /Memory/.test(mcpNow), mcpNow.slice(0, 300));
+    const mcpLogos = [...win.document.querySelectorAll('img[src*="/logos/"]')];
+    ok('Connector cards use vendored brand marks, not letter tiles', mcpLogos.length >= 5, `${mcpLogos.length} logo images`);
+
+    const settingsText = await mountAt('/settings', { token: reg.token, user: reg.user });
+    await settleUntil(() => (win.document.getElementById('root').textContent || '').includes('Numes'));
+    const settingsLogos = [...win.document.querySelectorAll('img[src*="/logos/"]')];
+    ok('Settings lists Numes AI', /Numes/.test(settingsText), settingsText.slice(0, 200));
+    ok('Settings provider rows use real brand marks', settingsLogos.length >= 3, `${settingsLogos.length} logo images`);
   }
 
   console.log('\n— signed out —');

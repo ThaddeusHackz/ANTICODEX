@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { models as modelsApi, testEndpoint, updateCheck, api, userKeys, storeKey } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { Field, Pill, Switch } from '../ui.jsx';
+import BrandIcon from '../BrandIcon.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import ModelHealthPanel from './ModelHealth.jsx';
 
@@ -86,7 +87,7 @@ function ProviderCard({ def, onSave, onSaved, onPickModel, notify }) {
     <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="row between">
         <div className="row" style={{ gap: 10 }}>
-          <div className="mcp-icon" style={{ width: 38, height: 38, fontSize: 15 }}>{(def.name || '?')[0]}</div>
+          <BrandIcon brand={def.id} name={def.name} size={38} />
           <div>
             <div style={{ fontWeight: 800, fontSize: 14 }}>{def.name} {def.primary && <span className="pill" style={{ marginLeft: 6 }}>primary</span>}</div>
             <div className="tiny">{def.category} · {def.protocol}-wire · <span className="kbd">{def.key_env}</span></div>

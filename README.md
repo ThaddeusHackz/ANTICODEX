@@ -4,7 +4,7 @@
 
 **The universal AI workspace.** Chat-class interface, Codex-class code agents, Claude-class agent studio,
 MCP connectors, Flux image + Hailuo video generation, computer-use — powered by *your* model keys
-(**26 provider endpoints**: NVIDIA NIM first, DeepSeek/OpenAI/Anthropic/Gemini/Grok/Kimi/Qwen… + any OpenAI-/Anthropic-compatible gateway).
+(**28 provider endpoints**: NVIDIA NIM and Numes AI first, DeepSeek/OpenAI/Anthropic/Gemini/Grok/Kimi/Qwen… + any OpenAI-/Anthropic-compatible gateway).
 
 ```
 ┌──────────┐   ┌──────────────────────────────────────────────┐
@@ -15,6 +15,10 @@ MCP connectors, Flux image + Hailuo video generation, computer-use — powered b
      web/  →  React + Vite SPA  ⇄  api/bridge.js (Node)  ⇄  Supabase
      desktop/ → Electron .exe (auto-update, computer-use, pairing)
 ```
+
+## Version 2.0
+
+See [`docs/RELEASE-2.0.0.md`](docs/RELEASE-2.0.0.md) for what shipped, what was verified, and what is still limited.
 
 ## Quick start
 
@@ -45,7 +49,7 @@ cd desktop && npm install && npm run package:win
 | **Agent Studio** | Plans, persistent project memory (`ANTICODEX.md`), skills (REA + leanrea installed), live tool log — the Claude-Code/Claude-desktop agent pattern |
 | **Images** | Cloudflare Workers AI **Flux** (schnell/dev) |
 | **Video** | **MiniMax Hailuo (H3)** text-to-video, unlimited on your key |
-| **MCP Connectors** | 21-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Postgres, Playwright, Supabase, Figma, Cloudflare… **plus REA**), OAuth-style authorize page, permission editor, tool playground, custom HTTP/SSE servers, and a **real stdio transport** so a local server runs as a supervised child process |
+| **MCP Connectors** | 23-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Supabase, Figma, Cloudflare… **plus REA**), OAuth-style authorize page, permission editor, tool playground, custom HTTP/SSE servers, and a **real stdio transport** so a local server runs as a supervised child process. Honest local entries: Playwright (`@playwright/mcp`), Chrome DevTools, shadcn, sequential-thinking and the official memory server launch on a machine that can spawn processes; `filesystem` says which folder it needs instead of pretending to connect |
 | **Computer Use** | Desktop pairing codes, screen capture → vision model, mouse/keyboard control, app launch/install (confirm-gated), AI command console |
 | **Auth** | Email + password (signs straight in, no mailer required), **GitHub OAuth**, forgot-password with **6-digit email codes** (single-use, 15-min expiry, stored with their expiry), session tokens, optional email-verification gate |
 | **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |

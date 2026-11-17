@@ -486,9 +486,24 @@ async function main() {
   r = await api('extras', { op: 'nope' });
   ok('unknown extras op rejected', r.data.ok === false);
 
-  console.log('— full provider catalog (26 providers / 471 OpenRouter ids) —');
+  console.log('— full provider catalog (28 providers / 471 OpenRouter ids) —');
   const { PROVIDER_DIRECTORY, OPENROUTER_EXTRA_MODELS } = await import('../lib/catalog.js');
-  ok('27 directory providers', PROVIDER_DIRECTORY.length === 27);
+  const { resolveModelRef } = await import('../lib/providers.js');
+  ok('28 directory providers', PROVIDER_DIRECTORY.length === 28);
+  ok('Numes AI is a first-class OpenAI-compatible provider with six pinned ids',
+    (() => {
+      const n = PROVIDER_DIRECTORY.find((p) => p.id === 'numes');
+      return n && n.endpoint === 'https://api.numes.ai/api/v1' && n.key_env === 'NUMES_API_KEY'
+        && n.models.length === 6 && n.models.every((m) => m.id.includes('/'));
+    })());
+  ok('every pinned Numes id resolves through the OpenAI-compatible path',
+    (() => {
+      const n = PROVIDER_DIRECTORY.find((p) => p.id === 'numes');
+      return n.models.every((m) => {
+        const r = resolveModelRef(`numes::${m.id}`, { NUMES_API_KEY: 'sk-test' });
+        return r.provider.id === 'numes' && r.model.id === m.id && r.provider.endpoint === n.endpoint;
+      });
+    })());
   ok('471 OpenRouter ids in fallback', OPENROUTER_EXTRA_MODELS.length === 471 && new Set(OPENROUTER_EXTRA_MODELS).size === 471);
   const spot = [
     'deepseek/deepseek-v4.1-flash-1017', '~openai/gpt-sol-latest', 'sakana/fugu-ultra-v2',
