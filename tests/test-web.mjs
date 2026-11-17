@@ -37,6 +37,10 @@ const newestSrc = (() => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { walk(p); continue; }
+      // The mount harness writes a temporary entry inside web/src so esbuild can
+      // resolve relative imports. A crashed run can leave it behind; it is not a
+      // shipped source file and must not make the real bundle look stale.
+      if (e.name.startsWith('__')) continue;
       if (/\.(jsx?|css|html)$/.test(e.name)) t = Math.max(t, fs.statSync(p).mtimeMs);
     }
   };
