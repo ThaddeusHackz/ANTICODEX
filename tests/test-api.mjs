@@ -590,6 +590,25 @@ async function main() {
     } catch { return false; }
   })());
 
+
+  // --- v2.5: search_all is account-scoped (it used to search EVERY thread) ---
+  {
+    const stamp = Date.now();
+    const ra = await api('register', { email: `scope-a-${stamp}@anticodex.dev`, password: 'secret123', name: 'Scope A' });
+    const rb = await api('register', { email: `scope-b-${stamp}@anticodex.dev`, password: 'secret123', name: 'Scope B' });
+    const tokA = ra.data.token, tokB = rb.data.token;
+    const marker = `zebrafish${stamp}`;
+    await api('threads', { op: 'save', token: tokB, thread: { id: `thr-b-${stamp}`, title: `Bprivate ${marker}`, messages: [{ role: 'user', content: `secret note ${marker}` }] } });
+    await api('threads', { op: 'save', token: tokA, thread: { id: `thr-a-${stamp}`, title: `Aown ${marker}`, messages: [{ role: 'user', content: `my own ${marker}` }] } });
+    const asA = await api('search_all', { q: marker, token: tokA });
+    const blobA = JSON.stringify(asA.data);
+    ok('search_all finds my own thread', blobA.includes('Aown'));
+    ok('search_all never returns another account\'s thread', !blobA.includes('Bprivate'));
+    const anon = await api('search_all', { q: marker });
+    const blobAnon = JSON.stringify(anon.data);
+    ok('anonymous search_all sees no account-owned threads', !blobAnon.includes('Bprivate') && !blobAnon.includes('Aown'));
+  }
+
   server.kill('SIGTERM');
   UPSTREAM.close();
   console.log(`\n${passed} passed, ${failed} failed`);

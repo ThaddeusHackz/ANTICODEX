@@ -185,7 +185,21 @@ export default async function handler(req, res) {
       // learn not to use it.
       case 'search_all': {
         const q = body.q || body.query || '';
-        const chats = await find('threads', () => true, 500).catch(() => []);
+        // Chats are private. This used to search EVERY account's threads and
+        // return their titles and message snippets to any caller. Scope to the
+        // requesting account, exactly like handleThreads; an anonymous caller
+        // on a hosted deployment gets no chat group at all (the local machine's
+        // own unowned rows stay searchable on desktop / npm start).
+        const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || body.token;
+        const owner = auth ? await authx.findByToken(auth).catch(() => null) : null;
+        const hosted = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
+        let chats = []; let chatsNote = null;
+        if (!auth && hosted) {
+          chatsNote = 'sign in to search your chats';
+        } else {
+          const mine = (row) => row && (row.user_id === auth || (owner && (row.user_id === owner.id || row.user_email === owner.email)));
+          chats = await find('threads', mine, 500).catch(() => []);
+        }
         // The atlas is a build artifact: 2,208 skills, loaded lazily and cached by
         // the module. `loadAtlas()` throws if the artifact is missing, which is a
         // normal state on a fresh checkout — so a missing atlas must not break chat
@@ -194,13 +208,14 @@ export default async function handler(req, res) {
         try { skills = loadAtlas(); } catch { skills = null; }
         let apis = null;
         try { apis = loadCatalogue(); } catch { apis = null; }
-        return json(res, 200, searchEverything(q, {
+        const out = searchEverything(q, {
           limit: Math.min(Number(body.limit) || 6, 20),
           chats,
           skills,
           apis,
           connectors: MCP_CATALOG
-        }));
+        });
+        return json(res, 200, chatsNote ? { ...out, chats_note: chatsNote } : out);
       }
       case 'image': {
         try {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useApp, loadThreads, mergeThreads } from './lib/state.jsx';
@@ -7,25 +7,29 @@ import { Brand, Toast, CommandPalette } from './ui.jsx';
 import ModelPicker from './ModelPicker.jsx';
 import EffortPicker from './EffortPicker.jsx';
 import ChatPage from './pages/Chat.jsx';
-import CodexPage from './pages/Codex.jsx';
-import ClaudePage from './pages/Claude.jsx';
-import ImagesPage from './pages/Images.jsx';
-import VideoPage from './pages/Video.jsx';
-import McpPage from './pages/Mcp.jsx';
-import SkillsPage from './pages/Skills.jsx';
-import ReaPage from './pages/Rea.jsx';
-import QoderPage from './pages/Qoder.jsx';
-import SandboxPage from './pages/Sandbox.jsx';
-import ComputerPage from './pages/Computer.jsx';
-import SettingsPage from './pages/Settings.jsx';
-import AdminPage from './pages/Admin.jsx';
-import SetupPage from './pages/Setup.jsx';
-import LibraryPage from './pages/Library.jsx';
-import AgentPage from './pages/Agent.jsx';
-import ApisPage from './pages/Apis.jsx';
-import ParityPage from './pages/Parity.jsx';
-import EvidencePage from './pages/Evidence.jsx';
-import InstallPage from './pages/Install.jsx';
+// Route-level code splitting: every page except Chat (the landing route) and
+// Auth (needed instantly at sign-in) loads on demand. One 595 KB bundle made
+// the phone build pay for the admin console, the parity table and the video
+// studio before the first chat could render.
+const CodexPage = lazy(() => import('./pages/Codex.jsx'));
+const ClaudePage = lazy(() => import('./pages/Claude.jsx'));
+const ImagesPage = lazy(() => import('./pages/Images.jsx'));
+const VideoPage = lazy(() => import('./pages/Video.jsx'));
+const McpPage = lazy(() => import('./pages/Mcp.jsx'));
+const SkillsPage = lazy(() => import('./pages/Skills.jsx'));
+const ReaPage = lazy(() => import('./pages/Rea.jsx'));
+const QoderPage = lazy(() => import('./pages/Qoder.jsx'));
+const SandboxPage = lazy(() => import('./pages/Sandbox.jsx'));
+const ComputerPage = lazy(() => import('./pages/Computer.jsx'));
+const SettingsPage = lazy(() => import('./pages/Settings.jsx'));
+const AdminPage = lazy(() => import('./pages/Admin.jsx'));
+const SetupPage = lazy(() => import('./pages/Setup.jsx'));
+const LibraryPage = lazy(() => import('./pages/Library.jsx'));
+const AgentPage = lazy(() => import('./pages/Agent.jsx'));
+const ApisPage = lazy(() => import('./pages/Apis.jsx'));
+const ParityPage = lazy(() => import('./pages/Parity.jsx'));
+const EvidencePage = lazy(() => import('./pages/Evidence.jsx'));
+const InstallPage = lazy(() => import('./pages/Install.jsx'));
 import { LoginPage, SignupPage, ForgotPage, ResetPage, VerifyPage, CallbackPage, EmailLinkHandler, DesktopLinkHandler, DesktopDeepLinkHandler } from './pages/Auth.jsx';
 
 // ---------------------------------------------------------------------------
@@ -389,6 +393,7 @@ export default function App() {
       <EmailLinkHandler />
       <DesktopLinkHandler />
       <DesktopDeepLinkHandler />
+      <Suspense fallback={<div role="status" style={{ padding: '2rem', opacity: 0.6 }}>Loading…</div>}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
@@ -421,6 +426,7 @@ export default function App() {
         <Route path="/admin" element={<Shell><AdminPage /></Shell>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </Suspense>
       {toast && <Toast toast={toast} />}
     </>
   );
