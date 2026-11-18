@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { chat as chatApi } from '../lib/api.js';
+import { chat as chatApi, agents as agentsApi } from '../lib/api.js';
 import { useApp } from '../lib/state.jsx';
 import { modelLabel } from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -14,6 +14,15 @@ const SKILLS = [
   { name: 'plans-and-file-history', src: 'claude-desktop', desc: 'Plans / file-history / shell-snapshots workflow' }
 ];
 
+// v2.5 — the sub-agent roster is now real: each role below maps to a genuine
+// orchestrated agent in lib/agents.js (planner → parallel specialists with
+// live tool access → synthesizer → critic).
+const MODES = [
+  { id: 'auto', label: 'Auto', hint: 'Lead agent plans the team itself (1-4 sub-agents)' },
+  { id: 'research', label: 'Deep research', hint: 'Researcher + analyst in parallel, cited synthesis' },
+  { id: 'review', label: 'Review panel', hint: 'Critic scores the draft before you see it' }
+];
+
 export default function ClaudePage() {
   const { model, notify } = useApp();
   const [memory, setMemory] = useState(() => localStorage.getItem('acx_memory') ||
@@ -21,6 +30,9 @@ export default function ClaudePage() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState('auto');
+  const [useTools, setUseTools] = useState(true);
+  const [run, setRun] = useState(null); // last orchestration result (agents[], score…)
   const [plan, setPlan] = useState([
     'Survey workspace and load project memory',
     'Break the task into verifiable steps',
@@ -33,20 +45,57 @@ export default function ClaudePage() {
   const bottomRef = useRef(null);
 
   useEffect(() => { localStorage.setItem('acx_memory', memory); }, [memory]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, run]);
+
+  async function sendAgents(content) {
+    // The real pipeline: one POST runs planner → parallel sub-agents (each can
+    // call builtins + connected MCP tools) → synthesizer → critic.
+    setBusy(true);
+    setToolLog((l) => [...l, { tool: 'orchestrator.start', args: `${mode} · ${content.slice(0, 60)}`, ok: true }]);
+    try {
+      const briefs = mode === 'research'
+        ? [{ role: 'researcher', goal: `Research thoroughly, with sources: ${content}` },
+           { role: 'analyst', goal: `Analyze implications, trade-offs and risks: ${content}` }]
+        : mode === 'review'
+        ? [{ role: 'writer', goal: `Draft a direct answer: ${content}` },
+           { role: 'critic', goal: `Critique accuracy and completeness for: ${content}. Output JSON {"score":n,"verdict":"ship|revise","defects":[...]}` }]
+        : undefined;
+      const r = await agentsApi({ task: content, model, briefs, use_mcp: useTools, critique: true });
+      if (!r.ok) throw new Error(r.error || 'the orchestrator returned no answer');
+      setRun(r);
+      setMessages((ms) => [...ms, { role: 'assistant', content: r.answer }]);
+      for (const a of r.agents || []) {
+        setToolLog((l) => [...l, {
+          tool: `agent.${a.role}`,
+          args: `${a.ok ? `${a.chars} chars` : `FAILED: ${a.error}`}${a.tools_used?.length ? ` · ${a.tools_used.join(', ')}` : ''} · ${(a.ms / 1000).toFixed(1)}s`,
+          ok: a.ok
+        }]);
+      }
+      if (typeof r.score === 'number') {
+        setToolLog((l) => [...l, { tool: 'critic.score', args: `${r.score}/10 — ${r.verdict}`, ok: r.verdict === 'ship' }]);
+      }
+    } catch (e) {
+      setMessages((ms) => [...ms, { role: 'assistant', content: `⚠ ${e.message}` }]);
+      setToolLog((l) => [...l, { tool: 'orchestrator.error', args: String(e.message).slice(0, 80), ok: false }]);
+    } finally { setBusy(false); }
+  }
 
   async function send() {
     const content = input.trim();
     if (!content || busy) return;
-    setBusy(true); setInput('');
-    const next = [...messages, { role: 'user', content }, { role: 'assistant', content: '', streaming: true }];
-    setMessages(next);
+    setInput('');
+    const prev = messages;
+    setMessages((ms) => [...ms, { role: 'user', content }]);
+    if (mode !== 'single') return sendAgents(content);
+
+    setBusy(true);
+    setMessages((ms) => [...ms, { role: 'assistant', content: '', streaming: true }]);
     setToolLog((l) => [...l, { tool: 'plan.update', args: content.slice(0, 60), ok: true }]);
     try {
       const r = await chatApi({
         model,
         system: `You are the ANTICODEX Agent Studio (Claude-Code-style). Project memory:\n${memory}\nCurrent plan:\n${plan.join('\n')}\nCite tools you would use in [tool:name] brackets.`,
-        messages: [...messages, { role: 'user', content }]
+        messages: [...prev, { role: 'user', content }]
       });
       const full = r.text || '(no response)';
       let shown = '';
@@ -128,14 +177,22 @@ export default function ClaudePage() {
             <div ref={bottomRef} />
           </div>
           <div className="composer" style={{ borderRadius: 12 }}>
-            <textarea value={input} placeholder="Ask the agent…"
+            <textarea value={input} placeholder="Ask the agent… (Auto mode fans the task out to real sub-agents)"
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
               style={{ minHeight: 38 }} />
             <div className="composer-bar">
               <span className="tiny" title={model}>{modelLabel(model)}</span>
+              {' '}
+              {MODES.map((m) => (
+                <button key={m.id} className={`btn small ${mode === m.id ? 'primary' : ''}`} title={m.hint}
+                  onClick={() => setMode(m.id)}>{m.label}</button>
+              ))}
+              {' '}
+              <button className={`btn small ${useTools ? '' : 'ghost'}`} title="Let sub-agents call builtins + connected MCP tools"
+                onClick={() => setUseTools(!useTools)}>{useTools ? '⚙ tools on' : '⚙ tools off'}</button>
               <div style={{ flex: 1 }} />
-              <button className="btn primary small" disabled={busy || !input.trim()} onClick={send}>{busy ? '…' : 'Send ⏎'}</button>
+              <button className="btn primary small" disabled={busy || !input.trim()} onClick={send}>{busy ? 'orchestrating…' : 'Run ⏎'}</button>
             </div>
           </div>
         </div>
@@ -143,6 +200,23 @@ export default function ClaudePage() {
         <div className="card" style={{ minHeight: 420 }}>
           <h3>Tool log</h3>
           <p className="sub">Every tool invocation, streamed live — like Claude Code's tool-use trace.</p>
+          {run && (
+            <div className="card" style={{ marginBottom: 10, padding: 10 }}>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind={run.ok ? 'ok' : 'bad'}>{run.ok ? 'run ok' : 'run failed'}</Pill>
+                {typeof run.score === 'number' && <Pill kind={run.verdict === 'ship' ? 'ok' : 'warn'}>critic {run.score}/10 · {run.verdict}</Pill>}
+                <Pill>{(run.ms / 1000).toFixed(1)}s</Pill>
+                <Pill>{run.agents?.length || 0} agents</Pill>
+                <Pill>{run.tools_available || 0} tools</Pill>
+              </div>
+              <div className="tiny" style={{ marginTop: 6 }}>{run.objective}</div>
+              {run.defects?.length > 0 && (
+                <ul className="tiny" style={{ margin: '6px 0 0 16px', paddingLeft: 0 }}>
+                  {run.defects.map((d, i) => <li key={i}>{d}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
           <div style={{ fontFamily: 'var(--mono)', fontSize: 12, maxHeight: 340, overflowY: 'auto' }}>
             {toolLog.map((t, i) => (
               <div key={i} style={{ padding: '5px 0', borderBottom: '1px dashed var(--border-soft)' }}>

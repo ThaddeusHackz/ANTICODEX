@@ -10,6 +10,18 @@ import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { MCP_CATALOG, McpClient, probeServer, discoverAuth, registerClient, buildAuthorizeUrl, exchangeCode, refreshToken, pkcePair, collectTools, executeTool } from '../lib/mcp.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
+import { runSubagents, AGENT_ROLES } from '../lib/agents.js';
+import { consume, LIMITS, clientKey } from '../lib/ratelimit.js';
+
+// v2.5: cheap per-IP budget in front of every action that costs money or is a
+// brute-force surface. Returns a ready 429 response, or null when allowed.
+function rateGuard(req, res, scope) {
+  const lim = LIMITS[scope];
+  if (!lim) return null;
+  const r = consume(clientKey(req, scope), lim.capacity, lim.perMinute);
+  if (r.ok) return null;
+  return json(res, 429, { error: `Rate limit reached — try again in ${r.retry_after_s}s.`, retry_after_s: r.retry_after_s });
+}
 
 // ---------------------------------------------------------------------------
 // Everything routes through /api/bridge with {action:...} so the same handlers
@@ -75,19 +87,21 @@ export default async function handler(req, res) {
         if (!auth) return json(res, 401, { error: 'sign in to test an endpoint', sign_in: '/login' });
         return json(res, 200, await testEndpoint({ ...body, keys: await mergedKeys(req, body) }));
       }
-      case 'chat': return await handleChat(body, res, req);
+      case 'chat': { const g = rateGuard(req, res, 'chat'); if (g) return g; return await handleChat(body, res, req); }
+      case 'agents': { const g = rateGuard(req, res, 'chat'); if (g) return g; return await handleAgents(body, res, req); }
+      case 'agent_roles': return json(res, 200, { ok: true, roles: Object.entries(AGENT_ROLES).map(([id, r]) => ({ id, label: r.label, tools: !!r.tools })) });
       case 'search': return json(res, 200, await webSearch({ ...body, keys: await mergedKeys(req, body) }));
-      case 'image': return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) }));
-      case 'video_start': return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) }));
+      case 'image': { const g = rateGuard(req, res, 'media'); if (g) return g; return json(res, 200, await generateImage({ ...body, keys: await mergedKeys(req, body) })); }
+      case 'video_start': { const g = rateGuard(req, res, 'media'); if (g) return g; return json(res, 200, await startVideo({ ...body, keys: await mergedKeys(req, body) })); }
       case 'video_status': return json(res, 200, await queryVideo(body.id));
       case 'user_keys': return await handleUserKeys(req, body, res);
-      case 'register': return json(res, 200, await safeAuth(() => authx.register(body)));
+      case 'register': { const g = rateGuard(req, res, 'auth_write'); if (g) return g; return json(res, 200, await safeAuth(() => authx.register(body))); }
       case 'verify_code': return json(res, 200, await safeAuth(() => authx.verifyCode(body)));
       case 'resend_code': return json(res, 200, await safeAuth(() => authx.resendCode(body)));
-      case 'login': return json(res, 200, await safeAuth(() => authx.login(body)));
+      case 'login': { const g = rateGuard(req, res, 'auth_write'); if (g) return g; return json(res, 200, await safeAuth(() => authx.login(body))); }
       case 'logout': return await handleLogout(req, body, res);
       case 'me': return await handleMe(req, body, res);
-      case 'forgot': return json(res, 200, await safeAuth(() => authx.forgot(body)));
+      case 'forgot': { const g = rateGuard(req, res, 'auth_write'); if (g) return g; return json(res, 200, await safeAuth(() => authx.forgot(body))); }
       case 'reset': {
         // The admin console can reset any account without the emailed code.
         const privileged = await isAdmin(req, body);
@@ -103,7 +117,7 @@ export default async function handler(req, res) {
       })));
       case 'threads': return await handleThreads(req, body, res);
       case 'mcp': return await handleMcp(body, res);
-      case 'admin': return await handleAdmin(body, res);
+      case 'admin': return await handleAdmin(body, res, req);
       case 'pair': return await handlePair(body, res, req);
       case 'extras': return json(res, 200, await handleExtras(body));
       case 'update_check': return await handleUpdateCheck(body, res);
@@ -259,6 +273,22 @@ async function handleUserKeys(req, body, res) {
     return json(res, 200, { ok: true, message: 'Reverted to the built-in default.' });
   }
   return json(res, 400, { error: 'unknown user_keys op' });
+}
+
+/** v2.5 — real sub-agent fan-out for Agent Studio. One POST runs planner →
+ *  parallel specialist agents (with live tool access) → synthesizer → critic. */
+async function handleAgents(body, res, req) {
+  const keys = await mergedKeys(req, body);
+  const out = await runSubagents({
+    task: body.task,
+    model: body.model,
+    keys,
+    briefs: body.briefs,
+    use_mcp: body.use_mcp,
+    critique: body.critique !== false,
+    concurrency: Math.min(4, Math.max(1, Number(body.concurrency) || 3))
+  });
+  return json(res, 200, out);
 }
 
 async function handleChat(body, res, req) {
@@ -543,12 +573,15 @@ async function handleMcp(body, res) {
 
 // --- admin ------------------------------------------------------------------
 
-async function handleAdmin(body, res) {
+async function handleAdmin(body, res, req) {
   const op = body.op || 'login';
   const expectedUser = getKey('ADMIN_USERNAME') || 'Thaddeusadmin';
   const expectedPass = getKey('ADMIN_PASSWORD') || 'Thaddeusk12';
 
   if (op === 'login') {
+    // v2.5: the console gate had no throttle at all — brute-forceable forever.
+    const g = rateGuard(req, res, 'admin_login');
+    if (g) return g;
     const ok = timingSafeEqual(body.username || '', expectedUser) && timingSafeEqual(body.password || '', expectedPass);
     if (!ok) return json(res, 401, { error: 'Invalid admin credentials' });
     const token = `adm_${await sha256(expectedUser + ':' + expectedPass + ':anticodex')}`;
