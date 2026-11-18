@@ -1,6 +1,6 @@
 {
   "name": "anticodex",
-  "version": "2.0.0",
+  "version": "2.5.0",
   "private": true,
   "description": "ANTICODEX \u2014 universal AI workspace: chat, code agents, MCP connectors, image/video generation, computer-use. Chat-class UI with Claude-class agents.",
   "type": "module",
