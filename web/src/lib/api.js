@@ -3,7 +3,11 @@
 const hasDesktop = () => typeof window !== 'undefined' && window.anticodexDesktop;
 
 // Actions the desktop main process runs itself (no CORS, keychain keys attached).
-const DESKTOP_PROXY = ['chat', 'search', 'image', 'video_start', 'video_status'];
+// 'agents' joined in v2.5: the sub-agent fan-out makes many chat() calls per
+// run, so it must resolve against the local keychain like chat does — and it
+// needs a bigger client-side patience window than a single completion.
+const DESKTOP_PROXY = ['chat', 'agents', 'search', 'image', 'video_start', 'video_status'];
+const DESKTOP_TIMEOUT_MS = { agents: 300_000 };
 // Listing / testing / syncing models must also see the desktop keychain, or the
 // app shows "needs key" for a key that is actually installed on this machine.
 const DESKTOP_KEYS = ['models', 'sync_models', 'test_endpoint', 'config'];
@@ -36,7 +40,25 @@ export async function api(action, payload = {}) {
   const adminToken = localStorage.getItem('acx_admin_token');
   if (adminToken) opts.headers['X-Admin-Token'] = adminToken;
 
-  const res = await fetch('/api/bridge', opts);
+  // v2.5: long-running actions (the sub-agent fan-out) get an AbortController
+  // budget instead of hanging on the browser default forever.
+  const budgetMs = DESKTOP_TIMEOUT_MS[action];
+  let signal, timer;
+  if (budgetMs) {
+    const ac = new AbortController();
+    timer = setTimeout(() => ac.abort(), budgetMs);
+    signal = ac.signal;
+    opts.signal = signal;
+  }
+  let res;
+  try {
+    res = await fetch('/api/bridge', opts);
+  } catch (e) {
+    if (e?.name === 'AbortError') throw new Error(`${action} timed out after ${Math.round(budgetMs / 1000)}s — try a smaller task or fewer agents.`);
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`);
@@ -48,6 +70,8 @@ export async function api(action, payload = {}) {
 }
 
 export const chat = (payload) => api('chat', payload);
+export const agents = (payload) => api('agents', payload);
+export const agentRoles = () => api('agent_roles');
 export const search = (payload) => api('search', payload);
 export const image = (payload) => api('image', payload);
 export const videoStart = (payload) => api('video_start', payload);
