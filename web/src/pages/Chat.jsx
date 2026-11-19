@@ -438,6 +438,7 @@ export default function ChatPage() {
                     ) : null}
                     {m.error ? (
                       <div className="msg-fix">
+                        <button className="btn small" onClick={() => { const u = messages.slice(0, i).reverse().find((x) => x.role === 'user'); if (u) send(u.content); }}>↻ Retry</button>
                         {m.settings_link
                           ? <Link className="btn small" to={m.settings_link}>Add or replace the key →</Link>
                           : null}
@@ -487,7 +488,7 @@ export default function ChatPage() {
                         ))}
                       </div>
                     ) : null}
-                    <MessageActions text={m.content} onRegen={i === messages.length - 1 ? () => send() : undefined} />
+                    <MessageActions text={m.content} onRegen={() => { const u = messages.slice(0, i).reverse().find((x) => x.role === 'user'); if (u) send(u.content); }} />
                   </>
                 )}
               </div>

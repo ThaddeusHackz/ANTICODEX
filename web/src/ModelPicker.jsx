@@ -170,6 +170,23 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
   const rows = useMemo(() => groups.flatMap((g) => (g.models || []).map((m) => ({ g, m }))), [groups]);
   useEffect(() => { setCursor(0); }, [q, tab, groups.length]);
 
+  const surprise = () => {
+    if (!providers.length) { notify('Loading the model index...'); load(true); return; }
+    const FAST = ['groq', 'cerebras', 'fireworks', 'together', 'deepseek', 'openai', 'anthropic', 'gemini'];
+    const pool = [];
+    for (const p of providers) {
+      const weight = (p.configured ? 4 : 1) * (FAST.includes(p.id) ? 3 : 1);
+      for (const m of (p.models || [])) {
+        if (m.unverified) continue;
+        for (let k = 0; k < weight; k++) pool.push([p.id, m]);
+      }
+    }
+    if (!pool.length) { notify('No live models to surprise you with yet - sync a provider first.'); return; }
+    const [pid, m] = pool[Math.floor(Math.random() * pool.length)];
+    notify('Surprised you with ' + (m.label || m.id) + ' (' + pid + ').');
+    choose(pid, m);
+  };
+
   const choose = (pid, m) => {
     const ref = `${pid}::${m.id}`;
     const provider = providers.find((p) => p.id === pid);
@@ -248,6 +265,7 @@ export default function ModelPicker({ compact = false, align = 'left' }) {
                 </div>
               </div>
               <div className="row" style={{ gap: 6 }}>
+                <button className="btn small ghost mp-surprise" onClick={surprise} disabled={busy === 'list'} title="Pick a random live model, fast providers first">🎲 Surprise me</button>
                 <button className="btn small ghost" onClick={load.bind(null, true)} disabled={busy === 'list'}>↻ Reload</button>
                 <button className="icon-btn mp-close" onClick={() => setOpen(false)} title="Close (Esc)" aria-label="Close model picker">✕</button>
               </div>

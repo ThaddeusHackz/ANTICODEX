@@ -1401,3 +1401,47 @@ caption.sr-only { caption-side: top; }
 .ui-line{stroke:#5b8cff;stroke-width:2}
 .ui-axis{fill:currentColor;font-size:8px;opacity:.7}
 @media (prefers-reduced-motion:reduce){.ui-chip{transition:none}}
+
+/* v2.7 design layer - a calmer, editorial chat surface. Evidence: docs/UI-2.7.md.
+   Tokens only; no gradient text, no glow, no undefined vars. */
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+body { letter-spacing: 0.005em; }
+.messages { max-width: 48rem; margin: 0 auto; width: 100%; padding: 1.5rem 1.25rem 6rem; }
+.msg-row { line-height: 1.75; font-size: 1rem; }
+.msg-text { line-height: 1.75; }
+.msg-text p { margin: 0 0 0.9em; }
+.msg-text h1, .msg-text h2, .msg-text h3 { line-height: 1.3; margin: 1.4em 0 0.5em; letter-spacing: -0.01em; }
+.msg-text pre { border-radius: 12px; border: 1px solid var(--border); }
+.msg-text code { font-size: 0.9em; }
+.msg-name { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.35rem; }
+.msg-user-pill { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 18px; padding: 0.6rem 1rem; max-width: 85%; margin-left: auto; line-height: 1.6; }
+.msg-actions { opacity: 0; transition: opacity 150ms ease; }
+.msg-row:hover .msg-actions, .msg-row:focus-within .msg-actions { opacity: 1; }
+.msg-fix { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; border: 1px solid var(--border); border-left: 3px solid var(--warn); border-radius: 10px; padding: 0.6rem 0.8rem; background: var(--bg-elev); }
+.msg-timing, .msg-note { color: var(--muted); }
+.composer { max-width: 48rem; margin: 0 auto; }
+.composer-inner, .composer-box { background: var(--bg-composer); border: 1px solid var(--border); border-radius: 24px; box-shadow: var(--shadow); }
+.composer textarea { line-height: 1.6; }
+.hero, .empty-hero { text-align: center; padding: 3rem 1rem 2rem; }
+.hero h1, .empty-hero h1, .hero-title { font-family: Georgia, "Times New Roman", serif; font-weight: 500; font-size: clamp(1.8rem, 4vw, 2.6rem); letter-spacing: -0.015em; line-height: 1.15; color: var(--text); }
+.hero p, .empty-hero p { color: var(--text-2); max-width: 34rem; margin: 0.6rem auto 0; }
+.mode-card, .card { border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg-elev); transition: border-color 150ms ease, transform 150ms ease; }
+.mode-card:hover, .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.btn { border-radius: 10px; transition: background 150ms ease, border-color 150ms ease, transform 120ms ease; }
+.btn:active { transform: translateY(0.5px); }
+.icon-btn { border-radius: 8px; transition: background 150ms ease; }
+.nav-item, .rail-item { border-radius: 8px; font-size: 0.85rem; transition: background 150ms ease; }
+.nav-section, .rail-section { font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.modal { border-radius: var(--radius); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.mp-title { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; }
+.mp-surprise { border-color: var(--accent); color: var(--accent); }
+.mp-tools input { border-radius: 12px; }
+.typing i { background: var(--muted); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--bg-elev); border-radius: 8px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--hover); }
+a { text-underline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .msg-actions, .mode-card, .card, .btn, .icon-btn, .nav-item, .rail-item { transition: none; }
+  .mode-card:hover, .card:hover { transform: none; }
+}
