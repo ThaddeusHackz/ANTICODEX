@@ -105,7 +105,7 @@ export default function SkillsPage() {
                 type="search"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search 2,208 skills — “playwright test”, “sql injection”, “docx template”, “seo audit”…"
+                placeholder={`Search ${stats?.count ? stats.count.toLocaleString('en-US') : 'the'} skills`}
                 aria-label="Search skills"
               />
               <select className="select" value={tier} onChange={(e) => { setTier(e.target.value); setPage(1); }}>

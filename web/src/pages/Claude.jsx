@@ -215,7 +215,7 @@ export default function ClaudePage() {
           </div>
 
           {/* The atlas, searchable. Picking here pins a skill to every turn; leaving
-              it empty lets retrieval choose per message from all 2,208. */}
+              it empty lets retrieval choose per message from the whole atlas (45,762 at this pin). */}
           <div style={{ marginTop: 10 }}>
             <input
               type="search"

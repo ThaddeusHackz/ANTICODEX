@@ -155,7 +155,7 @@ const PALETTE_DESTINATIONS = [
   { label: 'Library', hint: 'everything this workspace made', to: '/library', icon: '▤', keys: 'library artifacts files gallery output' },
   { label: 'Connectors', hint: 'MCP servers and tools', to: '/mcp', icon: '⇄', keys: 'mcp connectors tools server supabase context7 playwright' },
   { label: 'Computer Use', hint: 'screen and input control', to: '/computer', icon: '▣', keys: 'computer use screen mouse keyboard desktop' },
-  { label: 'Skills', hint: '2,208 indexed skills', to: '/skills', icon: '✦', keys: 'skills skill skilui vibesec rea' },
+  { label: 'Skills', hint: 'Indexed skill atlas', to: '/skills', icon: '✦', keys: 'skills skill skilui vibesec rea' },
   { label: 'Public APIs', hint: '2,335 free endpoints the agent can call', to: '/apis', icon: '⛁', keys: 'apis api public free endpoints data catalogue' },
   { label: 'REA', hint: 'reverse engineer anything', to: '/rea', icon: '⟲', keys: 'rea reverse engineer mcp morluto' },
   { label: 'Qoder', hint: 'field guide: cloud agents, ACP, CLI', to: '/qoder', icon: '◈', keys: 'qoder acp qodercli cloud agents field guide' },

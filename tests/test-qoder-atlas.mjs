@@ -1,0 +1,37 @@
+import zlib from 'node:zlib'; import crypto from 'node:crypto';
+import { loadAtlas, skillBody, skillBodyRemote, resolveSkills, groundSkills, skillStats } from '../lib/skillkit.js';
+import { toAtlasEntries } from '../lib/qoder-skills.js';
+let p=0,f=0; const ok=(n,c,x)=>{ if(c){p++;console.log('  + '+n);} else {f++;console.log('  FAIL '+n+' '+(x||''));} };
+console.log('--- Qoder atlas merge ---');
+const atlas=loadAtlas();
+ok('atlas carries the qoder source', atlas.sources.some(s=>s.id==='qoder-ecosystem'));
+const qoder=atlas.skills.filter(s=>s.source?.id==='qoder-ecosystem');
+ok('43,554 qoder entries merged', qoder.length===43554, String(qoder.length));
+ok('total is core + qoder (45,762)', atlas.count===45762, String(atlas.count));
+ok('slugs are unique', new Set(atlas.skills.map(s=>s.slug)).size===atlas.count);
+ok('qoder entries lazy with sha256 + download_url', qoder.every(s=>s.lazy && s.sha256 && s.download_url));
+ok('source meta hydrated (label + license)', qoder.every(s=>s.source?.label && s.source?.license==='MIT'));
+ok('stats report merged count', skillStats().count===45762);
+const hits=resolveSkills('kubernetes cluster diagnostics', { limit: 5 });
+ok('retrieval finds qoder skills', hits.some(h=>h.source?.id==='qoder-ecosystem'), JSON.stringify(hits.map(h=>h.slug)));
+ok('a greeting retrieves nothing', resolveSkills('hi', { limit: 4 }).matched.filter(m=>m.score>8).length===0);
+const one=qoder[0];
+const body=skillBody(one.slug);
+ok('sync body is honest lazy preview', body && body.lazy===true && /Catalog preview/.test(body.body));
+const g=groundSkills('deep research with citations', { max_skills: 3 });
+ok('grounding respects budgets', (g.block||g.text||'').length <= 120000);
+function makeZip(name,content){const data=Buffer.from(content);const comp=zlib.deflateRawSync(data);const nb=Buffer.from(name);const lh=Buffer.alloc(30);lh.writeUInt32LE(0x04034b50,0);lh.writeUInt16LE(20,4);lh.writeUInt16LE(8,8);lh.writeUInt32LE(comp.length,18);lh.writeUInt32LE(data.length,22);lh.writeUInt16LE(nb.length,26);const local=Buffer.concat([lh,nb,comp]);const cd=Buffer.alloc(46);cd.writeUInt32LE(0x02014b50,0);cd.writeUInt16LE(20,4);cd.writeUInt16LE(20,6);cd.writeUInt16LE(8,10);cd.writeUInt32LE(comp.length,20);cd.writeUInt32LE(data.length,24);cd.writeUInt16LE(nb.length,28);cd.writeUInt32LE(0,42);const central=Buffer.concat([cd,nb]);const eocd=Buffer.alloc(22);eocd.writeUInt32LE(0x06054b50,0);eocd.writeUInt16LE(1,8);eocd.writeUInt16LE(1,10);eocd.writeUInt32LE(central.length,12);eocd.writeUInt32LE(local.length,16);return Buffer.concat([local,central,eocd]);}
+const zip=makeZip('SKILL.md','# Remote Skill\nfull body here');
+const sha=crypto.createHash('sha256').update(zip).digest('hex');
+const fake=async()=>({ok:true,status:200,arrayBuffer:async()=>zip.buffer.slice(zip.byteOffset,zip.byteOffset+zip.byteLength)});
+const orig={download_url:one.download_url, sha256:one.sha256};
+one.download_url='https://fixture/t.zip'; one.sha256=sha;
+const full=await skillBodyRemote(one.slug,{ fetchImpl: fake });
+ok('remote body fetched + verified + extracted', full && full.fetched===true && /full body here/.test(full.body));
+one.sha256='deadbeef';
+let refused=false; try{ await skillBodyRemote(one.slug,{ fetchImpl: fake }); }catch{ refused=true; }
+ok('sha256 mismatch refused', refused);
+one.download_url=orig.download_url; one.sha256=orig.sha256;
+const e1=toAtlasEntries({skills:[{name:'Deep Research',skill_id:'official03866510',description:'x',category:'Knowledge',path:'skills/qoder/a',download_url:'u',sha256:'s'}]});
+ok('mapping slug is name + id suffix', e1[0].slug==='deep-research-q03866510', e1[0].slug);
+console.log(p+' passed, '+f+' failed'); process.exit(f?1:0);

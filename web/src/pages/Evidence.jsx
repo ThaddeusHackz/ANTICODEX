@@ -43,7 +43,7 @@ const SEEN = [
   {
     what: 'Skill corpus',
     where: '7 GitHub repositories, pinned by commit',
-    detail: '2,208 SKILL.md files, deduplicated by slug with all sources recorded; frontmatter parsed with the same rules lib/skills.js enforces at runtime.'
+    detail: '2,208 core SKILL.md files plus 43,554 pinned Qoder catalog entries (45,762 total), deduplicated by slug with all sources recorded; frontmatter parsed with the same rules lib/skills.js enforces at runtime.'
   },
   {
     what: 'This machine',
@@ -143,7 +143,7 @@ export default function EvidencePage() {
         <div className="card col" style={{ gap: 10 }}>
           <div className="tiny">Every number on this page comes from a script in the repository, not from notes. Run these and diff the output.</div>
           <CopyField label="Sweep openai/codex into lib/codex-repos.js" value="node scripts/rea-codex-sweep.mjs" />
-          <CopyField label="Rebuild the skill atlas (2,208 skills, pinned)" value="node scripts/build-skill-atlas.mjs" />
+          <CopyField label="Rebuild the skill atlas (core + Qoder merge, pinned)" value="node scripts/build-skill-atlas.mjs && node scripts/merge-qoder-atlas.mjs" />
           <CopyField label="The parity table resolves against the filesystem — delete a file and it reports missing" value={`node -e "import('./lib/codex-map.js').then(m=>console.log(m.codexParity().tally))"`} />
         </div>
       </div>
