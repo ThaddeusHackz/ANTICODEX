@@ -62,8 +62,9 @@ node desktop/package-mac.mjs --arch arm64 --release
 node scripts/build-ios.mjs            # PWA assets + web/ios Capacitor project
 # → dist/ios/install.html  ·  web/ios/  (open on a Mac with Xcode to sign an .ipa)
 
-# 6. the skill atlas (2,208 skills) and the Codex sweep
-node scripts/build-skill-atlas.mjs    # → web/public/skills-atlas/
+# 6. the skill atlas (45,762 skills) and the Codex sweep
+node scripts/build-skill-atlas.mjs    # core corpus with bodies
+node scripts/merge-qoder-atlas.mjs    # + 43,554 pinned Qoder entries (lazy bodies)
 node scripts/rea-codex-sweep.mjs      # → lib/codex-repos.js (evidence for /parity)
 ```
 
@@ -87,12 +88,12 @@ node scripts/rea-codex-sweep.mjs      # → lib/codex-repos.js (evidence for /pa
 | **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |
 | **Bring your setup** | Reads a Codex `~/.codex/config.toml` and a Claude `.claude/settings.json` + `policy-limits.json` → shows a diff-style plan → connects the MCP servers, applies the feature policy, and returns model providers / aliases / migrations for this device. Nothing is written before you approve it; a token in the env block is detected but never echoed back |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
-| **Skills (2,208)** | `/skills` — a pinned corpus of agent skills from seven permissively licensed sources, **retrievable by meaning** (hybrid BM25 + name/tag boosts, deterministic), **grounded into every chat turn** with hard budgets, and installable into `~/.qoder/skills`, `~/.codex/skills` or `~/.claude/skills` in one click. Skills already on your machine — Qoder's included — join the same retrieval corpus. A 19-rule safety scanner with line numbers and fixes ships on the same page. `node scripts/build-skill-atlas.mjs` is the only way the corpus changes. |
+| **Skills (45,762)** | `/skills` — a pinned corpus of agent skills from seven permissively licensed sources, **retrievable by meaning** (hybrid BM25 + name/tag boosts, deterministic), **grounded into every chat turn** with hard budgets, and installable into `~/.qoder/skills`, `~/.codex/skills` or `~/.claude/skills` in one click. Skills already on your machine — Qoder's included — join the same retrieval corpus. A 19-rule safety scanner with line numbers and fixes ships on the same page. `node scripts/build-skill-atlas.mjs` is the only way the corpus changes. |
 | **Daytona** | `/sandbox` runs on **this machine or on a Daytona box over SSH** (`ssh.app.daytona.io:22`), with REST sandbox create/list when a `DAYTONA_API_KEY` exists. Every result carries the machine that ran it (`local` / `daytona:<user>`), the exit code and the wall clock. SSH keys come from `~/.ssh` or are generated at `~/.qoder/ssh/`; host keys are pinned on first use. |
 | **Codex parity** | `/parity` pairs **every surface this app ships with the upstream crates that implement the same job**, read live from `openai/codex` (121 crates, 80.8 MB of Rust, pinned by commit), and resolves each claim against the filesystem — delete an implementation and the row says `missing`. The differences are in the same table, not in a footnote. |
 | **Evidence** | `/evidence` — the reverse-engineering record, split into `[seen]` (read from an artifact) and `[inferred]` (hypothesis + its basis), with the three commands that regenerate every number on it. |
 | **Library** | `/library` — every artifact the workspace produced: images, video, code, exported skills. Records are written by the generators themselves, so the page is never a mock grid. |
-| **Agent Studio** | `/studio` — plans, project memory (`ANTICODEX.md`), a **searchable skill picker over all 2,208** (pin one, or let retrieval choose per message), and a live tool log. |
+| **Agent Studio** | `/studio` — plans, project memory (`ANTICODEX.md`), a **searchable skill picker over all 45,762** (pin one, or let retrieval choose per message), and a live tool log. |
 | **Install** | `/install` — macOS `.app`/`.dmg`, the iOS home-screen app (two taps, no App Store), and the Xcode path to a signed `.ipa`, each with the command that actually produces it and what is missing when it cannot. |
 
 ## Service keychain (integrated 2026-10-19)

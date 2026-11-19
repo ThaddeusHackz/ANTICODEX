@@ -273,7 +273,9 @@ globalThis.__mount = (route) => {
   };
 
   console.log('\n— signed-in shell (the crash the user hit) —');
-  const chatText = await mountAt('/', { token: reg.token, user: reg.user });
+  let chatText = await mountAt('/', { token: reg.token, user: reg.user });
+  await settleUntil(() => (win.document.getElementById('root')?.textContent || '').includes('Mount Rail Chat'));
+  chatText = win.document.getElementById('root').textContent.replace(/\s+/g, ' ');
   ok('the app survives login (shell still mounted)', chatText.length > 20, `root is empty → the tree unmounted`);
   ok('no uncaught errors from effects', errors.length === 0, errors.join(' | '));
   ok('no React errors during mount', !consoleErrors.some((e) => /TypeError|Cannot read|unmount/i.test(e)), consoleErrors.filter((e) => /TypeError|Cannot read/i.test(e)).join(' | ').slice(0, 200));
@@ -699,7 +701,8 @@ globalThis.__mount = (route) => {
     // is asserted on text that can only come from the endpoint.
     const skillsText = await mountAt('/skills', { token: reg.token, user: reg.user });
     ok('the Skills page renders', /Skills/.test(skillsText), skillsText.slice(0, 140));
-    ok('…with the real corpus size', /2,208|2208/.test(skillsText), skillsText.slice(0, 300));
+    const liveCount = JSON.parse(fs.readFileSync(new URL('../web/public/skills-atlas/index.json', import.meta.url), 'utf8')).count;
+    ok('the Skills page shows the live corpus size', skillsText.includes(liveCount.toLocaleString('en-US')) || skillsText.includes(String(liveCount)), skillsText.slice(0, 300));
     ok('…and real skill cards', /skill/.test(skillsText) && skillsText.length > 600, `${skillsText.length} chars`);
     const libraryText = await mountAt('/library', { token: reg.token, user: reg.user });
     ok('the Library page renders', /Library/.test(libraryText), libraryText.slice(0, 140));

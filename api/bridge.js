@@ -80,7 +80,7 @@ import {
   testRemoteProfile
 } from '../lib/remote.js';
 import { sha256, timingSafeEqual, otp6, uid, clientIp } from '../lib/util.js';
-import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus } from '../lib/skillkit.js';
+import { listSkills, skillStats, resolveSkills, groundSkills, skillBody, scanCode, exportSkill, loadAtlas, installedSkills, localCorpus, skillBodyRemote } from '../lib/skillkit.js';
 import { loadCatalogue } from '../lib/publicapis.js';
 import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey, setupRecipe, execAnywhere, listSandboxes, createSandbox, deleteSandbox, normaliseUser, daytonaConfig, saveDaytonaConfig, normaliseTarget, provisionWorkspace, PROVISION_STEPS, tokenState, diagnose } from '../lib/daytona.js';
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
@@ -2580,6 +2580,10 @@ async function handleSkillKit(req, body, res) {
   if (op === 'get') {
     const one = skillBody(body.slug);
     if (!one) return json(res, 404, { ok: false, error: `No skill named "${body.slug}".` });
+    if (one.lazy) {
+      try { const full = await skillBodyRemote(body.slug); return json(res, 200, { ok: true, skill: full }); }
+      catch (e) { return json(res, 200, { ok: true, skill: { ...one, fetch_error: String(e?.message || e), note: 'Full SKILL.md is a sha256-verified package this host could not fetch; the body shown is the catalog preview.' } }); }
+    }
     return json(res, 200, { ok: true, skill: one });
   }
   // `include_local` merges the skills installed on this machine (Qoder's own,
