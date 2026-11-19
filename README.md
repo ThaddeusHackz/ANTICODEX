@@ -26,6 +26,13 @@ Account-scoped search, a compound-command guard on the agent's allow globs,
 real Explore subagents (`task`), atomic JSON storage and a split bundle —
 see [`docs/RELEASE-2.5.0.md`](docs/RELEASE-2.5.0.md) for what was verified and what is still limited.
 
+## Version 2.6
+
+Composio Connect (1,500+ apps, shared key built in), nine new MCP servers,
+the ANTICODEX CLI (`npx anticodex`), UICore interactive answer blocks + Dots,
+and the pinned Qoder Skills Ecosystem (43,554 skills). See
+[`docs/RELEASE-2.6.0.md`](docs/RELEASE-2.6.0.md).
+
 ## Quick start
 
 ```bash

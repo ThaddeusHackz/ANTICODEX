@@ -169,7 +169,10 @@ jobs:
             api) f=tests/test-api.mjs ;;
             auth) f=tests/test-auth.mjs ;;
             web-static) f=tests/test-web.mjs ;;
-            a11y) f=tests/test-a11y.mjs ;;
+            a11y) f=tests/test-a11y.mjs
+          - test-cli.mjs
+          - test-uicore.mjs
+          - test-qoder-catalog.mjs ;;
             web-mount) f=tests/test-web-mount.mjs ;;
             desktop) f=tests/test-desktop.mjs ;;
             agent) f=tests/test-agent.mjs ;;

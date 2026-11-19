@@ -3,7 +3,8 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useApp, saveThreadLocal, threadsChanged, loadThreads } from '../lib/state.jsx';
 import { modelLabel, rememberLabel } from '../ModelPicker.jsx';
 import * as api from '../lib/api.js';
-import { renderMarkdown } from '../lib/markdown.js';
+import { renderMarkdown } from '../lib/markdown.js'
+import { RichContent, PinButton, DotsPanel } from '../UICore.jsx';;
 import { Modal } from '../ui.jsx';
 
 const SUGGESTIONS = [
@@ -417,15 +418,16 @@ export default function ChatPage() {
         )}
         {!empty && (
           <>
+            <DotsPanel />
             {messages.map((m, i) => (
               <div key={i} className={`msg-row ${m.role}`}>
-                {m.role === 'assistant' && <div className="msg-name">ANTICODEX</div>}
+                {m.role === 'assistant' && <div className="msg-name">ANTICODEX <PinButton text={m.content} /></div>}
                 {m.role === 'user' ? (
                   <div className="msg-user-pill">{m.content}</div>
                 ) : (
                   <>
                     {m.reasoning ? <ThinkingBlock text={m.reasoning} ms={m.thinking_ms} /> : null}
-                    <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                    <RichContent text={m.content} onAction={(t)=>sendSearch(t)} />
                     {m.note && !m.error ? <div className="tiny msg-note">{m.note}</div> : null}
                     {m.elapsed_ms && !m.error ? (
                       <div className="tiny msg-timing">
@@ -519,7 +521,7 @@ export default function ChatPage() {
                 </div>
               )}
               {live.thinking ? <div className="live-think">{live.thinking}</div> : null}
-              {live.text ? <div className="msg-text" dangerouslySetInnerHTML={{ __html: renderMarkdown(live.text) }} /> : null}
+              {live.text ? <RichContent text={live.text} onAction={(t)=>sendSearch(t)} /> : null}
             </div>
           </div>
         )}
