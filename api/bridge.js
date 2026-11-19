@@ -907,6 +907,27 @@ async function handleMcp(body, res, req) {
   const op = body.op || 'list';
   if (op === 'catalog') return json(res, 200, { catalog: MCP_CATALOG, gateways: MCP_CATALOG.filter((c) => c.gateway) });
 
+  if (op === 'composio_connect') {
+    const toolkit = String(body.toolkit || '').trim();
+    if (!toolkit) return json(res, 400, { ok: false, error: 'toolkit required' });
+    const key = getKey('COMPOSIO_API_KEY');
+    if (!key) return json(res, 200, { ok: false, error: 'No Composio key configured.', fix: 'Set COMPOSIO_API_KEY.' });
+    let conn = await findOne('mcp_connections', (x) => x.url === 'https://connect.composio.dev/mcp');
+    if (!conn) { conn = { id: uid('mcp'), url: 'https://connect.composio.dev/mcp', name: 'Composio Connect', status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, headers: { 'x-consumer-api-key': key }, updated_at: new Date().toISOString() }; await insert('mcp_connections', conn); }
+    try {
+      const client = createClient(conn); const tools = await client.listTools();
+      const mgmt = (tools || []).find((t) => /MANAGE_CONNECTIONS/i.test(t.name || ''));
+      if (!mgmt) return json(res, 200, { ok: false, error: 'No COMPOSIO_MANAGE_CONNECTIONS.', tools: (tools||[]).map((t)=>t.name) });
+      const props = (mgmt.inputSchema && mgmt.inputSchema.properties) || {};
+      let args = props.toolkits ? { toolkits: [toolkit] } : props.toolkit ? { toolkit } : props.app ? { app: toolkit } : null;
+      if (!args) return json(res, 200, { ok: false, error: 'Unrecognized schema - use the playground.', schema: mgmt.inputSchema });
+      const out = await client.callTool(mgmt.name, args);
+      const links = (JSON.stringify(out || {}).match(/https?:\/\/[^\s"\\]+/g) || []);
+      const link = links.find((u) => /connect|oauth|authorize|redirect/i.test(u)) || links[0] || null;
+      return json(res, 200, { ok: !!link, link, toolkit, raw: link ? undefined : out, error: link ? undefined : 'No connect link - see raw.' });
+    } catch (e) { return json(res, 200, { ok: false, error: String(e.message || e), fix: 'Composio may be unreachable here (egress); desktop/local can reach it.' }); }
+  }
+
   if (op === 'list') return json(res, 200, { connections: await find('mcp_connections', () => true, 500), tool_cache: toolCacheSummary() });
 
   if (op === 'save') {

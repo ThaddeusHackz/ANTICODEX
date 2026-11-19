@@ -1,0 +1,14 @@
+import { parseBlocks, validate, UI_TYPES } from '../lib/uicore.js';
+let p=0,f=0; const ok=(n,c)=>{ if(c){p++;console.log('  + '+n);} else {f++;console.log('  FAIL '+n);} };
+console.log('--- UICore ---');
+ok('plain md', parseBlocks('hello')[0].type==='md');
+const b=parseBlocks('before\n```anticodex-ui\n{"type":"buttons","items":["A","B"]}\n```\nafter');
+ok('splits', b.length===3 && b[1].type==='ui');
+ok('buttons', b[1].block.items[0].prompt==='A');
+ok('bad json raw', parseBlocks('```anticodex-ui\n{nope}\n```')[0].type==='md');
+ok('unknown raw', parseBlocks('```anticodex-ui\n{"type":"evil"}\n```')[0].type==='md');
+ok('8 types', UI_TYPES.length===8);
+ok('chart coerce', validate({type:'chart',data:[{label:'x',value:'3'}]}).data[0].value===3);
+ok('grid clamp', validate({type:'grid',cols:99,rows:99}).cols===12);
+ok('form cap', validate({type:'form',fields:Array(50).fill({name:'a'})}).fields.length===20);
+console.log(p+' passed, '+f+' failed'); process.exit(f?1:0);

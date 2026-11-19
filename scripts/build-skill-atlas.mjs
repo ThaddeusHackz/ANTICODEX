@@ -39,7 +39,8 @@ export const SOURCES = [
   { id: 'wshobson', repo: 'wshobson/agents', sub: '', license: 'MIT', tier: 'curated', label: 'wshobson/agents' },
   { id: 'composio', repo: 'ComposioHQ/awesome-claude-skills', sub: '', license: 'MIT', tier: 'extra', label: 'Awesome Claude Skills' },
   { id: 'alirezarezvani', repo: 'alirezarezvani/claude-skills', sub: '', license: 'MIT', tier: 'extra', label: 'alirezarezvani/claude-skills' },
-  { id: 'davila7', repo: 'davila7/claude-code-templates', sub: '', license: 'MIT', tier: 'extra', label: 'claude-code-templates' }
+  { id: 'davila7', repo: 'davila7/claude-code-templates', sub: '', license: 'MIT', tier: 'extra', label: 'claude-code-templates' },
+  { id: 'qoder-ecosystem', repo: 'ThaddeusHackz/The-Open-Agent-Skills-Ecosystem', sub: 'skills/qoder', license: 'MIT', tier: 'extra', label: 'Qoder Skills Ecosystem', catalog: 'catalog/qoder.json', pinned: 'ee2951cfe1', note: '43,554 skills; lazy metadata via scripts/fetch-qoder-catalog.mjs; bodies are sha256-verified ZIPs.' }
 ];
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
