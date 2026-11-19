@@ -12,7 +12,7 @@ ok('slugs are unique', new Set(atlas.skills.map(s=>s.slug)).size===atlas.count);
 ok('qoder entries lazy with sha256 + download_url', qoder.every(s=>s.lazy && s.sha256 && s.download_url));
 ok('source meta hydrated (label + license)', qoder.every(s=>s.source?.label && s.source?.license==='MIT'));
 ok('stats report merged count', skillStats().count===45762);
-const hits=resolveSkills('kubernetes cluster diagnostics', { limit: 5 });
+const hits=resolveSkills('kubernetes cluster diagnostics', { limit: 5 }).matched;
 ok('retrieval finds qoder skills', hits.some(h=>h.source?.id==='qoder-ecosystem'), JSON.stringify(hits.map(h=>h.slug)));
 ok('a greeting retrieves nothing', resolveSkills('hi', { limit: 4 }).matched.filter(m=>m.score>8).length===0);
 const one=qoder[0];
