@@ -128,7 +128,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [api, auth, web-static, web-mount, desktop, agent, a11y]
+        suite: [api, auth, web-static, web-mount, desktop, agent, a11y, cli, uicore, qoder-catalog]
         # Two Node versions on purpose. Vercel runs 22; the packaged .exe embeds
         # Electron 31's Node, which is the 20 line — so `api/` + `lib/` have to work
         # on both, and a runner pinned to one silently stops testing the other.
@@ -169,10 +169,10 @@ jobs:
             api) f=tests/test-api.mjs ;;
             auth) f=tests/test-auth.mjs ;;
             web-static) f=tests/test-web.mjs ;;
-            a11y) f=tests/test-a11y.mjs
-          - test-cli.mjs
-          - test-uicore.mjs
-          - test-qoder-catalog.mjs ;;
+            a11y) f=tests/test-a11y.mjs ;;
+            cli) f=tests/test-cli.mjs ;;
+            uicore) f=tests/test-uicore.mjs ;;
+            qoder-catalog) f=tests/test-qoder-catalog.mjs ;;
             web-mount) f=tests/test-web-mount.mjs ;;
             desktop) f=tests/test-desktop.mjs ;;
             agent) f=tests/test-agent.mjs ;;
