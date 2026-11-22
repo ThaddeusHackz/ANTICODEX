@@ -1,6 +1,6 @@
 {
   "name": "anticodex",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "private": true,
   "description": "ANTICODEX \u2014 universal AI workspace: chat, code agents, MCP connectors, image/video generation, computer-use. Chat-class UI with Claude-class agents.",
   "type": "module",
@@ -10,7 +10,7 @@
     "build": "npm run build --prefix web",
     "build:web": "npm run build --prefix web",
     "start": "node server.mjs",
-    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs && node tests/test-import-config.mjs && node tests/test-mcp-stdio.mjs && node tests/test-workspace.mjs && node tests/test-workspace-fs.mjs && node tests/test-skills.mjs && node tests/test-egress.mjs && node tests/test-artifacts.mjs && node tests/test-brands.mjs && node tests/test-studios.mjs && node tests/test-streaming.mjs && node tests/test-rea.mjs && node tests/test-atlas.mjs && node tests/test-fast.mjs && node tests/test-sandbox.mjs && node tests/test-remote.mjs && node tests/test-desktop.mjs && node tests/test-qoder.mjs && node tests/test-pwa.mjs && node tests/test-agent.mjs && node tests/test-a11y.mjs && node tests/test-cli.mjs && node tests/test-uicore.mjs && node tests/test-qoder-catalog.mjs && node tests/test-ui27.mjs && node tests/test-qoder-atlas.mjs && node tests/test-codex-parity.mjs",
+    "test": "node tests/test-api.mjs && node tests/test-auth.mjs && node tests/test-web.mjs && node tests/test-web-mount.mjs && node tests/test-import-config.mjs && node tests/test-mcp-stdio.mjs && node tests/test-workspace.mjs && node tests/test-workspace-fs.mjs && node tests/test-skills.mjs && node tests/test-egress.mjs && node tests/test-artifacts.mjs && node tests/test-brands.mjs && node tests/test-studios.mjs && node tests/test-streaming.mjs && node tests/test-rea.mjs && node tests/test-atlas.mjs && node tests/test-fast.mjs && node tests/test-sandbox.mjs && node tests/test-remote.mjs && node tests/test-desktop.mjs && node tests/test-qoder.mjs && node tests/test-pwa.mjs && node tests/test-agent.mjs && node tests/test-a11y.mjs && node tests/test-cli.mjs && node tests/test-uicore.mjs && node tests/test-qoder-catalog.mjs && node tests/test-ui27.mjs && node tests/test-qoder-atlas.mjs && node tests/test-codex-parity.mjs && node tests/test-qoder-ladder.mjs",
     "test:desktop": "node tests/test-desktop.mjs",
     "test:api": "node tests/test-api.mjs",
     "package:win": "node desktop/package-win.mjs",

@@ -128,7 +128,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [api, auth, web-static, web-mount, desktop, agent, a11y, cli, uicore, qoder-catalog, ui27, qoder-atlas, codex-parity]
+        suite: [api, auth, web-static, web-mount, desktop, agent, a11y, cli, uicore, qoder-catalog, ui27, qoder-atlas, codex-parity, qoder-ladder]
         # Two Node versions on purpose. Vercel runs 22; the packaged .exe embeds
         # Electron 31's Node, which is the 20 line — so `api/` + `lib/` have to work
         # on both, and a runner pinned to one silently stops testing the other.
@@ -176,6 +176,7 @@ jobs:
             ui27) f=tests/test-ui27.mjs ;;
             qoder-atlas) f=tests/test-qoder-atlas.mjs ;;
             codex-parity) f=tests/test-codex-parity.mjs ;;
+            qoder-ladder) f=tests/test-qoder-ladder.mjs ;;
             web-mount) f=tests/test-web-mount.mjs ;;
             desktop) f=tests/test-desktop.mjs ;;
             agent) f=tests/test-agent.mjs ;;

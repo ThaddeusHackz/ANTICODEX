@@ -48,6 +48,13 @@ rollouts with `anticodex resume`, `anticodex exec --json`, and slash commands +
 @file mentions in the Codex composer. See [`docs/RELEASE-2.8.0.md`](docs/RELEASE-2.8.0.md)
 for what is verified and what is still not claimed.
 
+## Version 2.9
+
+Four rungs of the Qoder ladder: safe context compaction, a Needs Me attention
+inbox, next-step suggestions and skill-evolution suggestions - all derived from
+events the turn already emits. The full 0.1.0 -> 0.5.17 mapping (including what is
+still missing) is in [`docs/QODER-LADDER.md`](docs/QODER-LADDER.md).
+
 ## Quick start
 
 ```bash
