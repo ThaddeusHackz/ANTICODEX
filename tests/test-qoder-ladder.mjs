@@ -79,5 +79,7 @@ console.log('--- wired into the agent loop ---');
   const model=async({messages})=>{ seen.push(messages.length); return script[Math.min(i++,script.length-1)]; };
   for await (const ev of runAgent({messages:msgs,agent:'build',target:'local',account:'ladder',callModel:model,askPermission:async()=>'allow'})) evs.push(ev);
   ok('a long thread emits a compact event', evs.some(e=>e.type==='compact'));
-  ok('compaction actually shrank the request', seen.length>0 && seen[0]<msgs.length, JSON.stringify(seen)+' vs '+msgs.length); }
+  const ce=evs.find(e=>e.type==='compact');
+  ok('compaction actually shrank the request', Boolean(ce) && ce.chars_after < ce.chars_before, JSON.stringify(ce));
+  ok('the compact event reports what it removed', Boolean(ce) && ce.removed > 0 && ce.count >= 1); }
 console.log(p+' passed, '+f+' failed'); process.exit(f?1:0);
