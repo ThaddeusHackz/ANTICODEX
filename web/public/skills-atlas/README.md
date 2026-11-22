@@ -15,3 +15,9 @@ Generated 2026-11-10T01:34:25.303Z by `scripts/build-skill-atlas.mjs`. 2208 skil
 Every `SKILL.md` is copied verbatim (frontmatter is normalised only where Qoder/runtime rules require it:
 lowercase `name`, single-line `description` ≤ 1024 chars). Each skill keeps its source URL and commit above.
 Skills flagged by the safety scan are marked in the UI and never auto-invoked.
+
+## Qoder merge (v2.7.1)
+
+43,554 pinned Qoder catalog entries (MIT, ee2951cfe1). Bodies are sha256-verified
+ZIPs fetched on demand (skillkit get). Rebuild = build-skill-atlas.mjs then
+merge-qoder-atlas.mjs (idempotent).

@@ -61,7 +61,7 @@ const NAV_WORKSPACE = [
   { to: '/video', icon: '▶', label: 'Video', title: 'Hailuo text-to-video' },
   { to: '/mcp', icon: '⇄', label: 'Connectors', title: 'MCP servers' },
   { to: '/computer', icon: '▣', label: 'Computer Use', title: 'Screen + input control' },
-  { to: '/skills', icon: '✦', label: 'Skills', title: '2,208 indexed skills' },
+  { to: '/skills', icon: '✦', label: 'Skills', title: 'Indexed skill atlas' },
   { to: '/rea', icon: '⟲', label: 'REA', title: 'Reverse Engineer Anything' },
   { to: '/qoder', icon: '◈', label: 'Qoder', title: 'Qoder field guide' },
   { to: '/setup', icon: '⇪', label: 'Bring your setup', title: 'Import Codex/Claude config' }

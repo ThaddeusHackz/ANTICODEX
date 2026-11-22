@@ -193,6 +193,10 @@ async function resourcesFor(dir, relFiles) {
 }
 
 async function harvestSource(src, opts) {
+  if (src.catalog) {
+    log(`· ${src.id}: catalog source - run scripts/merge-qoder-atlas.mjs after this build`);
+    return { skills: [], meta: { ...src, commit: src.pinned || null, found: 0 } };
+  }
   const root = cloneIfNeeded(src, opts);
   if (!root) return { skills: [], meta: { ...src, commit: null, found: 0 } };
   const commit = (() => { try { return git(root, ['rev-parse', 'HEAD']); } catch { return null; } })();
