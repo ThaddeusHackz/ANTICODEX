@@ -68,7 +68,7 @@ console.log('--- wired into the agent loop ---');
   ok('done carries attention', Array.isArray(d?.attention));
   ok('done carries next_steps', Array.isArray(d?.next_steps)&&d.next_steps.length>0);
   ok('done carries a compaction count', typeof d?.compactions==='number'); }
-{ const script=[{content:'',tool_calls:[{id:'b1',function:{name:'bash',arguments:JSON.stringify({command:'definitely-not-a-command-xyz'})}}]},{content:'done'}];
+{ const script=[{content:'',tool_calls:[{id:'b1',function:{name:'read',arguments:JSON.stringify({file_path:'definitely-missing-file-xyz.txt'})}}]},{content:'done'}];
   let i=0; const evs=[];
   for await (const ev of runAgent({messages:[{role:'user',content:'run it'}],agent:'build',target:'local',account:'ladder',callModel:async()=>script[Math.min(i++,script.length-1)],askPermission:async()=>'allow'})) evs.push(ev);
   ok('a failing tool raises an attention event', evs.some(e=>e.type==='attention'&&e.items.some(x=>x.kind==='error'))); }
@@ -79,5 +79,5 @@ console.log('--- wired into the agent loop ---');
   const model=async({messages})=>{ seen.push(messages.length); return script[Math.min(i++,script.length-1)]; };
   for await (const ev of runAgent({messages:msgs,agent:'build',target:'local',account:'ladder',callModel:model,askPermission:async()=>'allow'})) evs.push(ev);
   ok('a long thread emits a compact event', evs.some(e=>e.type==='compact'));
-  ok('compaction actually shrank the request', seen.length>1 && seen[1]<seen[0]); }
+  ok('compaction actually shrank the request', seen.length>0 && seen[0]<msgs.length, JSON.stringify(seen)+' vs '+msgs.length); }
 console.log(p+' passed, '+f+' failed'); process.exit(f?1:0);
