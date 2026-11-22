@@ -5,6 +5,7 @@ import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
 import { renderMarkdown } from '../lib/markdown.js';
 import { CopyBtn, Pill } from '../ui.jsx';
+import { parseSlash, fileMentions, SLASH_COMMANDS } from '../../../lib/slash.js';
 
 // The seeded files are the DEMO workspace: hosted visitors get a virtual tree
 // and the page says so. On the desktop app or a local server the same page
@@ -287,9 +288,54 @@ export default function CodexPage() {
     return parts.join('\n\n') || '(workspace is empty)';
   }
 
+  const say = (text) => setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: 'assistant', content: text }]);
+
+  // Slash commands are handled here, not sent to the model as prose. An unknown
+  // command says so; /help lists what exists.
+  function runSlash(parsed) {
+    if (parsed.kind === 'unknown') { say(parsed.error); return true; }
+    if (parsed.kind !== 'command') return false;
+    if (parsed.error) { say(parsed.error); return true; }
+    switch (parsed.name) {
+      case '/help':
+        say('**Commands**\n' + SLASH_COMMANDS.map((c) => '- `' + c.name + (c.args ? ' ' + c.args : '') + '` — ' + c.description).join('\n'));
+        return true;
+      case '/new':
+        setMessages([]); setProposals([]); setPhase(''); say('Started a fresh thread. Files on disk are untouched.');
+        return true;
+      case '/status':
+        say('**Status**\n- mode: `' + mode + '`\n- sandbox: `' + sandbox + '`\n- network: `' + String(net) + '`\n- workspace: `' + (wsMode === 'real' ? 'real' : 'demo') + '`' + (cwd ? ' at `' + cwd + '`' : '') + '\n- pending proposals: ' + proposals.length);
+        return true;
+      case '/diff':
+        if (!proposals.length) { say('No pending patch proposals in this thread.'); return true; }
+        say('**Pending proposals**\n' + proposals.map((p) => '- `' + p.path + '` +' + p.added + '/-' + p.removed + (p.applied ? ' (applied)' : '')).join('\n'));
+        setPanel('agent');
+        return true;
+      case '/approvals':
+        setMode(parsed.arg); say('Approval mode set to `' + parsed.arg + '`.');
+        return true;
+      case '/model':
+        say('Pick a model in the composer bar below.');
+        return true;
+      default:
+        return false;
+    }
+  }
+
   async function askAgent() {
     const content = input.trim();
     if (!content || busy || streamRef.current) return;
+    const parsed = parseSlash(content);
+    if (parsed.kind !== 'prompt') { setInput(''); runSlash(parsed); return; }
+    const mentions = fileMentions(content);
+    if (mentions.length && wsMode === 'real') {
+      const missing = [];
+      for (const rel of mentions) {
+        try { const r = await workspaceFs({ op: 'read', path: rel, cwd: cwd || undefined }); if (!r?.ok) missing.push(rel); }
+        catch { missing.push(rel); }
+      }
+      if (missing.length) say('These @mentions were not found in the workspace: ' + missing.map((m) => '`' + m + '`').join(', ') + '. Sending the prompt anyway.');
+    }
     const controller = new AbortController();
     streamRef.current = controller;
     const id = crypto.randomUUID();

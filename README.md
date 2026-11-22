@@ -40,6 +40,14 @@ pills, hover actions), a working **Retry** on every answer and error, and
 **Surprise me** in the model picker (random live model, fast gateways first).
 Design evidence and REA honest limits: [`docs/UI-2.7.md`](docs/UI-2.7.md).
 
+## Version 2.8
+
+Codex parity, tier 1: `apply_patch` in the Codex envelope (add/update/move/
+delete, all-or-nothing), `update_plan`, a cumulative turn diff, JSONL session
+rollouts with `anticodex resume`, `anticodex exec --json`, and slash commands +
+@file mentions in the Codex composer. See [`docs/RELEASE-2.8.0.md`](docs/RELEASE-2.8.0.md)
+for what is verified and what is still not claimed.
+
 ## Quick start
 
 ```bash
