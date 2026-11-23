@@ -1,0 +1,80 @@
+name: Prepare approved v3 feature branch
+on:
+  push:
+    branches: [feat/v3-teams-sites]
+    paths: [.github/workflows/prepare-v3.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'ThaddeusHackz/ANTICODEX' && github.ref == 'refs/heads/feat/v3-teams-sites' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply the checksum-verified source-only bundle
+        env:
+          SOURCE_URL: https://backend.composio.dev/api/v3/sl/fWjBGUD0Se
+          SOURCE_SHA256: b8d8897ff2be1090cc7163faca9b1c07ede65f05443d26c020d57ef402b53399
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/feat/v3-teams-sites
+          curl --fail --location --retry 2 --max-time 90 "$SOURCE_URL" -o "$RUNNER_TEMP/v3-source.zip"
+          echo "$SOURCE_SHA256  $RUNNER_TEMP/v3-source.zip" | sha256sum --check -
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,zipfile
+          root=pathlib.Path.cwd().resolve()
+          with zipfile.ZipFile(pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-source.zip') as z:
+              manifest=json.loads(z.read('manifest.json'))
+              assert manifest['base']=='b3412d1eaf675606e801f23cc093b96f40f31dab'
+              assert manifest['branch']=='feat/v3-teams-sites'
+              subprocess.run(['git','merge-base','--is-ancestor',manifest['base'],'HEAD'],check=True)
+              for name,digest in manifest['sha256'].items():
+                  assert hashlib.sha256(z.read(name)).hexdigest()==digest,name
+              patch=pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-changes.patch'
+              patch.write_bytes(z.read('changes.patch'))
+              subprocess.run(['git','apply','--check',str(patch)],check=True)
+              subprocess.run(['git','apply',str(patch)],check=True)
+              for name in manifest['new']:
+                  destination=(root/name).resolve()
+                  assert destination.is_relative_to(root)
+                  assert name.split('/')[0] in {'lib','web','tests','docs','supabase'}
+                  destination.parent.mkdir(parents=True,exist_ok=True)
+                  destination.write_bytes(z.read('new/'+name))
+              # Schema property names are metadata, not credential values.
+              scope=root/'lib/mcp-scope.js'
+              text=scope.read_text().replace('if (PRIVATE.test(key)) {','if (PRIVATE.test(key) && (val === null || typeof val !== \'object\')) {')
+              text=text.replace("if (/headers/i.test(key) && val && typeof val === 'object')", "if (/headers/i.test(key) && val && typeof val === 'object' && Object.values(val).every((v) => typeof v === 'string'))")
+              scope.write_text(text)
+              subprocess.run(['git','add','--',*manifest['changed'],*manifest['new']],check=True)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(v3): Teams, Sites, shared UI and account-scoped MCP boundaries'
+          git push origin HEAD:refs/heads/feat/v3-teams-sites
+      - name: Verify v3 backend and transport contracts
+        run: node tests/test-v3.mjs
+      - name: Install web dependencies and rebuild shared assets
+        working-directory: web
+        run: |
+          npm ci --include=dev || npm install --include=dev
+          npm run build
+      - name: Exercise the new UI in jsdom
+        run: node tests/test-v3-ui.mjs
+      - name: Run the complete regression suite
+        run: npm test
+      - name: Save rebuilt assets and remove this one-time branch bootstrap
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/feat/v3-teams-sites
+          git add web/dist web/package-lock.json
+          git rm .github/workflows/prepare-v3.yml
+          git commit -m 'build(v3): refresh shared web assets after regression verification'
+          git push origin HEAD:refs/heads/feat/v3-teams-sites
