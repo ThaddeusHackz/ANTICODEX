@@ -77,3 +77,7 @@ control, cross-network device connections, enterprise governance and cloud
 automations are **not built**. Qoder's 0.1.0 -> 0.5.17 is roughly three months of a
 large team's work across desktop, mobile, cloud and enterprise; this repo closes
 the rungs it can prove and lists the rest above rather than implying parity.
+
+## v3 draft scope (not released)
+
+Teams now has bounded read-only Architect/Reviewer workers plus a lead synthesis. Sites generates escaped structured static pages, isolated previews and HTML export. Both remain **partial** relative to Qoder: no autonomous write-enabled teams, hosted sites deployment or Sites canvas editor is claimed. See `docs/RELEASE-3.0.0.md`.
