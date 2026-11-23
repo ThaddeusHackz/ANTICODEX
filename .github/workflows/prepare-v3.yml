@@ -19,10 +19,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply the checksum-verified source-only bundle
+      - name: Apply the verified source bundle without editing workflows
         env:
-          SOURCE_URL: https://backend.composio.dev/api/v3/sl/fWjBGUD0Se
-          SOURCE_SHA256: b8d8897ff2be1090cc7163faca9b1c07ede65f05443d26c020d57ef402b53399
+          SOURCE_URL: https://backend.composio.dev/api/v3/sl/fljECqH59j
+          SOURCE_SHA256: 73ee74f56ea030c7fcc4021f7d08a60b2d168ae82cd0f5ddf70a23d786b855c1
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/feat/v3-teams-sites
@@ -38,27 +38,26 @@ jobs:
               subprocess.run(['git','merge-base','--is-ancestor',manifest['base'],'HEAD'],check=True)
               for name,digest in manifest['sha256'].items():
                   assert hashlib.sha256(z.read(name)).hexdigest()==digest,name
-              patch=pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-changes.patch'
-              patch.write_bytes(z.read('changes.patch'))
-              subprocess.run(['git','apply','--check',str(patch)],check=True)
-              subprocess.run(['git','apply',str(patch)],check=True)
-              for name in manifest['new']:
-                  destination=(root/name).resolve()
-                  assert destination.is_relative_to(root)
-                  assert name.split('/')[0] in {'lib','web','tests','docs','supabase'}
-                  destination.parent.mkdir(parents=True,exist_ok=True)
-                  destination.write_bytes(z.read('new/'+name))
-              # Schema property names are metadata, not credential values.
-              scope=root/'lib/mcp-scope.js'
-              text=scope.read_text().replace('if (PRIVATE.test(key)) {','if (PRIVATE.test(key) && (val === null || typeof val !== \'object\')) {')
-              text=text.replace("if (/headers/i.test(key) && val && typeof val === 'object')", "if (/headers/i.test(key) && val && typeof val === 'object' && Object.values(val).every((v) => typeof v === 'string'))")
-              scope.write_text(text)
-              subprocess.run(['git','add','--',*manifest['changed'],*manifest['new']],check=True)
+              if not (root/'lib/teams.js').exists():
+                  patch=pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-changes.patch'
+                  patch.write_bytes(z.read('changes.patch'))
+                  subprocess.run(['git','apply','--exclude=.github/workflows/*','--check',str(patch)],check=True)
+                  subprocess.run(['git','apply','--exclude=.github/workflows/*',str(patch)],check=True)
+                  for name in manifest['new']:
+                      destination=(root/name).resolve()
+                      assert destination.is_relative_to(root)
+                      assert name.split('/')[0] in {'lib','web','tests','docs','supabase'}
+                      destination.parent.mkdir(parents=True,exist_ok=True)
+                      destination.write_bytes(z.read('new/'+name))
+              paths=[name for name in manifest['changed']+manifest['new'] if not name.startswith('.github/')]
+              subprocess.run(['git','add','--',*paths],check=True)
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'feat(v3): Teams, Sites, shared UI and account-scoped MCP boundaries'
-          git push origin HEAD:refs/heads/feat/v3-teams-sites
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat(v3): Teams, Sites, shared UI and account-scoped MCP boundaries'
+            git push origin HEAD:refs/heads/feat/v3-teams-sites
+          fi
       - name: Verify v3 backend and transport contracts
         run: node tests/test-v3.mjs
       - name: Install web dependencies and rebuild shared assets
@@ -66,15 +65,16 @@ jobs:
         run: |
           npm ci --include=dev || npm install --include=dev
           npm run build
-      - name: Exercise the new UI in jsdom
+      - name: Exercise the new UI and connector bridge in jsdom
         run: node tests/test-v3-ui.mjs
       - name: Run the complete regression suite
         run: npm test
-      - name: Save rebuilt assets and remove this one-time branch bootstrap
+      - name: Save rebuilt shared assets without editing workflows
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/feat/v3-teams-sites
           git add web/dist web/package-lock.json
-          git rm .github/workflows/prepare-v3.yml
-          git commit -m 'build(v3): refresh shared web assets after regression verification'
-          git push origin HEAD:refs/heads/feat/v3-teams-sites
+          if ! git diff --cached --quiet; then
+            git commit -m 'build(v3): refresh shared web assets after regression verification'
+            git push origin HEAD:refs/heads/feat/v3-teams-sites
+          fi
