@@ -1,4 +1,4 @@
-name: Prepare approved v3 feature branch
+name: Verify approved v3 regression fixes
 on:
   push:
     branches: [feat/v3-teams-sites]
@@ -9,7 +9,7 @@ jobs:
   prepare:
     if: github.repository == 'ThaddeusHackz/ANTICODEX' && github.ref == 'refs/heads/feat/v3-teams-sites' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -19,62 +19,58 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply the verified source bundle without editing workflows
+      - name: Apply checksum-verified source fixup
         env:
-          SOURCE_URL: https://backend.composio.dev/api/v3/sl/fljECqH59j
-          SOURCE_SHA256: 73ee74f56ea030c7fcc4021f7d08a60b2d168ae82cd0f5ddf70a23d786b855c1
+          SOURCE_URL: https://backend.composio.dev/api/v3/sl/GmZnp56yL9
+          SOURCE_SHA256: 3a374e1123229bb687fcf92f85611f13d5cf942bab5b1e0dd2b1d97527ef6c4a
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/feat/v3-teams-sites
-          curl --fail --location --retry 2 --max-time 90 "$SOURCE_URL" -o "$RUNNER_TEMP/v3-source.zip"
-          echo "$SOURCE_SHA256  $RUNNER_TEMP/v3-source.zip" | sha256sum --check -
+          curl --fail --location --retry 2 --max-time 90 "$SOURCE_URL" -o "$RUNNER_TEMP/v3-fixup.zip"
+          echo "$SOURCE_SHA256  $RUNNER_TEMP/v3-fixup.zip" | sha256sum --check -
           python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess,zipfile
-          root=pathlib.Path.cwd().resolve()
-          with zipfile.ZipFile(pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-source.zip') as z:
-              manifest=json.loads(z.read('manifest.json'))
-              assert manifest['base']=='b3412d1eaf675606e801f23cc093b96f40f31dab'
-              assert manifest['branch']=='feat/v3-teams-sites'
-              subprocess.run(['git','merge-base','--is-ancestor',manifest['base'],'HEAD'],check=True)
-              for name,digest in manifest['sha256'].items():
-                  assert hashlib.sha256(z.read(name)).hexdigest()==digest,name
-              if not (root/'lib/teams.js').exists():
-                  patch=pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-changes.patch'
-                  patch.write_bytes(z.read('changes.patch'))
-                  subprocess.run(['git','apply','--exclude=.github/workflows/*','--check',str(patch)],check=True)
-                  subprocess.run(['git','apply','--exclude=.github/workflows/*',str(patch)],check=True)
-                  for name in manifest['new']:
-                      destination=(root/name).resolve()
-                      assert destination.is_relative_to(root)
-                      assert name.split('/')[0] in {'lib','web','tests','docs','supabase'}
-                      destination.parent.mkdir(parents=True,exist_ok=True)
-                      destination.write_bytes(z.read('new/'+name))
-              paths=[name for name in manifest['changed']+manifest['new'] if not name.startswith('.github/')]
-              subprocess.run(['git','add','--',*paths],check=True)
+          with zipfile.ZipFile(pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-fixup.zip') as z:
+              m=json.loads(z.read('manifest.json'))
+              assert m['mode']=='fixup' and m['base']=='40b2ca55bd4f4f2c014714b277c81edeac2c1bd0'
+              assert m['branch']=='feat/v3-teams-sites'
+              assert set(m['changed'])=={'tests/test-api.mjs','tests/test-v3-ui.mjs','web/src/v3.css'} and not m['new']
+              subprocess.run(['git','merge-base','--is-ancestor',m['base'],'HEAD'],check=True)
+              for name,digest in m['sha256'].items():
+                  assert hashlib.sha256(z.read(name)).hexdigest()==digest
+              patch=pathlib.Path(os.environ['RUNNER_TEMP'])/'v3-fixup.patch'
+              patch.write_bytes(z.read('changes.patch'))
+              applied=subprocess.run(['git','apply','--reverse','--check',str(patch)],capture_output=True).returncode==0
+              if not applied:
+                  subprocess.run(['git','apply','--check',str(patch)],check=True)
+                  subprocess.run(['git','apply',str(patch)],check=True)
+              subprocess.run(['git','add','--',*m['changed']],check=True)
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if ! git diff --cached --quiet; then
-            git commit -m 'feat(v3): Teams, Sites, shared UI and account-scoped MCP boundaries'
+            git commit -m 'fix(v3): authenticate MCP fixtures, size result pane and isolate UI bridge tests'
             git push origin HEAD:refs/heads/feat/v3-teams-sites
           fi
-      - name: Verify v3 backend and transport contracts
+      - name: Verify backend and transport contracts
         run: node tests/test-v3.mjs
-      - name: Install web dependencies and rebuild shared assets
+      - name: Build shared web and desktop UI
         working-directory: web
         run: |
           npm ci --include=dev || npm install --include=dev
           npm run build
-      - name: Exercise the new UI and connector bridge in jsdom
+      - name: Verify mounted UI and real connector bridge
+        timeout-minutes: 2
         run: node tests/test-v3-ui.mjs
-      - name: Run the complete regression suite
+      - name: Run complete regression suite
+        timeout-minutes: 5
         run: npm test
-      - name: Save rebuilt shared assets without editing workflows
+      - name: Save verified shared assets
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/feat/v3-teams-sites
           git add web/dist web/package-lock.json
           if ! git diff --cached --quiet; then
-            git commit -m 'build(v3): refresh shared web assets after regression verification'
+            git commit -m 'build(v3): refresh shared web assets after verified regression fixes'
             git push origin HEAD:refs/heads/feat/v3-teams-sites
           fi
