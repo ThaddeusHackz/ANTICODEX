@@ -1,5 +1,6 @@
 // Mount the new shared surfaces. No provider or external network is contacted.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,7 +31,7 @@ const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acx-v3-ui-')), '
 await esbuild.build({ stdin: { contents: `import React, {act} from 'react'; import {createRoot} from 'react-dom/client'; import {MemoryRouter} from 'react-router-dom'; import Teams from './web/src/pages/Teams.jsx'; import Sites from './web/src/pages/Sites.jsx'; export {act}; const root = createRoot(document.getElementById('test-root')); export function show(page){root.render(React.createElement(MemoryRouter,null,React.createElement(page==='teams'?Teams:Sites)));} export function close(){root.unmount();}`, resolveDir: ROOT, loader: 'js' }, outfile: output, bundle: true, platform: 'node', format: 'cjs', nodePaths: [path.join(ROOT, 'web/node_modules')], plugins: [{ name: 'test-boundaries', setup(build) { build.onResolve({ filter: /state\.jsx$/ }, () => ({ path: 'state', namespace: 'test' })); build.onResolve({ filter: /\/lib\/v3\.js$/ }, () => ({ path: 'stream', namespace: 'test' })); build.onLoad({ filter: /.*/, namespace: 'test' }, ({ path }) => ({ contents: path === 'state' ? 'export function useApp(){return globalThis.__v3App}' : 'export const streamV3=(...args)=>globalThis.__v3Stream(...args);', loader: 'js' })); } }] });
 const { act, show, close } = requireWeb(output);
 let passed = 0; let failed = 0;
-const test = async (name, fn) => { try { await fn(); passed++; console.log('  ✓ ' + name); } catch (e) { failed++; console.log('  ✗ ' + name + ' — ' + e.message); } };
+const test = async (name, fn) => { console.log('Running: ' + name); const watchdog = setTimeout(() => { console.error('  ✗ ' + name + ' — timed out after 20 seconds'); process.exit(1); }, 20000); try { await fn(); passed++; console.log('  ✓ ' + name); } catch (e) { failed++; console.log('  ✗ ' + name + ' — ' + e.message); } finally { clearTimeout(watchdog); } };
 const button = (label) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith(label));
 const click = async (el) => { assert.ok(el, 'button exists'); await act(async () => { el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); await new Promise((r) => setTimeout(r, 0)); }); };
 try {
@@ -45,27 +46,9 @@ try {
   await test('export downloads the displayed protected HTML, not a remote deployment', async () => { let blob; let filename; const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL; const oldClick = HTMLAnchorElement.prototype.click; URL.createObjectURL = (b) => { blob = b; return 'blob:test'; }; URL.revokeObjectURL = () => {}; HTMLAnchorElement.prototype.click = function () { filename = this.download; }; try { await click(button('Export HTML')); assert.ok(filename.endsWith('.html')); assert.ok((await blob.text()).includes("connect-src 'none'")); } finally { URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; HTMLAnchorElement.prototype.click = oldClick; } });
   await test('account changes clear another account’s site and draft list', async () => { globalThis.__v3App = { ...globalThis.__v3App, user: { id: 'account-b' } }; await act(async () => show('sites')); assert.equal(document.querySelector('iframe'), null); assert.ok(!document.body.textContent.includes('North Studio')); });
   await test('real MCP bridge saves retrievable owner-scoped IDs without round-tripping secrets', async () => {
-    process.env.ANTICODEX_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-v3-bridge-'));
-    const { Readable } = await import('node:stream');
-    const store = await import('../lib/store.js');
-    const { default: handler } = await import('../api/bridge.js');
-    for (const [id, token] of [['v3-http-a', 'fixture-session-a'], ['v3-http-b', 'fixture-session-b']]) await store.insert('users', { id, email: id + '@example.test', sessions: [{ token, at: Date.now() }] });
-    const call = async (body, token) => {
-      const req = Readable.from([Buffer.from(JSON.stringify({ ...body, token }))]);
-      req.method = 'POST'; req.url = '/api/bridge'; req.headers = { host: 'localhost', ...(token ? { authorization: 'Bearer ' + token } : {}) }; req.socket = { remoteAddress: '127.0.0.1' };
-      const response = { statusCode: 200, setHeader() {}, end(data) { this.body = JSON.parse(String(data)); } };
-      await handler(req, response); return response;
-    };
-    assert.equal((await call({ action: 'mcp', op: 'list' })).statusCode, 401);
-    const created = await call({ action: 'mcp', op: 'save', connection: { id: 'new-server', url: 'https://example.test/mcp', token: 'fixture-server-secret' } }, 'fixture-session-a');
-    assert.equal(created.statusCode, 200); assert.ok(created.body.connection.id.startsWith('mc_')); assert.ok(!JSON.stringify(created.body).includes('fixture-server-secret'));
-    const id = created.body.connection.id;
-    const listed = await call({ action: 'mcp', op: 'list' }, 'fixture-session-a'); assert.ok(listed.body.connections.some((row) => row.id === id));
-    const updated = await call({ action: 'mcp', op: 'save', connection: { ...created.body.connection, name: 'Renamed' } }, 'fixture-session-a'); assert.equal(updated.body.connection.id, id);
-    assert.equal((await call({ action: 'mcp', op: 'list' }, 'fixture-session-b')).body.connections.length, 0);
-    await call({ action: 'mcp', op: 'delete', id }, 'fixture-session-b');
-    assert.ok((await call({ action: 'mcp', op: 'list' }, 'fixture-session-a')).body.connections.some((row) => row.id === id));
+    // Server modules run in a clean Node process, never in jsdom's browser globals.
+    execFileSync(process.execPath, ['--input-type=module', '-e', "import assert from 'node:assert/strict'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';\n\n    process.env.ANTICODEX_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'acx-v3-bridge-'));\n    const { Readable } = await import('node:stream');\n    const store = await import('./lib/store.js');\n    const { default: handler } = await import('./api/bridge.js');\n    for (const [id, token] of [['v3-http-a', 'fixture-session-a'], ['v3-http-b', 'fixture-session-b']]) await store.insert('users', { id, email: id + '@example.test', sessions: [{ token, at: Date.now() }] });\n    const call = async (body, token) => {\n      const req = Readable.from([Buffer.from(JSON.stringify({ ...body, token }))]);\n      req.method = 'POST'; req.url = '/api/bridge'; req.headers = { host: 'localhost', ...(token ? { authorization: 'Bearer ' + token } : {}) }; req.socket = { remoteAddress: '127.0.0.1' };\n      const response = { statusCode: 200, setHeader() {}, end(data) { this.body = JSON.parse(String(data)); } };\n      await handler(req, response); return response;\n    };\n    assert.equal((await call({ action: 'mcp', op: 'list' })).statusCode, 401);\n    const created = await call({ action: 'mcp', op: 'save', connection: { id: 'new-server', url: 'https://example.test/mcp', token: 'fixture-server-secret' } }, 'fixture-session-a');\n    assert.equal(created.statusCode, 200); assert.ok(created.body.connection.id.startsWith('mc_')); assert.ok(!JSON.stringify(created.body).includes('fixture-server-secret'));\n    const id = created.body.connection.id;\n    const listed = await call({ action: 'mcp', op: 'list' }, 'fixture-session-a'); assert.ok(listed.body.connections.some((row) => row.id === id));\n    const updated = await call({ action: 'mcp', op: 'save', connection: { ...created.body.connection, name: 'Renamed' } }, 'fixture-session-a'); assert.equal(updated.body.connection.id, id);\n    assert.equal((await call({ action: 'mcp', op: 'list' }, 'fixture-session-b')).body.connections.length, 0);\n    await call({ action: 'mcp', op: 'delete', id }, 'fixture-session-b');\n    assert.ok((await call({ action: 'mcp', op: 'list' }, 'fixture-session-a')).body.connections.some((row) => row.id === id));\n\nprocess.exit(0);\n"], { cwd: ROOT, timeout: 15000, stdio: 'pipe' });
   });
   await test('workspace CSS parses and includes mobile/reduced-motion treatment', () => { const css = fs.readFileSync(path.join(ROOT, 'web/src/v3.css'), 'utf8'); esbuild.transformSync(css, { loader: 'css' }); assert.ok(css.includes('prefers-reduced-motion')); assert.ok(css.includes('max-width:760px')); assert.ok(css.includes(':focus-visible')); });
 } finally { await act(async () => close()); dom.window.close(); }
-console.log(`${passed} passed, ${failed} failed`); process.exitCode = failed ? 1 : 0;
+console.log(`${passed} passed, ${failed} failed`); process.exit(failed ? 1 : 0);
