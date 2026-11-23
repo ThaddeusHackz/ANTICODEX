@@ -100,7 +100,7 @@ node scripts/rea-codex-sweep.mjs      # → lib/codex-repos.js (evidence for /pa
 | **MCP Connectors** | 27-server catalog (GitHub, Drive, Gmail, Slack, Notion, Linear, Supabase, Figma, Neon, Prisma, Firecrawl, Context7, Cloudflare… **plus REA**), OAuth-style authorize page, permission editor, tool playground, custom HTTP/SSE servers, and a **real stdio transport** so a local server runs as a supervised child process. Honest local entries: Playwright (`@playwright/mcp`), Chrome DevTools, shadcn, sequential-thinking and the official memory server launch on a machine that can spawn processes; `filesystem` says which folder it needs instead of pretending to connect |
 | **Computer Use** | Desktop pairing codes, screen capture → vision model, mouse/keyboard control, app launch/install (confirm-gated), AI command console |
 | **Auth** | Email + password (signs straight in, no mailer required), **GitHub OAuth**, forgot-password with **6-digit email codes** (single-use, 15-min expiry, stored with their expiry), session tokens, optional email-verification gate |
-| **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `tthaddeus75@gmail.com` (`role: admin`) — the console login is its own thing |
+| **Admin** | `Thaddeusadmin` console: users (with password reset), global API keys, system status, activity. Separately, the owner signs in to the **app** with `OWNER_EMAIL` (`role: admin`, no default credential) — the console login is its own thing |
 | **Bring your setup** | Reads a Codex `~/.codex/config.toml` and a Claude `.claude/settings.json` + `policy-limits.json` → shows a diff-style plan → connects the MCP servers, applies the feature policy, and returns model providers / aliases / migrations for this device. Nothing is written before you approve it; a token in the env block is detected but never echoed back |
 | **Desktop** | Windows `ANTICODEX.exe`, opens with the `.exe`, account pairing with the website, **auto-update with user accept**, `anticodex://` deep links, computer-use bridge |
 | **Skills (45,762)** | `/skills` — a pinned corpus of agent skills from seven permissively licensed sources, **retrievable by meaning** (hybrid BM25 + name/tag boosts, deterministic), **grounded into every chat turn** with hard budgets, and installable into `~/.qoder/skills`, `~/.codex/skills` or `~/.claude/skills` in one click. Skills already on your machine — Qoder's included — join the same retrieval corpus. A 19-rule safety scanner with line numbers and fixes ships on the same page. `node scripts/build-skill-atlas.mjs` is the only way the corpus changes. |
@@ -185,12 +185,26 @@ pass `--skip-build` to reuse it deliberately.
 
 ### Owner account
 
-`OWNER_EMAIL` / `OWNER_PASSWORD` / `OWNER_NAME` (defaults
-`tthaddeus75@gmail.com` / `Thaddeusk12` / `Thaddeus`) are the *second* admin:
-they sign in to the website and the desktop app like anyone else, but the row
-carries `role: admin`. They are materialised on demand, so a wiped database
-never locks the owner out. The **admin console** (`/admin`) keeps its own
-`ADMIN_USERNAME` / `ADMIN_PASSWORD` pair — unchanged.
+`OWNER_EMAIL` / `OWNER_PASSWORD` / `OWNER_NAME` are the *second* admin: they
+sign in to the website and the desktop app like anyone else, but the row carries
+`role: admin`. Once set, the account is materialised on demand, so a wiped
+database never locks the owner out.
+
+**There is no default owner credential.** `OWNER_EMAIL` and `OWNER_PASSWORD`
+ship empty in `lib/keys.js`, and `bootstrapAccounts()` in `lib/authx.js` only
+registers an account when *both* are non-empty — a deployment that sets neither
+has no bootstrap sign-in at all. Set them in the environment (Vercel → Settings
+→ Environment Variables, or the desktop keychain) before relying on owner
+access, and choose a password that is not published anywhere.
+
+This README used to print a default password. That was documentation drift, not
+a working credential — the slots are empty in source — and it is removed because
+publishing one invites an operator to adopt it. `tests/test-owner-bootstrap.mjs`
+pins the behaviour; `tests/test-web.mjs` keeps forbidding the old literal in
+source and in the shipped bundle.
+
+The **admin console** (`/admin`) keeps its own `ADMIN_USERNAME` /
+`ADMIN_PASSWORD` pair — also empty by default, also never printed here.
 
 ## GitHub sign-in (2-minute setup)
 
