@@ -1,0 +1,32 @@
+# The temporary branch-preparation job is now ordinary read-only CI.
+# Generated web/dist output is built and tested, never force-added to Git.
+name: Full regression verification
+on:
+  push:
+    branches: [main, feat/v3-teams-sites]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  full-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install pinned web and test dependencies
+        working-directory: web
+        run: npm ci --include=dev
+      - name: Build the shared web and desktop UI
+        working-directory: web
+        run: npm run build
+      - name: Run every regression suite
+        timeout-minutes: 8
+        run: npm test

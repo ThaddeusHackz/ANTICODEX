@@ -1,3 +1,5 @@
+import { withMcpOwner, publicMcp } from '../lib/mcp-scope.js';
+import { handleV3 } from '../lib/v3-bridge.js';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -47,7 +49,7 @@ import { generateImage, FLUX_FIX, FLUX_MODELS } from '../lib/flux.js';
 import { startVideo, queryVideo, MINIMAX_FIX } from '../lib/minimax.js';
 import { VERSION, getKey, saveRuntime, CATALOG } from '../lib/keys.js';
 import { allKeyEnvs, PROVIDER_DIRECTORY } from '../lib/catalog.js';
-import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey } from '../lib/store.js';
+import { insert, findOne, find, update, remove, audit, saveUserKey, userKeyMap, deleteUserKey, claimMcpOAuth } from '../lib/store.js';
 import * as authx from '../lib/authx.js';
 import { handleExtras, builtinTools, runBuiltin } from '../lib/extras.js';
 import { runAgent, agentList, resolveAgent, resolveTarget, decide } from '../lib/agent.js';
@@ -102,6 +104,19 @@ export default async function handler(req, res) {
   // Where this request is being served from — used to build OAuth callbacks so
   // preview deployments and the desktop app work without extra env vars.
   const origin = requestOrigin(req);
+  const actor = await currentUser(req, body).catch(() => null);
+  const mcpAccount = actor?.id ? String(actor.id) : (isDesktopLocal(req) ? 'local:desktop' : null);
+  if (action === 'mcp' && body.op !== 'catalog') {
+    if (!mcpAccount) return json(res, 401, { ok: false, error: 'Sign in to manage MCP connections.' });
+    const end = res.end.bind(res);
+    res.end = (chunk, ...args) => {
+      if (typeof chunk === 'string' || Buffer.isBuffer(chunk)) {
+        try { chunk = JSON.stringify(publicMcp(JSON.parse(String(chunk)))); } catch { /* non-JSON response */ }
+      }
+      return end(chunk, ...args);
+    };
+  }
+  return withMcpOwner(mcpAccount, async () => {
   try {
     switch (action) {
       case 'health': return json(res, 200, { ok: true, version: VERSION, name: 'ANTICODEX', time: new Date().toISOString() });
@@ -302,6 +317,13 @@ export default async function handler(req, res) {
       case 'update_check': return await handleUpdateCheck(body, res);
       case 'skillkit': return await handleSkillKit(req, body, res);
       case 'daytona': return await handleDaytona(req, body, res);
+      case 'teams':
+      case 'sites': return await handleV3(req, body, res, {
+        action, account: mcpAccount, local: canSpawnLocalMcp() && isLoopback(req), resolveTarget,
+        callModel: async ({ messages, tools, signal }) => chat({ messages, tools: tools?.length ? tools : undefined, signal,
+          model: body.model, provider: body.provider, effort: body.effort,
+          max_tokens: 4096, keys: await mergedKeys(req, body) })
+      });
       case 'agent': return await handleAgent(req, body, res);
       case 'publicapi': return await handlePublicApi(req, body, res);
       case 'codex_map': return handleCodexMap(body, res);
@@ -317,6 +339,7 @@ export default async function handler(req, res) {
       : `Something went wrong on our side — ${detail.slice(0, 160)}`;
     return json(res, 500, { error: authx.humanize(detail, msg) });
   }
+  });
 }
 
 // --- auth plumbing ----------------------------------------------------------
@@ -924,7 +947,7 @@ async function handleMcp(body, res, req) {
       const out = await client.callTool(mgmt.name, args);
       const links = (JSON.stringify(out || {}).match(/https?:\/\/[^\s"\\]+/g) || []);
       const link = links.find((u) => /connect|oauth|authorize|redirect/i.test(u)) || links[0] || null;
-      return json(res, 200, { ok: !!link, link, toolkit, raw: link ? undefined : out, error: link ? undefined : 'No connect link - see raw.' });
+      return json(res, 200, { ok: !!link, link, toolkit, raw: undefined, error: link ? undefined : 'No connect link - see raw.' });
     } catch (e) { return json(res, 200, { ok: false, error: String(e.message || e), fix: 'Composio may be unreachable here (egress); desktop/local can reach it.' }); }
   }
 
@@ -934,7 +957,7 @@ async function handleMcp(body, res, req) {
     const c = { ...body.connection, id: body.connection?.id || uid('mcp'), updated_at: new Date().toISOString() };
     const existing = await findOne('mcp_connections', (x) => x.id === c.id);
     if (existing) await update('mcp_connections', (x) => x.id === c.id, c);
-    else await insert('mcp_connections', { status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c });
+    else Object.assign(c, await insert('mcp_connections', { status: 'disconnected', enabled: true, permissions: { tools: true, resources: true, prompts: true, read: true, write: false }, ...c }));
     // Its tool list may have changed with it; the next chat re-reads once.
     forgetTools();
     return json(res, 200, { ok: true, connection: c });
@@ -953,7 +976,7 @@ async function handleMcp(body, res, req) {
       if (why) return json(res, 200, noLocalMcpServer(why));
     }
     try {
-      const result = await probeServer(body.url, body.token);
+      const result = await probeServer(body.url, body.connection_token);
       return json(res, 200, result);
     } catch (e) {
       return json(res, 200, { ok: false, error: String(e.message || e) });
@@ -1017,10 +1040,10 @@ async function handleMcp(body, res, req) {
     }
     // Public / tokenless server — connect directly.
     try {
-      const probe = await probeServer(url, body.token);
+      const probe = await probeServer(url, body.connection_token);
       const row = {
         id: body.connection_id || uid('mcp'), name: probe.server?.name || url, url, status: 'connected',
-        enabled: true, token: body.token || null, tools: probe.tools, connected_at: Date.now()
+        enabled: true, token: body.connection_token || null, tools: probe.tools, connected_at: Date.now()
       };
       const existing = await findOne('mcp_connections', (x) => x.id === row.id);
       if (existing) await update('mcp_connections', (x) => x.id === row.id, row);
@@ -1032,7 +1055,7 @@ async function handleMcp(body, res, req) {
   }
 
   if (op === 'connect_callback') {
-    const s = await findOne('sessions', (x) => x.id === body.state && x.kind === 'mcp-oauth');
+    const s = await claimMcpOAuth(body.state);
     if (!s) return json(res, 404, { error: 'unknown OAuth state — start Connect again' });
     const tokens = await exchangeCode(s.meta, {
       code: body.code, redirectUri: s.redirect_uri,
@@ -1697,7 +1720,7 @@ async function handleRea(req, body, res) {
       // REA edits the app it is analysing, so its own registration needs write. The
       // gate that matters is `permissions` on the row — and it is enforced now
       // (`toolAllowedByPermissions`), not decorative.
-      else await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: true } });
+      else Object.assign(row, await insert('mcp_connections', { ...row, permissions: { tools: true, resources: true, prompts: true, read: true, write: true } }));
       forgetTools();
       await audit({ type: 'rea.register', tools: (probe.tools || []).length, ip: clientIp(req) }).catch(() => {});
       return json(res, 200, { ok: true, connection: row, tools: (probe.tools || []).length });
@@ -2390,7 +2413,7 @@ async function handleImportConfig(req, body, res) {
     const row = { ...c, status: 'disconnected', enabled: true, imported_at: new Date().toISOString() };
     if (existing) await update('mcp_connections', (x) => x.id === c.id, row);
     else await insert('mcp_connections', row);
-    applied.push({ kind: 'mcp', id: c.id, name: c.name, transport: row.stdio ? 'stdio' : 'http' });
+    applied.push({ kind: 'mcp', id: row.id, name: c.name, transport: row.stdio ? 'stdio' : 'http' });
   }
 
   if (rows.flags.length) {

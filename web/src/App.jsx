@@ -1,3 +1,4 @@
+import './v3.css';
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Routes, Route, Navigate } from 'react-router-dom';
@@ -26,6 +27,8 @@ const AdminPage = lazy(() => import('./pages/Admin.jsx'));
 const SetupPage = lazy(() => import('./pages/Setup.jsx'));
 const LibraryPage = lazy(() => import('./pages/Library.jsx'));
 const AgentPage = lazy(() => import('./pages/Agent.jsx'));
+const TeamsPage = lazy(() => import('./pages/Teams.jsx'));
+const SitesPage = lazy(() => import('./pages/Sites.jsx'));
 const ApisPage = lazy(() => import('./pages/Apis.jsx'));
 const ParityPage = lazy(() => import('./pages/Parity.jsx'));
 const EvidencePage = lazy(() => import('./pages/Evidence.jsx'));
@@ -56,6 +59,8 @@ const NAV_TOP = [
 ];
 
 const NAV_WORKSPACE = [
+  { to: '/teams', icon: '◌', label: 'Agent Teams', title: 'Independent perspectives and a lead synthesis' },
+  { to: '/sites', icon: '▧', label: 'Sites', title: 'Generate, privately preview and export static sites' },
   { to: '/sandbox', icon: '⌥', label: 'Sandbox', title: 'Run code locally or on Daytona' },
   { to: '/images', icon: '▦', label: 'Images', title: 'Flux image generation' },
   { to: '/video', icon: '▶', label: 'Video', title: 'Hailuo text-to-video' },
@@ -411,6 +416,8 @@ export default function App() {
         <Route path="/video" element={<Shell><Guarded><VideoPage /></Guarded></Shell>} />
         <Route path="/library" element={<Shell><Guarded><LibraryPage /></Guarded></Shell>} />
         <Route path="/agent" element={<Shell><Guarded><AgentPage /></Guarded></Shell>} />
+        <Route path="/teams" element={<Shell><Guarded><TeamsPage /></Guarded></Shell>} />
+        <Route path="/sites" element={<Shell><Guarded><SitesPage /></Guarded></Shell>} />
         <Route path="/apis" element={<Shell><Guarded><ApisPage /></Guarded></Shell>} />
         <Route path="/skills" element={<Shell><Guarded><SkillsPage /></Guarded></Shell>} />
         <Route path="/rea" element={<Shell><Guarded><ReaPage /></Guarded></Shell>} />
