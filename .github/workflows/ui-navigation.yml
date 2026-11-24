@@ -1,0 +1,30 @@
+name: UI navigation
+on:
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'lib/codex-map.js'
+      - 'lib/qoder-fieldkit.js'
+      - 'package.json'
+      - '.github/workflows/ui-navigation.yml'
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - working-directory: web
+        run: npx --no-install playwright-core install --with-deps --only-shell chromium
+      - run: npm run build
+      - run: node tests/test-web.mjs
+      - run: npm run test:navigation
