@@ -225,6 +225,13 @@ export const importConfig = (payload) => api('import_config', payload);
 
 // Egress policy: an allowlisting proxy a spawned process is pointed at. Starting
 // one listens on this machine, so every write op is desktop/local only.
+// Figma → design tokens (the `/imp` command). Read-only unless `write` is set,
+// and a write still goes through the workspace approval policy on the server.
+export const figma = {
+  status: () => api('figma', { op: 'status' }),
+  import: (p) => api('figma', { op: 'import', ...p })
+};
+
 export const egress = {
   status: () => api('egress', { op: 'status' }),
   presets: () => api('egress', { op: 'presets' }),

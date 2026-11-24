@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { chatStream, workspace as workspaceApi, workspaceFs, egress as egressApi, mcp as mcpApi, rea as reaApi } from '../lib/api.js';
+import { chatStream, workspace as workspaceApi, workspaceFs, egress as egressApi, mcp as mcpApi, rea as reaApi, figma as figmaApi } from '../lib/api.js';
 import { Link } from 'react-router-dom';
 import { useApp, userKey } from '../lib/state.jsx';
 import ModelPicker from '../ModelPicker.jsx';
@@ -322,10 +322,63 @@ export default function CodexPage() {
     }
   }
 
+  // `/imp` — read a Figma file and turn it into tokens. Everything shown here
+  // comes from the response: if Figma refused a section the message says which
+  // one and why, and a failed write leaves the artifacts generated but unsaved.
+  async function importFigma(arg) {
+    const parts = String(arg || '').split(/\s+/).filter(Boolean);
+    const wantsWrite = parts.includes('write') || parts.includes('--write');
+    const ref = parts.filter((x) => x !== 'write' && x !== '--write').join(' ');
+    const say = (text) => setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: 'assistant', content: text }]);
+    say('Reading `' + ref + '` from Figma…');
+    setBusy(true);
+    try {
+      const r = await figmaApi.import({ ref, write: wantsWrite || undefined, ...policy() });
+      if (!r.ok) {
+        say('**Figma import failed.**\n\n' + (r.error || 'Figma did not answer.') + (r.fix ? '\n\n_fix:_ ' + r.fix : '') + (r.configured === false ? '\n\nNo token is configured on this host yet.' : ''));
+        return false;
+      }
+      const c = r.counts || {};
+      const lines = [];
+      lines.push('**' + (r.file?.name || 'Figma file') + '** — read from `' + r.file_key + '`');
+      lines.push('- ' + c.nodes + ' nodes, ' + (c.text_nodes || 0) + ' text nodes, ' + (c.styles || 0) + ' styles, ' + (c.published_components || 0) + ' published components');
+      if (r.truncated?.walk) lines.push('- ⚠ the walk was capped (' + r.truncated.horizon + ') — deeper frames are not represented');
+      if ((r.colors || []).length) {
+        lines.push('- ' + r.colors.length + ' colour tokens; most used `--' + r.colors[0].token + '` (' + r.colors[0].hex + ', ' + r.colors[0].uses + ' nodes)');
+      }
+      if ((r.typography || []).length) lines.push('- type ramp: ' + r.typography.slice(0, 5).map((t) => (t.size ?? '?') + 'px/' + (t.weight ?? '?')).join(', ') + (r.typography.length > 5 ? '…' : ''));
+      if ((r.components || []).length) lines.push('- components: ' + r.components.slice(0, 6).map((x) => x.name + (x.instances ? ' ×' + x.instances : '')).join(', ') + (r.components.length > 6 ? '…' : ''));
+      if ((r.comments || []).length) {
+        const open = r.comments.filter((x) => !x.resolved);
+        lines.push('- comments: ' + r.comments.length + ' (' + open.length + ' unresolved)' + (open[0] ? ' — newest: “' + open[0].message.slice(0, 120) + '”' : ''));
+      }
+      for (const [k, v] of Object.entries(r.sections || {})) lines.push('- **not read — ' + k + '**: ' + v);
+      lines.push('');
+      lines.push('Artifacts: ' + (r.artifacts || []).map((a) => '`' + a.path + '` (' + a.bytes + ' B)').join(', '));
+      if (r.written) {
+        if (r.written.ok) lines.push('**Saved** to the workspace: ' + r.written.results.filter((x) => x.ok).map((x) => '`' + x.path + '`').join(', '));
+        else if (r.written.needs_approval) {
+          lines.push('Not saved yet — this mode asks before writing. Re-run `/imp ' + ref + ' write` and approve, or switch the approval mode.');
+        } else lines.push('**Not saved**: ' + (r.written.error || (r.written.results || []).filter((x) => !x.ok).map((x) => x.path + ': ' + x.error).join('; ')));
+      } else {
+        lines.push('Add `write` to save them into the workspace: `/imp ' + ref + ' write`.');
+      }
+      say(lines.join('\n'));
+      if (r.written?.ok) loadDir('.figma');
+      return true;
+    } catch (e) {
+      say('**Figma import failed.** ' + (e.message || 'Request failed.'));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function askAgent() {
     const content = input.trim();
     if (!content || busy || streamRef.current) return;
     const parsed = parseSlash(content);
+    if (parsed.kind === 'command' && parsed.name === '/imp' && !parsed.error) { setInput(''); await importFigma(parsed.arg); return; }
     if (parsed.kind !== 'prompt') { setInput(''); runSlash(parsed); return; }
     const mentions = fileMentions(content);
     if (mentions.length && wsMode === 'real') {

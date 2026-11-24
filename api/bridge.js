@@ -88,6 +88,7 @@ import { daytonaStatus, sshExec, sshProbe, sshList, sshRead, sshWrite, publicKey
 import { codexParity, crateDetail, biggestCrates } from '../lib/codex-map.js';
 import { qoderFieldKit } from '../lib/qoder-fieldkit.js';
 import { ARTIFACT_CATALOG, librarySummary, recordArtifact, listLibrary } from '../lib/library.js';
+import { FIGMA_API, parseFigmaRef, readFigmaFile, tokensFromFile, buildArtifacts, sourceRef, buildTokensJson, buildTokensCss, buildDesignBrief } from '../lib/figma.js';
 
 // ---------------------------------------------------------------------------
 // Everything routes through /api/bridge with {action:...} so the same handlers
@@ -329,6 +330,7 @@ export default async function handler(req, res) {
       case 'codex_map': return handleCodexMap(body, res);
       case 'qoder_fieldkit': return json(res, 200, qoderFieldKit());
       case 'library': return await handleLibrary(req, body, res);
+      case 'figma': return await handleFigma(req, body, res);
       default: return json(res, 404, { error: `unknown action: ${action}` });
     }
   } catch (e) {
@@ -2966,6 +2968,138 @@ async function handleLibrary(req, body, res) {
     });
   }
   return json(res, 200, listLibrary(account, { kind: body.kind, q: body.q, limit: body.limit, since: body.since }));
+}
+
+// ---------------------------------------------------------------------------
+// figma — `/imp` on the Codex page: read a design file and hand back the tokens
+// plus the artifacts to write. Two ops, both read-only here:
+//
+//   status  — is a token configured, and does Figma accept it? Never echoes it.
+//   import  — parse the ref, read the file, tokenise, build the brief. With
+//             `write:true` the artifacts are written into the account's
+//             workspace folder, but only after the same approval policy the
+//             Codex editor goes through — and only on a host that has a real
+//             folder at all (sandboxAllowed).
+//
+// The token comes from the account's own keys first (user_settings →
+// FIGMA_TOKEN), then the environment / admin config. A missing token is a
+// specific refusal with a fix, not an empty success: see lib/figma.js.
+// ---------------------------------------------------------------------------
+async function handleFigma(req, body, res) {
+  const op = String(body.op || 'status');
+
+  if (op === 'status') {
+    const token = await figmaToken(req, body);
+    if (!token) {
+      return json(res, 200, {
+        ok: true, configured: false,
+        fix: 'Figma → Settings → Security → Personal access tokens → create one with `file_content:read`, then save it as FIGMA_TOKEN in Settings → Providers.',
+        required_scope: 'file_content:read',
+        optional_scopes: ['file_comments:read', 'library_content:read']
+      });
+    }
+    // A cheap authenticated read. /me proves the token, not the scope — the
+    // scopes that a file read needs are only proven by a file read, so this
+    // reports exactly what it checked.
+    try {
+      const r = await fetch(`${FIGMA_API}/me`, { headers: { 'X-Figma-Token': token }, signal: AbortSignal.timeout?.(12000) });
+      const data = r.ok ? await r.json().catch(() => null) : null;
+      return json(res, 200, {
+        ok: r.ok, configured: true, token_valid: r.ok,
+        handle: data?.handle || data?.email || null,
+        error: r.ok ? undefined : `Figma answered ${r.status} for /me — the token was rejected.`,
+        fix: r.ok ? undefined : 'Create a new personal access token and save it again as FIGMA_TOKEN.',
+        note: 'A valid token still needs `file_content:read` to read a file; /imp reports that per file.'
+      });
+    } catch (e) {
+      return json(res, 200, { ok: false, configured: true, token_valid: false, error: String(e.message || e), fix: 'This host could not reach api.figma.com.' });
+    }
+  }
+
+  if (op !== 'import') return json(res, 400, { ok: false, error: `Unknown figma op "${op}".` });
+
+  const ref = parseFigmaRef(body.ref || body.url || body.file_key);
+  if (!ref.ok) return json(res, 400, { ok: false, ...ref, error: ref.error, fix: ref.fix });
+  const token = await figmaToken(req, body);
+  if (!token) {
+    return json(res, 200, {
+      ok: false, configured: false, needs_token: true, file_key: ref.file_key,
+      error: 'Figma cannot be read without a personal access token.',
+      fix: 'Figma → Settings → Security → Personal access tokens → create one with `file_content:read`, then save it as FIGMA_TOKEN in Settings → Providers.'
+    });
+  }
+
+  const depth = body.depth ? Math.max(1, Math.min(20, Number(body.depth) || 0)) : null;
+  let read;
+  try {
+    read = await readFigmaFile({ fileKey: ref.file_key, nodeId: ref.node_id, token, depth });
+  } catch (e) {
+    return json(res, 200, { ok: false, file_key: ref.file_key, error: `Figma could not be reached: ${String(e.message || e).slice(0, 200)}`, fix: 'Check this host’s network access to api.figma.com.' });
+  }
+  if (!read.ok) return json(res, 200, read);
+
+  const artifacts = buildArtifacts({ fileKey: ref.file_key, url: ref.url, tokens: read.tokens, sections: read.sections, nodes: read.nodes });
+  const ref_ = sourceRef({ file_key: ref.file_key, node_id: ref.node_id, version: read.tokens.file.version, last_modified: read.tokens.file.last_modified });
+
+  const payload = {
+    ok: true,
+    file_key: ref.file_key, url: ref.url, node_id: ref.node_id,
+    file: read.tokens.file,
+    counts: read.tokens.counts,
+    truncated: read.tokens.truncated,
+    colors: read.tokens.colors, typography: read.tokens.typography,
+    spacing: read.tokens.spacing, radii: read.tokens.radii, shadows: read.tokens.shadows,
+    components: read.tokens.components, pages: read.tokens.pages, frames: read.tokens.frames,
+    comments: read.comments, library: read.library,
+    sections: read.sections,
+    artifacts: artifacts.map((a) => ({ path: a.path, bytes: Buffer.byteLength(a.content) })),
+    source: ref_,
+    written: null
+  };
+
+  // Writing needs a real folder, and the same approval gate every other write
+  // in the app goes through. Nothing is written when either says no.
+  if (!body.write) return json(res, 200, payload);
+
+  if (!sandboxAllowed(req)) {
+    return json(res, 200, {
+      ...payload,
+      written: { ok: false, needs_local: true, error: 'There is no workspace folder on this host, so the artifacts were generated but not saved.' }
+    });
+  }
+  const verdict = decideApproval({ sandbox: body.sandbox, approval: body.approval, action: 'write' });
+  if (verdict === 'deny' || (verdict === 'prompt' && !body.confirm)) {
+    return json(res, 200, {
+      ...payload,
+      written: verdict === 'deny'
+        ? { ok: false, verdict: 'deny', error: `The ${normalizeApprovalPolicy(body.approval).mode} approval policy does not allow writing into the ${normalizeSandboxPolicy(body.sandbox).mode} sandbox.` }
+        : { ok: false, verdict: 'prompt', needs_approval: true, pending: { op: 'write', paths: artifacts.map((a) => a.path) } }
+    });
+  }
+  const root = wsRootFor(body.account);
+  const results = [];
+  for (const a of artifacts) {
+    const w = wsWrite(root, a.path, a.content);
+    results.push(w.ok ? { ok: true, path: w.path, bytes: w.bytes } : { ok: false, path: a.path, error: w.error });
+  }
+  // The source ref is stored beside the artifacts so the next run can say
+  // "unchanged" instead of re-reporting the same import as new.
+  const stamp = { source: ref_, file_key: ref.file_key, node_id: ref.node_id, at: new Date().toISOString(), version: read.tokens.file.version || null };
+  const stamped = wsWrite(root, '.figma/source.json', JSON.stringify(stamp, null, 2) + '\n');
+  if (!stamped.ok) results.push({ ok: false, path: '.figma/source.json', error: stamped.error });
+  return json(res, 200, { ...payload, written: { ok: results.every((r) => r.ok), results } });
+}
+
+/** The Figma token for this request: the account's own key first, then the
+ *  shared resolution order in lib/keys.js. Never returned to the browser. */
+async function figmaToken(req, body) {
+  const auth = (req?.headers?.authorization || '').replace(/^Bearer\s+/i, '') || body?.token;
+  const user = auth ? await authx.findByToken(auth).catch(() => null) : null;
+  if (user?.email) {
+    const mine = await userKeyMap(user.email).catch(() => ({}));
+    if (mine?.FIGMA_TOKEN) return mine.FIGMA_TOKEN;
+  }
+  return getKey('FIGMA_TOKEN') || process.env.FIGMA_TOKEN || '';
 }
 
 /** Who this request is acting for: the signed-in user's id, else the local

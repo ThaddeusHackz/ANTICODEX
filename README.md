@@ -45,7 +45,9 @@ Design evidence and REA honest limits: [`docs/UI-2.7.md`](docs/UI-2.7.md).
 Codex parity, tier 1: `apply_patch` in the Codex envelope (add/update/move/
 delete, all-or-nothing), `update_plan`, a cumulative turn diff, JSONL session
 rollouts with `anticodex resume`, `anticodex exec --json`, and slash commands +
-@file mentions in the Codex composer. See [`docs/RELEASE-2.8.0.md`](docs/RELEASE-2.8.0.md)
+@file mentions in the Codex composer — including `/imp <figma link>`, which reads a
+design file through the Figma REST API and writes `.figma/tokens.json`,
+`.figma/tokens.css` and a design brief (see [`docs/FIGMA-IMPORT.md`](docs/FIGMA-IMPORT.md)). See [`docs/RELEASE-2.8.0.md`](docs/RELEASE-2.8.0.md)
 for what is verified and what is still not claimed.
 
 ## Version 2.9

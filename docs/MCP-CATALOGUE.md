@@ -15,6 +15,11 @@ the design, build it from real components, then look at it in a browser.
 | Server | Transport | Why it earns its tool budget |
 | --- | --- | --- |
 | `figma` | remote, OAuth | design tokens and Code Connect — build from the file, not a screenshot |
+
+> `/imp` on the Codex page is the host-side counterpart: it reads a file through
+> the Figma REST API and writes `.figma/tokens.{json,css}` + a brief. It does not
+> go through this MCP server, so Code Connect is not part of it. See
+> [`FIGMA-IMPORT.md`](FIGMA-IMPORT.md).
 | `shadcn` | `npx shadcn@latest mcp` | real component source from the registry instead of a model's memory of one |
 | `playwright` | `npx @playwright/mcp@latest` | drive the page, read the accessibility tree, screenshot the result |
 | `chrome-devtools` | `npx chrome-devtools-mcp@latest` | computed CSS, console errors, network — catches the override a unit test cannot |

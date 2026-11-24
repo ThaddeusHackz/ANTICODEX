@@ -39,7 +39,7 @@ desktop/          Electron main, keychain, updater, packaging
 tests/            test-api, test-auth, test-web, test-web-mount, test-mcp-stdio,
                   test-import-config, test-workspace, test-desktop
 skills/           REA + leanrea skill packs
-docs/             FORENSIC-REPORT, REA-EVIDENCE, REA-SETUP-PLAN
+docs/             FORENSIC-REPORT, REA-EVIDENCE, REA-SETUP-PLAN, FIGMA-IMPORT
 ```
 
 ## Before you finish
